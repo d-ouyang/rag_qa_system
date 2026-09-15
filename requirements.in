@@ -1,0 +1,46 @@
+# 直接依赖声明（人维护），锁文件由 uv 生成：
+#   uv pip compile requirements.in -o requirements.lock.txt --python-version 3.11
+# 版本策略：大版本不动，保证与教学视频代码 API 兼容；小版本升到该大版本最新稳定。
+
+# ---------- LangChain（必须锁 0.3.x，1.x 移除了 create_retrieval_chain 等 API）----------
+langchain>=0.3.27,<0.4
+langchain-community>=0.3.27,<0.4
+langchain-core>=0.3.66,<0.4
+langchain-text-splitters>=0.3.0,<0.4
+langchain-huggingface>=0.1.2,<0.2
+langchain-openai>=0.2.14,<0.3
+
+# ---------- Web 框架 ----------
+fastapi>=0.115.0,<0.117
+uvicorn[standard]>=0.30.6,<0.35
+python-multipart>=0.0.12,<0.1
+
+# ---------- 向量库（chromadb 必须 <0.6，langchain-community 0.3.x 只认 0.4~0.5 系）----------
+chromadb>=0.5.23,<0.6
+faiss-cpu>=1.9.0,<1.13
+
+# ---------- 文档处理 ----------
+pymupdf>=1.24.13,<2
+docx2txt==0.8
+unstructured>=0.16.20,<0.17
+pandas>=2.2.3,<2.4
+openpyxl>=3.1.5
+markdown>=3.7
+python-pptx>=1.0,<2      # .pptx 解析（UnstructuredPowerPointLoader）
+beautifulsoup4>=4.12     # .html/.htm 解析（BSHTMLLoader）
+
+# ---------- 嵌入模型（sentence-transformers 4.x+ 换了依赖结构，锁 3.x 更稳）----------
+sentence-transformers>=3.1.1,<4
+torch>=2.2,<3
+numpy>=1.26,<3
+
+# ---------- 配置 ----------
+pydantic>=2.9,<2.12
+pydantic-settings>=2.5.2,<2.12
+python-dotenv>=1.0.1
+
+# ---------- 工具 ----------
+tqdm>=4.66.5
+
+# ---------- Streamlit（仅教学阶段用，Vue 前端上线后可移除）----------
+streamlit>=1.39,<2

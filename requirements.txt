@@ -1,0 +1,56 @@
+# RAG 智能问答系统 · 依赖清单（2026-09-10 更新，已用 uv 实测解析通过）
+#
+# 升级原则：大版本不动（保证与教学视频代码 API 兼容），小版本升到该大版本最新稳定版。
+# 原清单问题：langchain 0.3.7 / chromadb 0.5.17 / streamlit 1.39 均为 2024 年底版本，
+#            且未锁 pydantic，实际会装到 2.13+ 与 chromadb 0.5.x 打架。
+#
+# 安装：uv pip sync requirements.lock.txt   （推荐，完全锁死，含间接依赖）
+#   或：pip install -r requirements.txt     （只锁直接依赖，够用）
+
+# ---------- LangChain 核心 ----------
+# 必须锁 0.3.x！langchain 1.x 把 create_retrieval_chain / create_stuff_documents_chain
+# 移到了 langchain-classic，视频代码会直接 ImportError。
+langchain==0.3.30
+langchain-community==0.3.31
+langchain-core==0.3.86
+langchain-text-splitters==0.3.11
+langchain-huggingface==0.1.2
+langchain-openai==0.2.14
+
+# ---------- Web 框架 ----------
+fastapi==0.116.2
+uvicorn==0.34.3
+python-multipart==0.0.32
+
+# ---------- 向量数据库 ----------
+# chromadb 必须 <0.6：langchain_community.vectorstores.Chroma 在 0.3.x 只适配 0.4~0.5 系
+chromadb==0.5.23
+faiss-cpu==1.12.0
+
+# ---------- 文档处理 ----------
+pymupdf==1.28.2
+docx2txt==0.8
+unstructured==0.16.25
+pandas==2.3.3
+openpyxl==3.1.5
+markdown==3.10.3
+python-pptx==1.0.2       # .pptx 解析（UnstructuredPowerPointLoader）
+beautifulsoup4==4.15.0   # .html/.htm 解析（BSHTMLLoader）
+
+# ---------- 嵌入模型 ----------
+# sentence-transformers 4.x+ 重构了依赖，锁 3.x 最稳；torch 2.14 对 Apple Silicon 支持更好
+sentence-transformers==3.4.1
+torch==2.14.0
+numpy==1.26.4
+
+# ---------- 配置管理 ----------
+# pydantic 上限 2.12：chromadb 0.5.x 与 2.13 不兼容（原本 requirements 未锁，会装到 2.13.4）
+pydantic==2.11.10
+pydantic-settings==2.11.0
+python-dotenv==1.2.3
+
+# ---------- 工具 ----------
+tqdm==4.70.0
+
+# ---------- Streamlit 前端（教学阶段保留，Vue 前端上线后删除此行即可）----------
+streamlit==1.63.0

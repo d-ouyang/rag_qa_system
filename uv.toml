@@ -1,0 +1,9 @@
+# uv 项目级配置：走清华 PyPI 镜像，否则 torch 等大包在国内下载极慢
+# 该目录下的所有 uv 命令自动生效，无需配环境变量
+
+[[index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+# 并发下载数，加快大包安装
+concurrent-downloads = 16

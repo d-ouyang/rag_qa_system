@@ -1,0 +1,27 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 密钥：绝不入库
+.env
+*.key
+
+# 运行时产物
+vector_db/
+upload/
+data/
+app.log
+*.log
+.langchain_checkpoints.sqlite*
+
+# 模型权重（用软链共享，不入库）
+# 注意：不能写 "models/" —— gitignore 的尾斜杠模式只匹配目录，
+# 而软链在 git 里被当成文件（mode 120000），带斜杠会漏掉，导致提交断链 + 泄露本地绝对路径
+models
+
+# 前端
+web/node_modules/
+web/dist/
+.DS_Store
