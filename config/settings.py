@@ -62,6 +62,21 @@ class Settings(BaseSettings):
     SILICONFLOW_BASE_URL : str = "https://api.siliconflow.cn/v1"
     SILICONFLOW_MODEL_NAME : str = "Qwen/Qwen3-8B"
 
+    # 会话记忆配置（core/memory_manager.py 消费）
+    # 单个会话保留的最大对话轮数：超出后从最早的开始裁剪。
+    # 1 轮 = 1 条用户消息 + 1 条 AI 消息（即 2 条 message）。
+    MEMORY_MAX_TURNS : int = 10
+    # 会话闲置多少秒后视为过期，被清理线程/惰性检查回收（防内存无限增长）
+    MEMORY_SESSION_TTL_SECONDS : int = 6 * 3600
+
+    # 意图识别配置（core/intent_router.py 消费）
+    # 分类任务只需输出一个词，用本地小模型足够且零成本；
+    # 模型加载/调用失败时自动降级为本地规则映射，不影响主链路。
+    INTENT_LLM_PROVIDER : Literal["openai", "siliconflow", "ollama"] = "ollama"
+    # 意图识别用的小模型名；留空则回退用 OLLAMA_MODEL_NAME
+    INTENT_LLM_MODEL_NAME : str = ""
+    INTENT_LLM_TIMEOUT : int = 10        # 分类必须快，超时直接走规则兜底
+
     # 服务配置
     API_HOST : str = "localhost"
     API_PORT : int = 8000

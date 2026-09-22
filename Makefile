@@ -37,6 +37,7 @@ test:
 	$(PY) tests/test_module2_document_loader.py
 	$(PY) tests/test_module3_vectorstore.py
 	$(PY) tests/test_module4_llm_and_retriever.py
+	$(PY) tests/test_module5_rag_chain_api.py
 
 ollama:
 	@curl -s http://localhost:11434/api/tags | head -c 200; echo

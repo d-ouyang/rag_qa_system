@@ -236,30 +236,40 @@ class LLMClient:
 
         与 OpenAI 兼容分支对齐的三个参数：
             · num_predict  <- self.max_tokens（ollama 侧的「最大生成 token 数」）
-            · client_kwargs={"timeout": ...}  <- self.timeout
-              ChatOllama 没有 timeout 字段，超时要塞给底层 ollama.Client。
+            · 超时：langchain-ollama 没有 timeout 字段，要塞给底层 ollama.Client
+              （client_kwargs）；community 版反过来没有 client_kwargs，
+              传了会被 pydantic 静默丢弃（extra="ignore"），必须用它的原生 timeout 字段。
               不传的话本地大模型的长请求会一直挂着，settings.LLM_TIMEOUT 形同虚设。
-            · reasoning <- settings.OLLAMA_REASONING（仅 langchain-ollama 支持，
-              community 版没有该字段，故走 extra 字典区分）
+            · reasoning <- settings.OLLAMA_REASONING（关闭思考链：thinking token 不进正文，
+              会让 stream 长时间吐空 chunk；仅 langchain-ollama 支持）
+
+        两个分支的入参不同，所以各自组装 kwargs 字典再统一构造：
+        既能差异传参，也顺便绕开 pyright 对单分支（community）的入参检查。
         """
+        kwargs: dict[str, Any]
         try:
             from langchain_ollama import ChatOllama  # pyright: ignore[reportMissingImports]
 
-            # 关闭思考链：thinking token 不进正文，会让 stream 长时间吐空 chunk
-            extra: dict[str, object] = {"reasoning": settings.OLLAMA_REASONING}
+            kwargs = {
+                "model": self.model_name,
+                "base_url": self.base_url,
+                "temperature": self.temperature,
+                "num_predict": self.max_tokens,
+                "client_kwargs": {"timeout": self.timeout},
+                "reasoning": settings.OLLAMA_REASONING,
+            }
         except ImportError:
             from langchain_community.chat_models import ChatOllama  # type: ignore[attr-defined, no-redef]
 
-            extra = {}
+            kwargs = {
+                "model": self.model_name,
+                "base_url": self.base_url,
+                "temperature": self.temperature,
+                "num_predict": self.max_tokens,
+                "timeout": self.timeout,
+            }
 
-        return ChatOllama(  # pyright: ignore[reportCallIssue]
-            model=self.model_name,
-            base_url=self.base_url,
-            temperature=self.temperature,
-            num_predict=self.max_tokens,
-            client_kwargs={"timeout": self.timeout},
-            **extra,
-        )
+        return ChatOllama(**kwargs)
 
     # ------------------------------------------------------------------ #
     # 面向业务的调用
