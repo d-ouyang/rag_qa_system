@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.logging_config import setup_logging
 from config.settings import settings
 # main.py 与 routes/ 同属 api 包，这里用包内相对导入，避免依赖「项目根是否在 sys.path」
-from .routes import qa
+from .routes import documents, qa, system
 
 # 初始化日志（类体在 import 时已执行，这里调用是项目既有约定，无实际副作用）
 setup_logging()
@@ -51,6 +51,10 @@ app.add_middleware(
 
 # 注册路由：问答能力统一挂在 /api/v1/qa 前缀下
 app.include_router(qa.router)
+# 知识库文档管理（上传/列表/删除/统计），挂在 /api/v1/documents
+app.include_router(documents.router)
+# 系统配置（设置页读取关键配置项），挂在 /api/v1/system
+app.include_router(system.router)
 
 
 @app.get("/", summary="服务状态", include_in_schema=False)

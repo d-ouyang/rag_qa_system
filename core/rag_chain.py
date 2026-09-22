@@ -105,15 +105,28 @@ def _sanitize_rewrite(rewritten: str, original: str) -> str:
         · 输出为空
         · 输出比原问题长得多（改写只该补全指代，不该长篇大论）
         · 含「无法回答 / 根据现有资料 / 抱歉」等作答痕迹
+        · 作答形态：含句号/感叹号且不以问号结尾 —— 合法改写几乎总是疑问句
+          （以 ？ 结尾或无句读），陈述句基本可以断定模型在「作答」。
+          实测漏网案例：「根据公司规定，员工每年享有10天带薪年假。」
+          命中规则前三条全部不触发，但陈述句形态一眼可辨。
+          副作用：极少数陈述式改写（如「请介绍一下报销流程。」）会回退原问题，
+          只损失一点改写质量，不影响正确性 —— 这是可接受的代价。
     """
     text = (rewritten or "").strip()
     if not text:
         return original
     if len(text) > max(len(original) * 4, len(original) + 30):
+        logger.warning("重写输出超长，回退原问题 | 原问题=%.24s 输出长度=%d", original, len(text))
         return original
     for marker in ("无法回答", "根据现有资料", "抱歉", "对不起"):
         if marker in text:
+            logger.warning("重写输出含作答痕迹，回退原问题 | 原问题=%.24s 输出=%.32s", original, text)
             return original
+    has_declarative = "。" in text or "！" in text or "!" in text
+    ends_question = text.endswith("？") or text.endswith("?")
+    if has_declarative and not ends_question:
+        logger.warning("重写输出为陈述句（疑似作答），回退原问题 | 原问题=%.24s 输出=%.32s", original, text)
+        return original
     return text
 
 # ② 问答提示词：system 里带检索到的上下文，强约束「基于资料回答」。

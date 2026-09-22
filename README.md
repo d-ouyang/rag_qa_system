@@ -35,9 +35,40 @@ pip install -r requirements.txt
 
 ```bash
 source .venv/bin/activate
-make api     # FastAPI  http://localhost:8000/docs
-make web     # Streamlit http://localhost:8501
+make api       # FastAPI  http://localhost:8000/docs
+make frontend  # Vue3 前端 http://localhost:5173（frontend/ 目录需先 npm install）
 ```
+
+---
+
+## 1.1 Vue 3 前端（frontend/）
+
+类 WorkBuddy 双栏工作台（Vite + Vue 3 + TS + Pinia）：
+
+- **左侧边栏**：项目信息（版本 + 服务健康状态）、会话列表（新建 / 切换 / 删除）、
+  「文件传输 · 知识库」与「系统设置」入口
+- **右侧内容区**：会话主页（NDJSON 流式逐字回答 + 引用资料折叠）、
+  知识库文档管理（统计卡片 / 拖拽上传 / 删除）、系统设置（关键配置分组只读展示）
+
+后端为前端补齐了两个路由模块（`api/routes/documents.py`、`api/routes/system.py`，
+前缀 `/api/v1/documents`、`/api/v1/system`）。
+
+### 完整启动步骤
+
+```bash
+# 1. 后端（项目根）
+make api
+
+# 2. 前端（首次运行需安装依赖）
+cd frontend && npm install
+npm run dev        # 或项目根执行 make frontend
+
+# 3. 浏览器打开
+open http://localhost:5173
+```
+
+开发期 Vite 将 `/api/**` 代理到 `127.0.0.1:8000`（前端零跨域配置，后端 CORS 白名单同样保留 5173）。
+前端详细结构见 `frontend/README.md`。
 
 ---
 

@@ -494,6 +494,79 @@ class VectorStoreManager:
         logger.debug("向量库状态：%s", stats)
         return stats
 
+    def get_chunks(self, source: str) -> list[dict[str, Any]]:
+        """
+        取出某个来源文件的全部切分片段（知识库管理页「查看片段」用）。
+
+        溯源与检索都是片段级的：召回的是片段、拼进 prompt 的是片段、
+        sources 里的 snippet 也是片段开头 —— 原文档本身从未整体进过模型。
+        所以排查「模型到底看到了什么」必须能看到片段全文。
+
+        :param source: 元数据里的 source 字段（文件完整路径，与删除接口同一键）
+        :return: [{index, content, char_count, page}]，按库内顺序
+        """
+        store = self._store
+        if store is None:
+            return []
+
+        if isinstance(store, Chroma):
+            result = store.get(where={"source": source}, include=["documents", "metadatas"])
+            docs = result.get("documents") or []
+            metas = result.get("metadatas") or []
+            return [
+                {
+                    "index": i,
+                    "content": doc,
+                    "char_count": len(doc),
+                    "page": (meta or {}).get("page"),
+                }
+                for i, (doc, meta) in enumerate(zip(docs, metas), start=1)
+            ]
+
+        # FAISS：没有元数据条件查询，遍历 docstore 自己筛
+        docstore = getattr(store, "docstore", None)
+        chunks: list[dict[str, Any]] = []
+        for doc in getattr(docstore, "_dict", {}).values():
+            meta = getattr(doc, "metadata", None) or {}
+            if meta.get("source") == source:
+                chunks.append(
+                    {
+                        "index": len(chunks) + 1,
+                        "content": doc.page_content,
+                        "char_count": len(doc.page_content),
+                        "page": meta.get("page"),
+                    }
+                )
+        return chunks
+
+    def list_documents(self) -> list[dict[str, Any]]:
+        """
+        按来源（source）分组列出知识库中的全部文档（知识库管理页用）。
+
+        一个文件入库后会被切成多个片段，这里把同一 source 的片段聚合为一条记录：
+            · source       文件完整路径（唯一键，删除接口按它删）
+            · file_name    文件名（展示用，可能重名）
+            · file_type    文件类型（无点后缀）
+            · chunk_count  该文件被切成的片段数
+        """
+        metadatas = self._collect_metadatas()
+        grouped: dict[str, dict[str, Any]] = {}
+        for m in metadatas:
+            src = str(m.get("source", ""))
+            if not src:
+                continue
+            entry = grouped.setdefault(
+                src,
+                {
+                    "source": src,
+                    "file_name": str(m.get("file_name") or Path(src).name),
+                    "file_type": str(m.get("file_type") or Path(src).suffix.lstrip(".")),
+                    "chunk_count": 0,
+                },
+            )
+            entry["chunk_count"] += 1
+        return sorted(grouped.values(), key=lambda d: d["file_name"].lower())
+
     # ------------------------------------------------------------------ #
     # 清空
     # ------------------------------------------------------------------ #

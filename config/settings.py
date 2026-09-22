@@ -32,7 +32,10 @@ class Settings(BaseSettings):
     RERANK_CANDIDATE_MULTIPLIER : int = 4
     # 重排分数阈值：低于该值的候选直接丢弃（None 表示不启用过滤）。
     # 注意 bge-reranker 输出的是 sigmoid 后的 0~1 相关性分数，与向量距离不是一个量纲。
-    RERANK_SCORE_THRESHOLD : float | None = None
+    # 实测分布：相关文档 ≈0.99，无关文档 ≈0.0003，0.1 是保守安全的分界线。
+    # 不过滤的恶果：无关文档混进上下文，模型拒答但 sources 照带 ——
+    # 前端出现「无法回答 + 引用资料 1 条」的矛盾展示（实测复现）。
+    RERANK_SCORE_THRESHOLD : float | None = 0.1
 
      # LLM配置
     LLM_PROVIDER : Literal["openai", "siliconflow", "ollama"] = "siliconflow"
@@ -61,6 +64,11 @@ class Settings(BaseSettings):
     SILICONFLOW_API_KEY : str = ""
     SILICONFLOW_BASE_URL : str = "https://api.siliconflow.cn/v1"
     SILICONFLOW_MODEL_NAME : str = "Qwen/Qwen3-8B"
+    # 是否让 Qwen3 系列输出思考链（reasoning_content）。
+    # 必须默认关闭：思考 token 不作为 content 流出（LangChain 放进 additional_kwargs），
+    # 流式问答会长时间没有任何 chunk —— 前端气泡空闪几十秒，实测 TTFT 60s+。
+    # 且 RAG 问答有检索结果兜底，不需要模型 long-CoT（与 OLLAMA_REASONING 同理）。
+    SILICONFLOW_ENABLE_THINKING : bool = False
 
     # 会话记忆配置（core/memory_manager.py 消费）
     # 单个会话保留的最大对话轮数：超出后从最早的开始裁剪。

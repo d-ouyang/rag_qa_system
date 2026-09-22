@@ -212,8 +212,21 @@ class LLMClient:
 
         注意：api_key 传进去后会被 LangChain 包成 SecretStr，
         后续哪怕 print(llm) 也只会看到 **********。
+
+        硅基流动特殊处理：Qwen3 系列默认开启 thinking（reasoning_content），
+        思考 token 不作为 content 流出，流式接口会长时间没有 chunk ——
+        前端表现为气泡空闪几十秒。与 ollama 分支的 reasoning 开关对齐，
+        用 chat_template_kwargs.enable_thinking 显式关闭。
         """
         from langchain_openai import ChatOpenAI
+
+        # extra_body 会原样并入每次请求的 body，是 OpenAI 兼容网关传厂商私有参数的通道。
+        # 实测硅基流动只认顶层的 enable_thinking=false（立即开始吐正文）；
+        # vLLM 风格的 chat_template_kwargs.enable_thinking 会被忽略（思考照常，流里只有
+        # reasoning_content，content 长时间为空——前端气泡空闪的根因）。
+        extra_body: dict[str, Any] | None = None
+        if self.provider == "siliconflow":
+            extra_body = {"enable_thinking": settings.SILICONFLOW_ENABLE_THINKING}
 
         return ChatOpenAI(
             model=self.model_name,
@@ -224,6 +237,7 @@ class LLMClient:
             max_tokens=self.max_tokens,  # pyright: ignore[reportCallIssue]
             timeout=self.timeout,
             max_retries=self.max_retries,
+            extra_body=extra_body,
         )
 
     def _build_ollama(self) -> BaseChatModel:

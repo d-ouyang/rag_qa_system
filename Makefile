@@ -6,14 +6,15 @@ UV ?= uv
 VENV := .venv
 PY := $(VENV)/bin/python
 
-.PHONY: help setup venv sync lock api web test clean ollama
+.PHONY: help setup venv sync lock api web frontend test clean ollama
 
 help:
-	@echo "make setup   创建 .venv 并安装依赖"
-	@echo "make api     启动 FastAPI (8000)"
-	@echo "make web     启动 Streamlit (8501)"
-	@echo "make lock    重新解析锁文件"
-	@echo "make ollama  确认本地 Ollama 服务可用"
+	@echo "make setup     创建 .venv 并安装依赖"
+	@echo "make api       启动 FastAPI (8000)"
+	@echo "make web       启动 Streamlit (8501)"
+	@echo "make frontend  启动 Vue3 前端 Vite 开发服务器 (5173)"
+	@echo "make lock      重新解析锁文件"
+	@echo "make ollama    确认本地 Ollama 服务可用"
 
 setup: venv sync
 
@@ -31,6 +32,9 @@ api:
 
 web:
 	$(VENV)/bin/streamlit run frontend/app.py --server.port 8501
+
+frontend:
+	cd frontend && npm run dev
 
 test:
 	$(PY) tests/test_module1_config.py
