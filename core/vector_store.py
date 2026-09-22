@@ -25,8 +25,14 @@ Chroma 与 FAISS 的关键差异（面试常问，也是本模块写法的由来
      过滤后返回条数可能不足 k——所以开启过滤时必须放大 fetch_k。
 
 4. 相似度分数
-   · 两者都是「分数越小越相似」，但量纲不同（FAISS 是 L2 距离），
-     不要跨库比较分数，也不要写死阈值。
+   · 后端原生返回的是「距离」：Chroma 默认 hnsw:space="l2"、FAISS 的 IndexFlatL2
+     返回的都是**平方 L2**（FAISS 刻意不开方省算力），两者量纲其实一致，都是越小越相似。
+   · 本模块在返回前统一换算成**余弦相似度**（越大越像，范围 [-1, 1]），见 _distance_to_similarity。
+     换算前提是嵌入向量已归一化（normalize_embeddings=True，见 core/embedding.py）：
+     归一化后 L2² = ‖a‖² + ‖b‖² - 2a·b = 2 - 2cosθ，故 cos θ = 1 - L2²/2。
+     不归一化时距离里混着模长项，这个等式不成立 —— 所以初始化时会做一次自检。
+   · 坑：Chroma 若被配成 hnsw:space="cosine"，返回的是 cosine distance = 1 - cos（范围 [0, 2]），
+     与上面的换算不兼容。本项目统一用默认 l2，不要动 collection_metadata。
 
 --------------------------------------------------------------------------
 职责边界
@@ -42,6 +48,7 @@ from typing import Any
 
 from langchain_community.vectorstores import FAISS, Chroma
 from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from config.settings import settings
@@ -95,6 +102,9 @@ class VectorStoreManager:
         logger.info("初始化向量库 | 类型=%s | 目录=%s | collection=%s",
                     self.store_type, self.persist_dir, self.collection_name)
         self._initialize_vector_store()
+        # 分数换算（_distance_to_similarity）依赖「嵌入向量已归一化」这个前提，
+        # 建库后立刻自检一次，别让错误前提静默地污染所有检索分数
+        self._check_normalization()
 
     # ------------------------------------------------------------------ #
     # 初始化
@@ -163,6 +173,31 @@ class VectorStoreManager:
             return
         store.save_local(str(self.persist_dir))
         logger.debug("FAISS 索引已落盘 | 目录=%s | 向量数=%d", self.persist_dir, self.count())
+
+    def _check_normalization(self) -> None:
+        """
+        自检一次：确认嵌入向量确实做了 L2 归一化。
+
+        _distance_to_similarity 的换算完全依赖这个前提。不归一化时距离里混着模长项，
+        换算出的相似度是错的 —— 而且不报错、不崩溃，只是检索结果悄悄变差，
+        属于最难查的那类静默故障，所以宁可在启动时多算一个向量也要提前发现。
+        """
+        try:
+            vec = self.embedding_model.embed_query("归一化自检")
+            norm_sq = sum(float(x) * float(x) for x in vec)
+        except Exception as e:
+            # 自检失败不影响主流程：顶多少一道校验，不能让向量库起不来
+            logger.warning("归一化自检未能完成（不影响检索，仅跳过校验）| 错误：%s", e)
+            return
+
+        if abs(norm_sq - 1.0) > 1e-3:
+            logger.error(
+                "嵌入向量未归一化（‖v‖²=%.4f，期望 1.0）：similarity_search_with_score 返回的"
+                "余弦相似度不可信，请检查 core/embedding.py 的 normalize_embeddings",
+                norm_sq,
+            )
+        else:
+            logger.debug("归一化自检通过（‖v‖²=%.6f），分数换算前提成立", norm_sq)
 
     # ------------------------------------------------------------------ #
     # 统计辅助
@@ -340,6 +375,21 @@ class VectorStoreManager:
         logger.info("检索完成 | 命中=%d 条 | k=%d", len(results), k)
         return results
 
+    @staticmethod
+    def _distance_to_similarity(distance: float) -> float:
+        """
+        把后端返回的平方 L2 距离换算成余弦相似度（越大越像，范围 [-1, 1]）。
+
+        推导：向量归一化后 ‖a‖ = ‖b‖ = 1，
+            L2² = ‖a‖² + ‖b‖² - 2a·b = 2 - 2cosθ   ⟹   cos θ = 1 - L2²/2
+        换算与余弦严格单调对应，**排序完全不变**，只是数值和方向变了
+        （越小越像 → 越大越像），这样上层才能写死阈值、也能跨后端比较分数。
+
+        :param distance: 后端原生返回的平方 L2 距离
+        :return: 余弦相似度；前提不成立时数值不可信，见 _check_normalization 的告警
+        """
+        return 1.0 - distance / 2.0
+
     def similarity_search_with_score(
         self,
         query: str,
@@ -349,8 +399,9 @@ class VectorStoreManager:
         """
         相似度检索并返回相关性分数（**不调用大模型**）。
 
-        :return: [(Document, 分数), ...]，分数**越小越相似**。
-                 注意：Chroma 与 FAISS 的分数量纲不同，不要跨库比较，也不要在业务里写死阈值。
+        :return: [(Document, 分数), ...]，分数**越大越相似**，范围 [-1, 1]。
+                 后端原生给的是平方 L2 距离（越小越像），这里已统一换算成余弦相似度，
+                 见 _distance_to_similarity —— 上层不要再自己做一次「越小越像」的假设。
         """
         store = self._store
         if store is None:
@@ -362,11 +413,12 @@ class VectorStoreManager:
         logger.debug("执行带分数的相似度检索 | k=%d | filter=%s | 后端=%s", k, filter_dict, self.store_type)
 
         raw_results = store.similarity_search_with_score(query, k=k, **kwargs)
-        # 统一转成 Python 原生 float：
-        # FAISS 返回的是 numpy.float32，直接放进 FastAPI 响应会报
-        # 「Object of type float32 is not JSON serializable」；Chroma 返回的本来就是 float。
-        # 这是两个后端又一个隐蔽差异，在这里一次性抹平。
-        results = [(doc, float(score)) for doc, score in raw_results]
+        # 一次性抹平两个后端的两处差异：
+        #   ① 类型：FAISS 返回 numpy.float32，直接放进 FastAPI 响应会报
+        #      「Object of type float32 is not JSON serializable」；Chroma 返回的本来就是 float。
+        #   ② 语义：两者返回的都是平方 L2 距离（越小越像），换算成余弦相似度（越大越像），
+        #      上层设阈值、跨后端比较才有一致语义。
+        results = [(doc, self._distance_to_similarity(float(score))) for doc, score in raw_results]
         logger.info("检索完成（带分数） | 命中=%d 条 | 最高相似度=%.4f",
                     len(results), results[0][1] if results else -1.0)
         return results
@@ -386,6 +438,25 @@ class VectorStoreManager:
             # 放大候选池：经验值是 k 的 4 倍，且不低于 FAISS 的默认值 20
             return {"filter": filter_dict, "fetch_k": max(k * 4, 20)}
         return {"filter": filter_dict}
+
+    def as_retriever(self, search_kwargs: dict[str, Any] | None = None) -> BaseRetriever:
+        """
+        返回一个 LangChain 标准的 Retriever，供 LCEL 链使用。
+
+        这里刻意对外暴露这个方法，而不是让外部访问 self._store，原因有两个：
+            ① _store 是私有属性，外部依赖它会导致封装失效；
+            ② FAISS 空库时 _store 是 None，外部直接访问会拿到 AttributeError，
+               而这里能给出「请先入库」这种可操作的明确报错。
+
+        :param search_kwargs: 传给底层检索的参数，如 {"k": 10}
+        """
+        if self._store is None:
+            raise RuntimeError(
+                "向量库为空（FAISS 空库时尚未创建索引），请先入库再构建 Retriever"
+            )
+        kwargs = search_kwargs or {"k": settings.SEARCH_TOP_K}
+        logger.debug("构建 LangChain Retriever | 后端=%s search_kwargs=%s", self.store_type, kwargs)
+        return self._store.as_retriever(search_kwargs=kwargs)
 
     # ------------------------------------------------------------------ #
     # 状态元数据

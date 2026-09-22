@@ -27,13 +27,30 @@ class Settings(BaseSettings):
     SEARCH_TOP_K : int = 5
     USE_RERANKER : bool = True
     RERANKER_MODEL_NAME : str = "bge_reranker_base"
+    # 重排前的候选池倍数：先按 SEARCH_TOP_K × N 从向量库召回候选，再精排到 SEARCH_TOP_K。
+    # 若只召回 TOP_K 就直接重排，等于「把同样的 K 条换个顺序」，召回率没有任何提升。
+    RERANK_CANDIDATE_MULTIPLIER : int = 4
+    # 重排分数阈值：低于该值的候选直接丢弃（None 表示不启用过滤）。
+    # 注意 bge-reranker 输出的是 sigmoid 后的 0~1 相关性分数，与向量距离不是一个量纲。
+    RERANK_SCORE_THRESHOLD : float | None = None
 
      # LLM配置
     LLM_PROVIDER : Literal["openai", "siliconflow", "ollama"] = "siliconflow"
 
+    # LLM 通用生成参数（三个 provider 共用，构造客户端时统一传入）
+    LLM_TEMPERATURE : float = 0.1    # RAG 问答追求稳定可复现，温度不宜高
+    LLM_MAX_TOKENS : int = 2048      # 单次回答的最大 token 数
+    LLM_TIMEOUT : int = 60           # 单次请求超时（秒）；不设的话网络异常会把请求永久挂住
+    LLM_MAX_RETRIES : int = 2        # 失败自动重试次数
+
     # ollama配置
     OLLAMA_BASE_URL : str = "http://localhost:11434"
-    OLLAMA_MODEL_NAME : str = "qwen3.5:9b"
+    # 默认用小模型：9B 本地单轮 30~80s，交互不可接受；3B 约 1/3 耗时，中文能力够 RAG 问答用
+    OLLAMA_MODEL_NAME : str = "qwen2.5:3b"
+    # 是否让支持 thinking 的模型输出思考链（如 qwen3.5）。默认关闭，原因有二：
+    # ① 思考 token 不进正文，stream 会连吐几百个空 chunk，前端看不到逐字效果；
+    # ② RAG 问答已有检索结果兜底，不需要模型自己 long-CoT，关掉能显著提速。
+    OLLAMA_REASONING : bool = False
 
     # OpenAI配置
     OPENAI_API_KEY : str = ""

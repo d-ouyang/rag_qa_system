@@ -9,6 +9,10 @@ langchain-core>=0.3.66,<0.4
 langchain-text-splitters>=0.3.0,<0.4
 langchain-huggingface>=0.1.2,<0.2
 langchain-openai>=0.2.14,<0.3
+# ⚠️ langchain-ollama 必须锁 0.3.x：1.x 会强升 langchain-core 到 1.x，
+#    而本项目依赖 0.3.x 的 API（create_retrieval_chain 等在 1.x 已移除）。
+#    安装后务必用 `python -c "import langchain_core; print(langchain_core.__version__)"` 复查。
+langchain-ollama>=0.3.10,<0.4
 
 # ---------- Web 框架 ----------
 fastapi>=0.115.0,<0.117

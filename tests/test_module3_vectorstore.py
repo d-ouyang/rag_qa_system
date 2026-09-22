@@ -180,10 +180,18 @@ def _run_crud_suite(store_type: str, work_dir: Path) -> None:
         str(type(scored[0][1])),
     )
     if len(scored) >= 2:
+        # 分数已统一换算成余弦相似度：越大越相似，所以是降序
         check(
-            f"{tag} 分数升序（越小越相似）",
-            scored[0][1] <= scored[1][1],
+            f"{tag} 分数降序（越大越相似）",
+            scored[0][1] >= scored[1][1],
             f"{scored[0][1]:.4f} vs {scored[1][1]:.4f}",
+        )
+    if scored:
+        # 余弦相似度的理论边界；超出说明后端距离没换算、或向量未归一化
+        check(
+            f"{tag} 分数落在余弦区间 [-1, 1]",
+            all(-1.0 <= s <= 1.0 for _, s in scored),
+            f"{[round(s, 4) for _, s in scored]}",
         )
 
     # ---------------- 元数据过滤 ----------------
