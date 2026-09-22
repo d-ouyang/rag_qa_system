@@ -6,18 +6,23 @@
  *   前端本地先建一个 id（crypto.randomUUID().replace(/-/g,'') 与后端 uuid4().hex 同格式），
  *   第一次 ask 之后后端自然登记该 id。
  * - 会话列表 = 后端 GET /sessions ∪ 本地会话，以后端数据为准做增量合并。
+ * - 置顶/自定义标题存后端（PATCH /sessions/{id}），刷新不丢。
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import * as qaApi from '@/api/qa'
-import type { ChatMessage, SourceItem } from '@/types'
+import type { ChatMessage, SessionUsage, SourceItem } from '@/types'
 
 export interface LocalSession {
   session_id: string
-  /** 列表展示标题：取该会话第一条用户消息，未提问时为「新会话」 */
+  /** 列表展示标题：自定义标题 > 首条用户消息 > 「新会话」 */
   title: string
   message_count: number
   last_active: number | null
+  /** 会话累计 token 用量 */
+  usage?: SessionUsage
+  /** 是否置顶 */
+  pinned: boolean
   /** 是否为前端本地创建、后端尚无记录 */
   local: boolean
 }
@@ -30,16 +35,24 @@ export const useSessionStore = defineStore('sessions', () => {
   const streaming = ref(false)
   const listLoading = ref(false)
   const historyLoading = ref(false)
-  /** 最近一次问答的意图/路由结果，展示在聊天头部 */
-  const lastMeta = ref<{ intent?: string; route?: string; elapsedMs?: number }>({})
+  /** 最近一次问答的意图/路由结果（轻量，重的每轮详情已随消息存展示） */
+  const lastMeta = ref<{ intent?: string; route?: string }>({})
 
   // ---------- getters ----------
   const currentSession = computed(() =>
     sessions.value.find((s) => s.session_id === currentId.value) ?? null,
   )
-  /** 按最后活跃时间倒序（无活跃时间的本地新会话排最前） */
-  const sortedSessions = computed(() =>
-    [...sessions.value].sort((a, b) => (b.last_active ?? Infinity) - (a.last_active ?? Infinity)),
+  /** 置顶会话（内部按最后活跃倒序） */
+  const pinnedSessions = computed(() =>
+    sessions.value
+      .filter((s) => s.pinned)
+      .sort((a, b) => (b.last_active ?? Infinity) - (a.last_active ?? Infinity)),
+  )
+  /** 普通会话（内部按最后活跃倒序，无活跃时间的本地新会话排最前） */
+  const normalSessions = computed(() =>
+    sessions.value
+      .filter((s) => !s.pinned)
+      .sort((a, b) => (b.last_active ?? Infinity) - (a.last_active ?? Infinity)),
   )
 
   // ---------- actions ----------
@@ -51,14 +64,17 @@ export const useSessionStore = defineStore('sessions', () => {
       for (const s of remote) {
         const local = sessions.value.find((x) => x.session_id === s.session_id)
         const title =
-          local?.title && local.title !== '新会话'
+          s.title ??
+          (local?.title && local.title !== '新会话'
             ? local.title
-            : `会话 ${s.session_id.slice(0, 8)}`
+            : `会话 ${s.session_id.slice(0, 8)}`)
         const merged: LocalSession = {
           session_id: s.session_id,
           title,
           message_count: s.message_count,
           last_active: s.last_active ?? null,
+          usage: s.usage,
+          pinned: !!s.pinned,
           local: false,
         }
         if (local) sessions.value[sessions.value.indexOf(local)] = merged
@@ -77,6 +93,7 @@ export const useSessionStore = defineStore('sessions', () => {
       title: '新会话',
       message_count: 0,
       last_active: Date.now() / 1000,
+      pinned: false,
       local: true,
     })
     currentId.value = id
@@ -85,7 +102,7 @@ export const useSessionStore = defineStore('sessions', () => {
     return id
   }
 
-  /** 切换会话：设置当前 id 并拉取历史消息 */
+  /** 切换会话：设置当前 id 并拉取历史消息（含每轮 sources/usage/ts 回填） */
   async function selectSession(sessionId: string) {
     if (currentId.value === sessionId && messages.value.length > 0) return
     currentId.value = sessionId
@@ -110,12 +127,22 @@ export const useSessionStore = defineStore('sessions', () => {
     }
   }
 
-  /** 发送问题并流式接收回答（NDJSON） */
-  async function ask(question: string) {
+  /** 发送问题并流式接收回答（NDJSON）。editFromIndex>0 时先截断历史再问（编辑重发） */
+  async function ask(question: string, options?: { editFromIndex?: number }) {
     const text = question.trim()
     if (!text || streaming.value) return
     if (!currentId.value) createSession()
     const sessionId = currentId.value as string
+
+    // 编辑重发：截掉被编辑消息及其后的全部历史，前端本地同步截断
+    // （editFrom=0 即编辑首条提问：后端 truncate(0) 清空、本地清空，语义一致）
+    const editFrom = options?.editFromIndex
+    if (editFrom != null) {
+      await qaApi.truncateSession(sessionId, editFrom)
+      messages.value = messages.value.slice(0, editFrom)
+      const session = sessions.value.find((s) => s.session_id === sessionId)
+      if (session) session.message_count = editFrom
+    }
 
     const session = sessions.value.find((s) => s.session_id === sessionId)
     if (session) {
@@ -124,7 +151,8 @@ export const useSessionStore = defineStore('sessions', () => {
       session.last_active = Date.now() / 1000
     }
 
-    messages.value.push({ role: 'user', content: text })
+    const askTs = Date.now() / 1000
+    messages.value.push({ role: 'user', content: text, ts: askTs })
     messages.value.push({ role: 'assistant', content: '', streaming: true })
     // 注意：必须经 reactive 数组取出的代理对象做增量更新，
     // 直接改刚 push 的原始对象不会触发依赖通知，界面将停在空气泡
@@ -141,7 +169,9 @@ export const useSessionStore = defineStore('sessions', () => {
         } else if (frame.type === 'chunk') {
           assistantMsg.content += frame.content
         } else if (frame.type === 'done') {
-          lastMeta.value.elapsedMs = frame.elapsed_ms
+          // 每轮详情随消息存：尾部徽章 + 明细浮层的数据源，刷新后由历史接口恢复
+          assistantMsg.usage = frame.usage
+          assistantMsg.elapsed_ms = frame.elapsed_ms
         } else if (frame.type === 'error') {
           assistantMsg.content +=
             (assistantMsg.content ? '\n\n' : '') + `⚠️ ${frame.detail}`
@@ -159,6 +189,14 @@ export const useSessionStore = defineStore('sessions', () => {
     }
   }
 
+  /** 编辑历史提问并从该处重新开始对话（已有产物不删除，仅截断后重问） */
+  async function editAndResend(messageIndex: number, newQuestion: string) {
+    const msg = messages.value[messageIndex]
+    if (!msg || msg.role !== 'user') return
+    // 第一条消息直接原地改文本重问；非首条需先截断
+    await ask(newQuestion, { editFromIndex: messageIndex })
+  }
+
   /** 删除会话（后端清记忆 + 本地移除列表项） */
   async function removeSession(sessionId: string) {
     try {
@@ -174,6 +212,33 @@ export const useSessionStore = defineStore('sessions', () => {
     }
   }
 
+  /** 重命名会话（后端持久化 + 本地立即生效） */
+  async function renameSession(sessionId: string, title: string) {
+    const trimmed = title.trim()
+    if (!trimmed) return
+    const session = sessions.value.find((s) => s.session_id === sessionId)
+    if (session) session.title = trimmed.slice(0, 60)
+    if (session?.local) return // 后端尚无该会话，首次 ask 后 fetchSessions 会再对齐
+    try {
+      await qaApi.updateSession(sessionId, { title: trimmed.slice(0, 60) })
+    } catch (e) {
+      console.error('重命名失败', e)
+    }
+  }
+
+  /** 置顶 / 取消置顶 */
+  async function togglePin(sessionId: string) {
+    const session = sessions.value.find((s) => s.session_id === sessionId)
+    if (!session || session.local) return
+    session.pinned = !session.pinned
+    try {
+      await qaApi.updateSession(sessionId, { pinned: session.pinned })
+    } catch (e) {
+      session.pinned = !session.pinned // 失败回滚
+      console.error('置顶失败', e)
+    }
+  }
+
   return {
     sessions,
     currentId,
@@ -183,11 +248,15 @@ export const useSessionStore = defineStore('sessions', () => {
     historyLoading,
     lastMeta,
     currentSession,
-    sortedSessions,
+    pinnedSessions,
+    normalSessions,
     fetchSessions,
     createSession,
     selectSession,
     ask,
+    editAndResend,
     removeSession,
+    renameSession,
+    togglePin,
   }
 })

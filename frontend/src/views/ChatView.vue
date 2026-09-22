@@ -49,7 +49,6 @@ onMounted(scrollToBottom)
         <span class="tag" v-if="sessions.lastMeta.route === 'rag_qa'">已检索知识库</span>
         <span class="tag" v-else>未检索 · 闲聊</span>
         <span class="tag">{{ INTENT_LABELS[sessions.lastMeta.intent] ?? sessions.lastMeta.intent }}</span>
-        <span v-if="sessions.lastMeta.elapsedMs" class="tag">{{ sessions.lastMeta.elapsedMs.toFixed(0) }} ms</span>
       </div>
     </header>
 
@@ -63,7 +62,7 @@ onMounted(scrollToBottom)
         </div>
       </template>
       <template v-else>
-        <MessageBubble v-for="(m, i) in sessions.messages" :key="i" :message="m" />
+        <MessageBubble v-for="(m, i) in sessions.messages" :key="i" :message="m" :index="i" />
       </template>
     </div>
 

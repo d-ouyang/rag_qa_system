@@ -89,13 +89,28 @@ class AskResponse(BaseModel):
     )
     sources: list[SourceItem] = Field(default_factory=list, description="引用资料列表")
     elapsed_ms: float = Field(description="本次问答总耗时（毫秒）")
+    usage: dict[str, int] = Field(
+        default_factory=dict,
+        description="本次问答 token 用量：input_tokens / output_tokens / cache_read_tokens",
+    )
 
 
 class MessageItem(BaseModel):
-    """一条对话历史消息。"""
+    """一条对话历史消息（assistant 消息按轮回填本轮详情）。"""
 
     role: str = Field(description="user / assistant")
     content: str = Field(description="消息内容")
+    ts: float | None = Field(default=None, description="提问时间（Unix 时间戳，同轮两条消息相同）")
+    sources: list[SourceItem] | None = Field(
+        default=None, description="本轮引用资料（仅 assistant 消息携带）",
+    )
+    intent: str | None = Field(default=None, description="本轮意图（仅 assistant 消息携带）")
+    usage: dict[str, int] | None = Field(
+        default=None, description="本轮 token 用量（仅 assistant 消息携带）",
+    )
+    elapsed_ms: float | None = Field(
+        default=None, description="本轮总耗时毫秒（仅 assistant 消息携带）",
+    )
 
 
 class SessionHistoryResponse(BaseModel):
@@ -112,6 +127,27 @@ class SessionInfoItem(BaseModel):
     session_id: str
     message_count: int
     last_active: float | None = Field(default=None, description="最后活跃时间（Unix 时间戳）")
+    usage: dict[str, int] = Field(
+        default_factory=dict,
+        description="会话累计 token 用量：input_tokens / output_tokens / cache_read_tokens / requests",
+    )
+    pinned: bool = Field(default=False, description="是否置顶")
+    title: str | None = Field(default=None, description="用户自定义标题（覆盖自动标题）")
+
+
+class SessionUpdateRequest(BaseModel):
+    """会话元数据更新请求（重命名 / 置顶）。"""
+
+    title: str | None = Field(default=None, max_length=60, description="自定义标题（不传不改）")
+    pinned: bool | None = Field(default=None, description="置顶标记（不传不改）")
+
+
+class SessionTruncateRequest(BaseModel):
+    """会话截断请求（编辑重发用）。"""
+
+    keep_messages: int = Field(
+        ge=0, description="保留前 N 条消息；奇数自动向下取偶（轮边界对齐）",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -234,17 +270,72 @@ def list_sessions() -> list[dict[str, Any]]:
     summary="查看会话历史",
 )
 def get_session_history(session_id: str) -> dict[str, Any]:
-    """查看某个会话的对话历史。"""
+    """
+    查看某个会话的对话历史。
+
+    每轮问答的展示元数据（引用资料 / 意图 / token 用量 / 耗时 / 提问时间）
+    按「轮」存放在 MemoryManager，这里回填到该轮的 assistant 消息上——
+    前端刷新后恢复的就是这些字段，引用不再丢失。
+    """
     memory = get_memory_manager()
     messages = memory.get_messages(session_id)
+    metas = memory.get_exchange_meta(session_id)
+    items: list[dict[str, Any]] = []
+    for i, m in enumerate(messages):
+        turn = i // 2                       # 第几轮（0 起）
+        meta = metas[turn] if turn < len(metas) else {}
+        item: dict[str, Any] = {
+            "role": "user" if m.type == "human" else "assistant",
+            "content": str(m.content),
+            "ts": meta.get("ts"),
+        }
+        if item["role"] == "assistant":
+            item.update({
+                "sources": meta.get("sources") or [],
+                "intent": meta.get("intent"),
+                "usage": meta.get("usage"),
+                "elapsed_ms": meta.get("elapsed_ms"),
+            })
+        items.append(item)
     return {
         "session_id": session_id,
         "message_count": len(messages),
-        "messages": [
-            # LangChain Message 的 type：human/ai → 对外统一为 user/assistant（OpenAI 习惯）
-            {"role": "user" if m.type == "human" else "assistant", "content": str(m.content)}
-            for m in messages
-        ],
+        "messages": items,
+    }
+
+
+@router.patch(
+    "/sessions/{session_id}",
+    summary="更新会话元数据（重命名 / 置顶）",
+)
+def update_session(session_id: str, request: SessionUpdateRequest) -> dict[str, Any]:
+    """重命名或置顶会话。两个字段都不传时返回当前元数据。"""
+    meta = get_memory_manager().update_session_meta(
+        session_id, title=request.title, pinned=request.pinned,
+    )
+    if meta is None:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+    return {"session_id": session_id, **meta}
+
+
+@router.post(
+    "/sessions/{session_id}/truncate",
+    summary="截断会话历史（编辑重发）",
+)
+def truncate_session(session_id: str, request: SessionTruncateRequest) -> dict[str, Any]:
+    """
+    把历史截断到前 keep_messages 条（奇数向下取偶，保证轮边界完整）。
+
+    前端「编辑历史提问并重新发送」的流程：
+    先调本接口截掉该提问及其后的消息 → 前端改写文本 → 走正常 ask 重问。
+    """
+    ok = get_memory_manager().truncate_session(session_id, request.keep_messages)
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+    memory = get_memory_manager()
+    return {
+        "session_id": session_id,
+        "message_count": len(memory.get_messages(session_id)),
     }
 
 

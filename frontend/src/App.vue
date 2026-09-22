@@ -27,7 +27,9 @@ onMounted(() => {
     if (sessionStore.sessions.length === 0) {
       sessionStore.createSession()
     } else {
-      void sessionStore.selectSession(sessionStore.sortedSessions[0].session_id)
+      void sessionStore.selectSession(
+        (sessionStore.pinnedSessions[0] ?? sessionStore.normalSessions[0]).session_id,
+      )
     }
   })
 })

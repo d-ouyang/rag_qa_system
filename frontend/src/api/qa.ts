@@ -1,5 +1,5 @@
 /** 问答与会话接口（对应后端 api/routes/qa.py） */
-import { del, get, postJson, postNdjson } from './http'
+import { del, get, patchJson, postJson, postNdjson } from './http'
 import type { ChatMessage, SessionInfo, StreamFrame } from '@/types'
 
 export const listSessions = () => get<SessionInfo[]>('/api/v1/qa/sessions')
@@ -11,6 +11,22 @@ export const getSessionHistory = (sessionId: string) =>
 
 export const deleteSession = (sessionId: string) =>
   del<{ session_id: string; cleared: boolean }>(`/api/v1/qa/sessions/${encodeURIComponent(sessionId)}`)
+
+/** 重命名 / 置顶会话（title / pinned 不传即不改） */
+export const updateSession = (
+  sessionId: string,
+  patch: { title?: string; pinned?: boolean },
+) => patchJson<{ session_id: string; pinned: boolean; title?: string }>(
+  `/api/v1/qa/sessions/${encodeURIComponent(sessionId)}`,
+  patch,
+)
+
+/** 截断会话历史到前 keepMessages 条（编辑重发用），返回截断后的消息条数 */
+export const truncateSession = (sessionId: string, keepMessages: number) =>
+  postJson<{ session_id: string; message_count: number }>(
+    `/api/v1/qa/sessions/${encodeURIComponent(sessionId)}/truncate`,
+    { keep_messages: keepMessages },
+  )
 
 export const askSync = (question: string, sessionId: string) =>
   postJson<{

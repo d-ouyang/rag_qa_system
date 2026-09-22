@@ -224,8 +224,9 @@ class LLMClient:
         # 实测硅基流动只认顶层的 enable_thinking=false（立即开始吐正文）；
         # vLLM 风格的 chat_template_kwargs.enable_thinking 会被忽略（思考照常，流里只有
         # reasoning_content，content 长时间为空——前端气泡空闪的根因）。
+        # 注意只对 Qwen3 系列传：Qwen2.5 等非混合模型收到未知参数可能直接 400。
         extra_body: dict[str, Any] | None = None
-        if self.provider == "siliconflow":
+        if self.provider == "siliconflow" and "qwen3" in self.model_name.lower():
             extra_body = {"enable_thinking": settings.SILICONFLOW_ENABLE_THINKING}
 
         return ChatOpenAI(
@@ -238,6 +239,9 @@ class LLMClient:
             timeout=self.timeout,
             max_retries=self.max_retries,
             extra_body=extra_body,
+            # 流式响应末帧携带 usage（input/output tokens），
+            # 供会话级 token 统计；非流式 invoke 默认就带 usage_metadata。
+            stream_usage=True,
         )
 
     def _build_ollama(self) -> BaseChatModel:

@@ -44,6 +44,7 @@ import logging
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from operator import itemgetter
 from typing import Any
 
@@ -186,6 +187,43 @@ _chitchat_prompt = ChatPromptTemplate.from_messages([
     MessagesPlaceholder("chat_history"),
     ("human", "{input}"),
 ])
+
+
+# --------------------------------------------------------------------------- #
+# 并行管线基础设施
+# --------------------------------------------------------------------------- #
+# 意图识别 / 投机检索 / 问题重写三者互不依赖，串行执行是纯等待浪费。
+# 模块级线程池：跨请求复用线程（每次新建 ThreadPoolExecutor 反而更贵）。
+_PIPELINE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rag-pipe")
+
+
+def _usage_zero() -> dict[str, int]:
+    """一次 LLM 调用的 token 用量零值结构。"""
+    return {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+
+
+def _merge_usage(target: dict[str, int], source: dict[str, int]) -> None:
+    """把一次调用的用量合并进累计桶（一次问答 = 重写 + 主回答多次调用）。"""
+    for key in target:
+        target[key] += source.get(key, 0)
+
+
+def _extract_usage(message: Any) -> dict[str, int]:
+    """
+    从 AIMessage / AIMessageChunk 提取 token 用量（统一 OpenAI 兼容与 ollama 格式）。
+
+    langchain-core 的 usage_metadata 结构：
+        {"input_tokens": N, "output_tokens": M, "total_tokens": N+M,
+         "input_token_details": {"cache_read": K}}   # 命中 prompt 缓存时才有
+    非流式 invoke 的响应默认带；流式需要 ChatOpenAI(stream_usage=True) 末帧才带。
+    """
+    meta = getattr(message, "usage_metadata", None) or {}
+    details = meta.get("input_token_details") or {}
+    return {
+        "input_tokens": int(meta.get("input_tokens") or 0),
+        "output_tokens": int(meta.get("output_tokens") or 0),
+        "cache_read_tokens": int(details.get("cache_read") or 0),
+    }
 
 
 # 空库/零召回时的标准拒答话术。
@@ -385,6 +423,92 @@ class RAGChain:
                     self._chitchat_chain = chitchat_chain
         return rag_chain, chitchat_chain
 
+    def _rewrite_question(
+        self, question: str, chat_history: list[Any]
+    ) -> tuple[str, dict[str, int]]:
+        """
+        问题重写 + 消毒，返回 (standalone_question, 本次重写的 token 用量)。
+
+        生产路径（query/stream）与 LCEL prepare 链共用同一 prompt 与消毒函数，
+        行为差异只剩「是否记录 token 用量」这一观察性维度。
+        """
+        llm = self.llm_client.get_llm()
+        chain = _contextualize_q_prompt | llm
+        message = chain.invoke({"input": question, "chat_history": chat_history})
+        return _sanitize_rewrite(str(message.content), question), _extract_usage(message)
+
+    def _prepare_parallel(
+        self, question: str, chat_history: list[Any]
+    ) -> tuple[IntentResult, dict[str, Any] | None]:
+        """
+        并行管线前段：意图识别 ∥ 投机检索（原问题）∥ 问题重写（有历史时）。
+
+        三个环节互不依赖，串行执行是纯浪费（实测串行多花 ~2s）：
+            · 意图识别（ollama 小模型 ~2s）决定路由；
+            · 投机检索：先用原问题检索。首轮必中（无重写）；多轮时若重写结果
+              与原问题一致也可直接复用；
+            · 问题重写（有历史才跑，LLM ~2-5s）与意图/检索并行，重叠等待。
+        chitchat 路由时 prepared=None（投机检索白跑一次本地检索，成本可忽略）。
+
+        :return: (意图结果, prepared) —— prepared 含 standalone_question/docs/context/rewrite_usage
+        """
+        classifier = get_intent_classifier()
+        retriever = self.retriever.as_retriever()
+
+        intent_future = _PIPELINE_EXECUTOR.submit(classifier.classify, question)
+        retrieve_future = _PIPELINE_EXECUTOR.submit(retriever.invoke, question)
+        rewrite_future = (
+            _PIPELINE_EXECUTOR.submit(self._rewrite_question, question, chat_history)
+            if chat_history
+            else None
+        )
+
+        intent_result: IntentResult = intent_future.result()
+        if intent_result.route == "chitchat":
+            # 投机任务不取消（已在跑），结果丢弃即可；线程池复用，不会泄漏
+            return intent_result, None
+
+        rewrite_usage = _usage_zero()
+        if rewrite_future is not None:
+            standalone, rewrite_usage = rewrite_future.result()
+            # 重写改变了问题才重新检索；否则复用投机结果（省 ~1s 检索+重排）
+            if standalone.strip() == question.strip():
+                docs: list[Document] = retrieve_future.result()
+            else:
+                docs = retriever.invoke(standalone)
+        else:
+            standalone = question
+            docs = retrieve_future.result()
+
+        return intent_result, {
+            "standalone_question": standalone,
+            "docs": docs,
+            "context": format_docs(docs),
+            "rewrite_usage": rewrite_usage,
+        }
+
+    @staticmethod
+    def _stream_answer(
+        prompt: ChatPromptTemplate,
+        variables: dict[str, Any],
+        llm: BaseChatModel,
+        usage_box: dict[str, int],
+    ) -> Iterator[str]:
+        """
+        流式生成回答；捕获到的 usage_metadata 实时写入 usage_box（调用方迭代结束后读）。
+
+        不走 prompt | llm | StrOutputParser() 的 LCEL 写法：StrOutputParser 会把
+        AIMessageChunk 拍扁成字符串，usage_metadata（stream_usage=True 末帧携带）
+        就丢了。直接用 llm.stream(PromptValue)，文本与用量都要。
+        """
+        for chunk in llm.stream(prompt.invoke(variables)):
+            text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+            if text:
+                yield text
+            captured = _extract_usage(chunk)
+            if captured["input_tokens"] or captured["output_tokens"]:
+                usage_box.update(captured)
+
     # ------------------------------------------------------------------ #
     # 溯源信息整理
     # ------------------------------------------------------------------ #
@@ -430,17 +554,19 @@ class RAGChain:
 
         start = time.perf_counter()
 
-        # ① 意图识别：chitchat 不检索，rag_qa 走完整链路
-        intent_result: IntentResult = get_intent_classifier().classify(question)
-
-        # ② 取该会话的历史消息（LangChain Message 对象，直接填进 MessagesPlaceholder）
+        # ①②③④ 并行前段：意图识别 ∥ 投机检索 ∥ 问题重写（有历史时），见 _prepare_parallel
         chat_history = self.memory.get_messages(session_id)
+        intent_result, prepared = self._prepare_parallel(question, chat_history)
+        llm = self.llm_client.get_llm()
+        usage = _usage_zero()
 
-        rag_chain, chitchat_chain = self._get_chains()
-
-        if intent_result.route == "chitchat":
+        if prepared is None:
             # 闲聊链：无检索、无资料，answer 之后同样写记忆
-            answer = chitchat_chain.invoke({"input": question, "chat_history": chat_history})
+            message = llm.invoke(
+                _chitchat_prompt.invoke({"input": question, "chat_history": chat_history})
+            )
+            answer = str(message.content)
+            _merge_usage(usage, _extract_usage(message))
             result: dict[str, Any] = {
                 "answer": answer,
                 "intent": intent_result.intent.value,
@@ -450,37 +576,63 @@ class RAGChain:
                 "sources": [],                  # 没检索就没有溯源
             }
         else:
-            # 知识型意图（六类）统一走 RAG 链；意图标签换回答组织指令
-            chain_output = rag_chain.invoke({
-                "input": question,
-                "chat_history": chat_history,
-                "intent_instruction": INTENT_INSTRUCTIONS.get(
-                    intent_result.intent.value, INTENT_INSTRUCTIONS["default"]
-                ),
-            })
-            answer = chain_output["answer"]
+            _merge_usage(usage, prepared["rewrite_usage"])
+            if not prepared["docs"]:
+                # 零召回短路：不进 LLM，固定拒答（防幻觉护栏，与流式同口径）
+                answer = _NO_CONTEXT_ANSWER
+            else:
+                # 知识型意图（六类）统一走 RAG 生成；意图标签换回答组织指令
+                message = llm.invoke(
+                    _qa_prompt.invoke({
+                        "input": question,
+                        "chat_history": chat_history,
+                        "context": prepared["context"],
+                        "intent_instruction": INTENT_INSTRUCTIONS.get(
+                            intent_result.intent.value, INTENT_INSTRUCTIONS["default"]
+                        ),
+                    })
+                )
+                answer = str(message.content)
+                _merge_usage(usage, _extract_usage(message))
             result = {
                 "answer": answer,
                 "intent": intent_result.intent.value,
                 "route": intent_result.route,
                 "intent_source": intent_result.source,
-                "standalone_question": chain_output["standalone_question"],
-                "sources": self._extract_sources(chain_output["docs"]),
+                "standalone_question": prepared["standalone_question"],
+                "sources": self._extract_sources(prepared["docs"]),
             }
 
-        # ③ 写回记忆：一轮 (question, answer) 原子写入（见 MemoryManager.add_exchange）
-        self.memory.add_exchange(session_id, question, answer)
-
+        # 每轮详情先算好再统一写记忆：sources/usage/耗时/时间戳随轮持久化，
+        # 刷新页面后前端从历史接口原样恢复（引用不再丢失）
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+        exchange_meta = {
+            "sources": result["sources"],
+            "intent": result["intent"],
+            "route": result["route"],
+            "standalone_question": result["standalone_question"],
+            "usage": dict(usage),
+            "elapsed_ms": elapsed_ms,
+            "ts": time.time(),
+        }
+        self.memory.add_exchange(session_id, question, answer, meta=exchange_meta)
+        # token 用量：本次问答（重写 + 主回答）累加进会话
+        self.memory.add_usage(
+            session_id, usage["input_tokens"], usage["output_tokens"], usage["cache_read_tokens"]
+        )
+
         result["session_id"] = session_id
         result["elapsed_ms"] = elapsed_ms
+        result["usage"] = usage
         logger.info(
-            "问答完成 | session_id=%s 意图=%s(%s) 引用=%d条 耗时=%.0fms | query=%.24s",
+            "问答完成 | session_id=%s 意图=%s(%s) 引用=%d条 耗时=%.0fms tokens=%d+%d | query=%.24s",
             session_id,
             result["intent"],
             result["intent_source"],
             len(result["sources"]),
             elapsed_ms,
+            usage["input_tokens"],
+            usage["output_tokens"],
             question,
         )
         return result
@@ -504,11 +656,13 @@ class RAGChain:
             raise ValueError("问题不能为空")
 
         start = time.perf_counter()
-        intent_result = get_intent_classifier().classify(question)
         chat_history = self.memory.get_messages(session_id)
-        rag_chain, chitchat_chain = self._get_chains()
+        # 并行前段：意图识别 ∥ 投机检索 ∥ 问题重写（有历史时）
+        intent_result, prepared = self._prepare_parallel(question, chat_history)
+        llm = self.llm_client.get_llm()
+        usage = _usage_zero()
 
-        if intent_result.route == "chitchat":
+        if prepared is None:
             yield {
                 "type": "meta",
                 "intent": intent_result.intent.value,
@@ -518,24 +672,17 @@ class RAGChain:
                 "sources": [],
             }
             answer_parts: list[str] = []
-            for chunk in chitchat_chain.stream({"input": question, "chat_history": chat_history}):
-                if chunk:
-                    answer_parts.append(chunk)
-                    yield {"type": "chunk", "content": chunk}
+            for text in self._stream_answer(
+                _chitchat_prompt,
+                {"input": question, "chat_history": chat_history},
+                llm,
+                usage,
+            ):
+                answer_parts.append(text)
+                yield {"type": "chunk", "content": text}
             answer = "".join(answer_parts)
         else:
-            # rag 链的输出是 RunnableParallel 的 dict，
-            # stream 时 answer 子链逐 token 产出、docs 等最后一次性到达，
-            # 所以第一帧 meta 里的 sources 要到流尾才能确定 —— 为了时序简单，
-            # 这里先用与主链同一份 prepare 管道同步拿 docs（含重写消毒），
-            # meta 第一帧就能带 sources，然后只对「生成」这一步做流式。
-            # 注意必须先 _get_chains() 确保链已构建（prepare 链在构建主链时产出）。
-            assert self._prepare_chain is not None    # _get_chains() 之后的必然状态
-            prepared = self._prepare_chain.invoke({
-                "input": question,
-                "chat_history": chat_history,
-            })
-
+            _merge_usage(usage, prepared["rewrite_usage"])
             yield {
                 "type": "meta",
                 "intent": intent_result.intent.value,
@@ -550,27 +697,57 @@ class RAGChain:
                 answer = _NO_CONTEXT_ANSWER
             else:
                 answer_parts = []
-                answer_stream = _qa_prompt | self.llm_client.get_llm() | StrOutputParser()
-                for chunk in answer_stream.stream({
-                    "input": question,
-                    "chat_history": chat_history,
-                    "context": prepared["context"],
-                    "intent_instruction": INTENT_INSTRUCTIONS.get(
-                        intent_result.intent.value, INTENT_INSTRUCTIONS["default"]
-                    ),
-                }):
-                    if chunk:
-                        answer_parts.append(chunk)
-                        yield {"type": "chunk", "content": chunk}
+                for text in self._stream_answer(
+                    _qa_prompt,
+                    {
+                        "input": question,
+                        "chat_history": chat_history,
+                        "context": prepared["context"],
+                        "intent_instruction": INTENT_INSTRUCTIONS.get(
+                            intent_result.intent.value, INTENT_INSTRUCTIONS["default"]
+                        ),
+                    },
+                    llm,
+                    usage,
+                ):
+                    answer_parts.append(text)
+                    yield {"type": "chunk", "content": text}
                 answer = "".join(answer_parts)
 
-        self.memory.add_exchange(session_id, question, answer)
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
-        logger.info(
-            "流式问答完成 | session_id=%s 意图=%s 耗时=%.0fms | query=%.24s",
-            session_id, intent_result.intent.value, elapsed_ms, question,
+        # 每轮详情随轮写入记忆（同 query 口径），历史接口按轮回填
+        self.memory.add_exchange(session_id, question, answer, meta={
+            "sources": (
+                [] if prepared is None
+                else self._extract_sources(prepared["docs"])
+            ),
+            "intent": intent_result.intent.value,
+            "route": intent_result.route,
+            "standalone_question": None if prepared is None else prepared["standalone_question"],
+            "usage": dict(usage),
+            "elapsed_ms": elapsed_ms,
+            "ts": time.time(),
+        })
+        self.memory.add_usage(
+            session_id, usage["input_tokens"], usage["output_tokens"], usage["cache_read_tokens"]
         )
-        yield {"type": "done", "elapsed_ms": elapsed_ms}
+        session_usage = self.memory.get_usage(session_id)
+        logger.info(
+            "流式问答完成 | session_id=%s 意图=%s 耗时=%.0fms tokens=%d+%d | query=%.24s",
+            session_id,
+            intent_result.intent.value,
+            elapsed_ms,
+            usage["input_tokens"],
+            usage["output_tokens"],
+            question,
+        )
+        # done 帧：本次用量 + 会话累计，前端据此展示 token 统计
+        yield {
+            "type": "done",
+            "elapsed_ms": elapsed_ms,
+            "usage": usage,
+            "session_usage": session_usage,
+        }
 
     # ------------------------------------------------------------------ #
     # 状态信息

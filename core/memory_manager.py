@@ -82,6 +82,21 @@ class MemoryManager:
         self._sessions: dict[str, InMemoryChatMessageHistory] = {}
         self._last_active: dict[str, float] = {}
 
+        # 会话级 token 用量累计：{input/output/cache_read/requests}
+        # 与消息历史同生命周期（清空/过期时一并回收），供接口层与前端展示
+        self._usage: dict[str, dict[str, int]] = {}
+
+        # 每轮问答的展示元数据（按轮对齐消息历史）：
+        # session_id -> [ {sources, intent, route, standalone_question, usage, elapsed_ms, ts}, ... ]
+        # 第 k 轮对应消息历史里的第 2k(user)/2k+1(assistant) 两条消息。
+        # 为什么单独存而不是塞进 Message.additional_kwargs：trim/truncate 按轮裁剪时
+        # 元数据要同步裁，独立 list 与消息 list 同构，裁剪逻辑一目了然。
+        self._exchange_meta: dict[str, list[dict[str, Any]]] = {}
+
+        # 会话管理元数据（非对话内容）：置顶标记 / 用户自定义标题
+        # 生命同会话本身：删除会话时清掉；TTL 过期重置时一并丢弃（内存方案的边界）
+        self._session_meta: dict[str, dict[str, Any]] = {}
+
         # 每会话一把锁 + 一把保护「会话字典本身」的元锁
         # 元锁只在「创建/删除会话」这种结构性操作时短暂持有，
         # 消息读写走会话级锁，互不阻塞
@@ -109,6 +124,9 @@ class MemoryManager:
             if history is not None and self._is_expired(session_id):
                 logger.info("会话已过期，重置记忆 | session_id=%s", session_id)
                 history = None
+                self._usage.pop(session_id, None)
+                self._exchange_meta.pop(session_id, None)
+                self._session_meta.pop(session_id, None)
             if history is None:
                 history = InMemoryChatMessageHistory()
                 self._sessions[session_id] = history
@@ -138,10 +156,27 @@ class MemoryManager:
         max_messages = self.max_turns * 2
         if len(history.messages) <= max_messages:
             return
-        kept = history.messages[-max_messages:]
+        # 头部裁掉奇数条会让 user/assistant 配对错位，向下取偶
+        overflow = len(history.messages) - max_messages
+        overflow -= overflow % 2
+        kept = history.messages[overflow:]
         history.clear()
         history.add_messages(kept)
+        # 每轮元数据与消息同构，同步裁掉 overflow/2 轮
+        session_id = self._find_session_id(history)
+        if session_id is not None:
+            metas = self._exchange_meta.get(session_id)
+            if metas is not None:
+                del metas[: overflow // 2]
         logger.debug("历史已裁剪到最近 %d 轮", self.max_turns)
+
+    def _find_session_id(self, history: InMemoryChatMessageHistory) -> str | None:
+        """反查 history 对象所属的 session_id（trim 同步裁元数据用）。"""
+        with self._meta_lock:  # _sessions 可能被其他线程结构性修改，读也要持锁
+            for sid, h in self._sessions.items():
+                if h is history:
+                    return sid
+        return None
 
     # ------------------------------------------------------------------ #
     # 对外接口
@@ -161,7 +196,13 @@ class MemoryManager:
         with self._get_lock(session_id):
             return list(history.messages)
 
-    def add_exchange(self, session_id: str, question: str, answer: str) -> None:
+    def add_exchange(
+        self,
+        session_id: str,
+        question: str,
+        answer: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
         """
         一轮问答结束后写入记忆（用户问 + AI 答，两条一起，原子语义）。
 
@@ -169,6 +210,9 @@ class MemoryManager:
         如果先写 user 消息、AI 回答时挂了，历史里就留下一条没有回答的问题，
         下一轮模型会误以为「这个问题还没回答」而重复作答。
         要么两条都写成功，要么都不写（异常时由调用方保证不调用本方法）。
+
+        :param meta: 本轮展示元数据（sources/intent/usage/elapsed_ms/ts 等），
+                     与该轮消息一起存入 _exchange_meta，历史接口按轮回填
         """
         history = self._get_or_create_session(session_id)
         with self._get_lock(session_id):
@@ -177,6 +221,12 @@ class MemoryManager:
                 AIMessage(content=answer),
             ])
             self._trim_history(history)
+            if meta is not None:
+                metas = self._exchange_meta.setdefault(session_id, [])
+                metas.append(meta)
+                # 与 _trim_history 同构兜底：理论上 trim 内部已裁，这里防御双保险
+                if len(metas) > len(history.messages) // 2:
+                    del metas[: len(metas) - len(history.messages) // 2]
         logger.info(
             "记忆已更新 | session_id=%s 历史条数=%d",
             session_id,
@@ -195,8 +245,110 @@ class MemoryManager:
             del self._sessions[session_id]
             self._last_active.pop(session_id, None)
             self._session_locks.pop(session_id, None)
+            self._usage.pop(session_id, None)
+            self._exchange_meta.pop(session_id, None)
+            self._session_meta.pop(session_id, None)
         logger.info("会话已清空 | session_id=%s", session_id)
         return True
+
+    def truncate_session(self, session_id: str, keep_messages: int) -> bool:
+        """
+        把会话历史截断到前 keep_messages 条消息（编辑重发用）。
+
+        前端「编辑某条历史提问并重新发送」的语义是：该提问及其后的所有
+        消息作废、从改写后的问题重新开始。所以截断点必须是**偶数**
+        （一轮的边界），否则会留下半轮残缺对话。keep_messages 为奇数时
+        向下取偶——宁可少保留半轮，也不留「只有问没有答」的脏历史。
+
+        :param keep_messages: 保留前 N 条消息（N 为该轮 user 消息在消息数组中的下标）
+        :return: 会话存在返回 True（无论是否真裁了）；不存在返回 False
+        """
+        history = self._get_or_create_session(session_id)
+        with self._get_lock(session_id):
+            keep = max(0, int(keep_messages))
+            keep -= keep % 2  # 轮边界对齐
+            if keep >= len(history.messages):
+                return True
+            kept = history.messages[:keep]
+            history.clear()
+            if kept:
+                history.add_messages(kept)
+            # 元数据按轮同步截断
+            metas = self._exchange_meta.get(session_id)
+            if metas is not None:
+                del metas[keep // 2:]
+        logger.info(
+            "会话已截断 | session_id=%s 保留 %d 条消息", session_id, keep,
+        )
+        return True
+
+    def get_exchange_meta(self, session_id: str) -> list[dict[str, Any]]:
+        """取某会话每轮问答的展示元数据（深拷贝语义：返回每轮 dict 的副本）。"""
+        with self._meta_lock:
+            return [dict(m) for m in self._exchange_meta.get(session_id, [])]
+
+    # ------------------------------------------------------------------ #
+    # 会话管理元数据（置顶 / 自定义标题）
+    # ------------------------------------------------------------------ #
+    def update_session_meta(
+        self,
+        session_id: str,
+        title: str | None = None,
+        pinned: bool | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        更新会话管理元数据（重命名 / 置顶），返回更新后的元数据。
+
+        :return: 会话存在返回更新后的 meta dict；不存在返回 None
+        """
+        self._get_or_create_session(session_id)  # 保证会话在场（过期则重置）
+        with self._meta_lock:
+            if session_id not in self._sessions:
+                return None
+            meta = self._session_meta.setdefault(session_id, {"pinned": False})
+            if title is not None:
+                meta["title"] = title.strip()[:60] or meta.get("title")
+            if pinned is not None:
+                meta["pinned"] = bool(pinned)
+            return dict(meta)
+
+    def get_session_meta(self, session_id: str) -> dict[str, Any]:
+        """取会话管理元数据（无记录时返回默认值）。"""
+        with self._meta_lock:
+            return dict(self._session_meta.get(session_id, {"pinned": False}))
+
+    # ------------------------------------------------------------------ #
+    # token 用量统计
+    # ------------------------------------------------------------------ #
+    # 统计口径：每次 LLM 调用（重写 + 主回答）的 usage_metadata 累加进会话。
+    # 为什么放 MemoryManager 而不是接口层：用量与会话同生命周期（清空/过期回收），
+    # 且 MemoryManager 本来就是「按 session_id 隔离的状态」的归宿。
+    _USAGE_ZERO: dict[str, int] = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "requests": 0,
+    }
+
+    def add_usage(
+        self,
+        session_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+    ) -> None:
+        """累加一次问答的 token 用量（一次问答可能含多次 LLM 调用，由调用方合并后传入）。"""
+        with self._meta_lock:
+            acc = self._usage.setdefault(session_id, dict(self._USAGE_ZERO))
+            acc["input_tokens"] += int(input_tokens)
+            acc["output_tokens"] += int(output_tokens)
+            acc["cache_read_tokens"] += int(cache_read_tokens)
+            acc["requests"] += 1
+
+    def get_usage(self, session_id: str) -> dict[str, int]:
+        """取某个会话的累计 token 用量（无记录时返回全零副本）。"""
+        with self._meta_lock:
+            return dict(self._usage.get(session_id, self._USAGE_ZERO))
 
     def session_count(self) -> int:
         """当前存活会话数（接口层/健康检查用）。"""
@@ -204,13 +356,16 @@ class MemoryManager:
             return len(self._sessions)
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        """列出全部会话及其基本信息（运维/调试用，不含消息正文）。"""
+        """列出全部会话及其基本信息（运维/接口层用，不含消息正文）。"""
         with self._meta_lock:
             return [
                 {
                     "session_id": sid,
                     "message_count": len(self._sessions[sid].messages),
                     "last_active": self._last_active.get(sid),
+                    "usage": dict(self._usage.get(sid, self._USAGE_ZERO)),
+                    "pinned": bool(self._session_meta.get(sid, {}).get("pinned", False)),
+                    "title": self._session_meta.get(sid, {}).get("title"),
                 }
                 for sid in self._sessions
             ]
@@ -228,6 +383,9 @@ class MemoryManager:
                     del self._sessions[sid]
                     self._last_active.pop(sid, None)
                     self._session_locks.pop(sid, None)
+                    self._usage.pop(sid, None)
+                    self._exchange_meta.pop(sid, None)
+                    self._session_meta.pop(sid, None)
                     removed.append(sid)
         if removed:
             logger.info("主动清理过期会话 | 数量=%d", len(removed))
