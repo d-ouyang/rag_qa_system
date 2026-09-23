@@ -171,6 +171,39 @@ class Settings(BaseSettings):
     # 宁可丢「多轮上下文」也不让服务整体 503 —— 可用性优先。
     REDIS_MEMORY_FATAL_READONLY : bool = True
 
+    # ---------- 文档解析异步链路（v2.0.0 P0-3 新增）----------
+    # 定位：把「解析 → 切分 → 嵌入 → 写 Chroma」从 HTTP 请求里挪到独立进程。
+    # 状态真相源是 MySQL `document.status`，队列（Redis db1）只负责投递与消费。
+    #
+    # 单文件上传大小上限。校验发生在落盘之前，避免超大文件把磁盘占满。
+    DOC_UPLOAD_MAX_BYTES : int = 50 * 1024 * 1024
+    # 解析任务队列名。显式命名而不吃 Celery 默认的 "celery"：
+    # 同一个 Redis 里将来可能还有别的队列（如 P3 的摘要任务），默认名会让 LLEN 观测串味。
+    TASK_QUEUE_NAME : str = "rag.parse"
+    # 硬超时（秒）：到点直接 SIGKILL，防坏文件把 worker 永久卡死。
+    TASK_TIME_LIMIT_SECONDS : int = 600
+    # 软超时（秒）：比硬超时早一步抛 SoftTimeLimitExceeded，
+    # 让任务有机会把 document.status 写成 fail 而不是留下一个 parsing 僵尸。
+    TASK_SOFT_TIME_LIMIT_SECONDS : int = 540
+    # 「parsing 状态」视为孤儿任务的判定时长（秒）。
+    # 存在的理由：worker 被 kill 时任务停在 parsing，而抢任务的条件是
+    # status IN ('pending','fail') —— 不设这个超时，那条记录就永远捡不回来了。
+    # 取值要显著大于单次解析的最长耗时（含模型冷启动），否则会误抢正在跑的任务。
+    TASK_STALE_PARSING_SECONDS : int = 900
+    # worker 并发数。解析是 CPU 密集 + 嵌入模型吃内存，并发只会互相抢资源。
+    WORKER_CONCURRENCY : int = 1
+    # 每个子进程处理多少个任务后回收重建。解析会反复吃内存（模型 + 文档对象），
+    # 定期回收是防泄漏的最省事手段。
+    # ⚠️ 仅 prefork 池有效。macOS 上 worker 跑 solo 池（理由见 worker/app.py），
+    #    本地开发**没有**这道保险，跑完记得关。
+    WORKER_MAX_TASKS_PER_CHILD : int = 20
+    # 问 worker「你还活着吗」的等待时长（秒）。
+    # Celery 的 inspect().ping() 会**等满这个时长**才返回（它不知道有几个 worker 会应答，
+    # 只能等窗口关掉），所以这个值直接等于接口的最坏耗时。
+    # 5 秒会让监控接口慢到没人愿意接；1 秒在本机/内网内足够让健康的 worker 应答
+    # （实测单机应答 < 100ms）。worker 挤在一台 4C4G 上，1 秒是合理的分界。
+    QUEUE_WORKER_PING_TIMEOUT_SECONDS : float = 1.0
+
     # 意图识别配置（core/intent_router.py 消费）
     # 分类任务只需输出一个词，用本地小模型足够且零成本；
     # 模型加载/调用失败时自动降级为本地规则映射，不影响主链路。

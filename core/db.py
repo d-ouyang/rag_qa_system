@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any, Iterator
 
 from sqlalchemy import create_engine, text
@@ -120,6 +121,23 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
+
+
+def now_db() -> datetime:
+    """
+    项目统一的「当前时间」口径：**naive 本地时区**。
+
+    为什么要有这个函数而不是各处直接 datetime.now()：
+    「用哪个时区写库」必须是一个能被搜索到的单点决策。散落的 datetime.now()
+    会让下一个人无从判断「这个值到底是本地时间还是 UTC」，最后只能靠逐个试。
+
+    当前口径与 MySQL 容器 `--default-time-zone=+08:00` 对齐（见 docker-compose.yml）：
+    写入的是本地挂钟时间。这不是最优解（最优是全程 UTC + 展示层转换），
+    但它与 P0-1 的 `MySQLSessionStore` 保持一致 —— 两处口径不同会让
+    「会话时间对得上、文档时间对不上」这种问题变得极难定位。
+    时区问题已在 p0.1 迭代文档「已知边界」中登记，统一改造留到 P2-8 配置治理。
+    """
+    return datetime.now()
 
 
 def check_connection() -> dict[str, Any]:

@@ -66,5 +66,16 @@ cryptography>=43.0
 #    生产路径上 Redis 只剩两件事：P0-3 的解析任务队列（db1）、P3 的问答字符串缓存（db0）。
 redis>=5.0,<9
 
+# ---------- 异步任务队列（v2.0.0 P0-3 新增）----------
+# 用途：文档解析（解析 + 切分 + 嵌入 + 写 Chroma）从 HTTP 请求里挪到独立进程。
+# 为什么是 Celery 而不是 threading / BackgroundTasks：
+#   · FastAPI 的 BackgroundTasks 跑在 Web 进程里 —— 解析是 CPU 密集且要加载嵌入模型，
+#     会把 Web 进程的 GIL 和内存一起吃掉，等于换了个地方阻塞；
+#   · 需要「进程被 kill 后任务能续」「并发度可单独调」「坏文件不能卡死整个服务」，
+#     这些是任务队列的基本盘，不是线程池能给的。
+# 注意：Celery 只做「投递与消费」，**不做状态真相源** —— 任务状态看 MySQL `document.status`，
+# 所以不配 result backend（存一份 Redis 只会带来一致性麻烦 + 白耗内存）。
+celery>=5.4,<6
+
 # ---------- 测试用（fakeredis 模拟 Redis，免装真实服务；[lua] 提供锁释放脚本支持）----------
 fakeredis[lua]>=2.20,<3

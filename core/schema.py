@@ -154,6 +154,10 @@ document_table = sa.Table(
     sa.Column("attempt_count", sa.Integer(), nullable=False, server_default=sa.text("0"),
               comment="解析尝试次数；配合 P0-3 的原子 UPDATE 抢任务"),
     sa.Column("upload_time", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+    # P0-3 / 迁移 0002 追加。物理位置在 upload_time 之后（op.add_column 不指定 after 就是追加到末尾），
+    # 这里按同样的顺序写，免得读的人对着两份定义数位置。
+    sa.Column("parse_started_at", mysql.DATETIME(fsp=6), nullable=True,
+              comment="本次解析开始时间；仅 status=parsing 时非空，用于识别被 kill 留下的僵尸任务"),
     sa.PrimaryKeyConstraint("id"),
     sa.UniqueConstraint("storage_path", name="uk_doc_storage_path"),
     sa.Index("idx_doc_project_status", "project_id", "status"),

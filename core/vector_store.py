@@ -346,6 +346,147 @@ class VectorStoreManager:
         return len(target_ids)
 
     # ------------------------------------------------------------------ #
+    # 按 doc_id 删除 / 查询（v2.0.0 P0-3 新增）
+    # ------------------------------------------------------------------ #
+    # 为什么在已有 delete_by_source 之外再加一套按 doc_id 的：
+    # P0-3 之后磁盘文件名是 uuid（防重名覆盖），于是「按 source 删」在语义上退化成
+    # 「按磁盘路径删」—— 路径一旦变动（迁移目录、改名），删除就静默失效，
+    # 而且是「删 0 条也返回 200」这种最难受的失败方式。
+    # doc_id 是 MySQL 里的主键，是文档的**身份**而不是它的存放位置，
+    # 用它做删除键，磁盘怎么搬都不影响。
+    #
+    # 两者并存不删旧的那个：老数据（P0-3 之前入库的片段）没有 doc_id，
+    # 只能靠 source 清；module3 的既有断言也还在用它。
+    @staticmethod
+    def _normalize_doc_id(doc_id: int | str) -> int:
+        """
+        把 doc_id 归一成 int，并**在类型不对时直接报错**。
+
+        为什么不静默容错（比如转成 str 再试一次）：
+        写入侧统一写 int（见 core/parsing.py），读取侧若容忍 str，
+        就会出现「写入写的是 int、查询查的是 str，Chroma 判不相等，
+        于是删不掉但也不报错」—— 结果是一份文档的旧切片永远留在库里，
+        新切片又写进去，检索时同内容出现两份。
+        宁可这里抛一个说明白了的异常。
+        """
+        if isinstance(doc_id, bool):        # bool 是 int 的子类，得先挡掉
+            raise TypeError(f"doc_id 不能是布尔值：{doc_id!r}")
+        if isinstance(doc_id, int):
+            return doc_id
+        if isinstance(doc_id, str) and doc_id.strip().isdigit():
+            return int(doc_id.strip())
+        raise TypeError(f"doc_id 必须是整数（或纯数字字符串），收到 {type(doc_id).__name__}: {doc_id!r}")
+
+    def delete_by_doc_id(self, doc_id: int | str) -> int:
+        """
+        按 doc_id 删除该文档在向量库中的全部片段。
+
+        这是 P0-3「同一份文档重复解析不产生重复切片」的执行点：
+        Worker 抢到任务后，先调本方法清掉上一次的切片，再写入新的。
+
+        :param doc_id: document 表的主键
+        :return: 删除的片段数
+        """
+        target = self._normalize_doc_id(doc_id)
+        store = self._store
+        if store is None:
+            logger.warning("FAISS 为空库，无需删除 | doc_id=%s", target)
+            return 0
+
+        try:
+            if isinstance(store, Chroma):
+                result = store.get(where={"doc_id": target})
+                ids_to_delete = list(result.get("ids") or [])
+                if not ids_to_delete:
+                    logger.debug("该 doc_id 没有残留片段（首次解析时是正常情况） | doc_id=%s", target)
+                    return 0
+                store.delete(ids=ids_to_delete)
+                logger.info("按 doc_id 删除成功 | doc_id=%s | 删除片段=%d | 剩余=%d",
+                            target, len(ids_to_delete), self.count())
+                return len(ids_to_delete)
+
+            # FAISS 没有元数据条件删除，只能遍历 docstore 自己筛
+            docstore = getattr(store, "docstore", None)
+            id_to_doc: dict[str, Document] = dict(getattr(docstore, "_dict", {}))
+            target_ids = [
+                key
+                for key, doc in id_to_doc.items()
+                if (getattr(doc, "metadata", None) or {}).get("doc_id") == target
+            ]
+            if not target_ids:
+                logger.debug("该 doc_id 没有残留片段 | doc_id=%s", target)
+                return 0
+            store.delete(target_ids)
+            self._save_faiss()
+            logger.info("按 doc_id 删除成功（FAISS） | doc_id=%s | 删除片段=%d | 剩余=%d",
+                        target, len(target_ids), self.count())
+            return len(target_ids)
+        except Exception as e:
+            logger.error("按 doc_id 删除失败 | doc_id=%s | 错误：%s", target, e, exc_info=True)
+            return 0
+
+    def get_chunks_by_doc_id(self, doc_id: int | str) -> list[dict[str, Any]]:
+        """
+        取出某文档的全部切片，**按 chunk_index 升序**（知识库管理页「查看片段」用）。
+
+        与 get_chunks(source) 的区别不只是查询键：
+        get_chunks 是按库内自然顺序返回的，而 Chroma 的返回顺序**没有承诺**。
+        对于「排查模型看到了什么」这个用途，顺序错乱会让人误以为切片乱序，
+        所以这里按我们自己写进去的 chunk_index 显式排序。
+        """
+        target = self._normalize_doc_id(doc_id)
+        store = self._store
+        if store is None:
+            return []
+
+        items: list[tuple[int, str, dict[str, Any]]] = []
+        if isinstance(store, Chroma):
+            result = store.get(where={"doc_id": target}, include=["documents", "metadatas"])
+            docs = result.get("documents") or []
+            metas = result.get("metadatas") or []
+            for doc, meta in zip(docs, metas):
+                m = meta or {}
+                items.append((self._chunk_index_of(m), doc, m))
+        else:
+            docstore = getattr(store, "docstore", None)
+            for doc in getattr(docstore, "_dict", {}).values():
+                m = getattr(doc, "metadata", None) or {}
+                if m.get("doc_id") == target:
+                    items.append((self._chunk_index_of(m), doc.page_content, m))
+
+        # 没有 chunk_index 的老片段排到最后（用一个极大的哨兵值），
+        # 保证「有索引的按索引排、没索引的稳定地落在末尾」而不是随机插队
+        items.sort(key=lambda t: t[0])
+        return [
+            {
+                "index": idx,
+                "content": content,
+                "char_count": len(content),
+                "page": meta.get("page"),
+                "chunk_index": meta.get("chunk_index"),
+            }
+            for idx, (_, content, meta) in enumerate(items, start=1)
+        ]
+
+    def count_by_doc_id(self, doc_id: int | str) -> int:
+        """
+        数某文档当前在库里的切片数。
+
+        存在的理由：解析成功时我们把切片数写进了 MySQL `chunk_count`，
+        但那个数是「写入时声称写了多少」。本方法是**从向量库实地数一遍**，
+        用于对账 —— 两者不一致说明写入过程中出过问题（例如中途崩了）。
+        """
+        return len(self.get_chunks_by_doc_id(doc_id))
+
+    @staticmethod
+    def _chunk_index_of(meta: dict[str, Any]) -> int:
+        """取元数据里的 chunk_index，缺失/非数字时返回一个极大值（排到末尾）。"""
+        value = meta.get("chunk_index")
+        if isinstance(value, bool) or not isinstance(value, int):
+            return 1 << 30
+        return value
+
+    # ------------------------------------------------------------------ #
     # 检索（只做向量召回，不接大模型）
     # ------------------------------------------------------------------ #
     def similarity_search(

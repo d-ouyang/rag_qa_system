@@ -11,7 +11,8 @@ DOCKER ?= docker
 
 .PHONY: help setup venv sync lock api web frontend gateway dev stop test memory releases clean ollama \
         infra infra-check infra-logs infra-stop infra-down \
-        db-upgrade db-current db-downgrade db-revision db-sql
+        db-upgrade db-current db-downgrade db-revision db-sql \
+        worker accept
 
 help:
 	@echo "—— 一次性 ——"
@@ -32,6 +33,14 @@ help:
 	@echo "make db-downgrade  回退一个版本（少用；本地重建用 infra-down -v 更快）"
 	@echo "make db-revision   新建一个空迁移（要传 M=\"说明\"，如 make db-revision M=\"add xxx\"）"
 	@echo "make db-sql        只打印 DDL 不执行（给 DBA 审批用）"
+	@echo ""
+	@echo "—— 异步解析（P0-3a）——"
+	@echo "make worker        启动解析 Worker（Celery，消费 Redis db1 的 rag.parse 队列）"
+	@echo "                   上传接口只把任务投进队列，解析在这里真正发生；"
+	@echo "                   不起它，文档会一直停在 pending"
+	@echo "                   池按平台自动选（macOS solo / Linux prefork），见 worker/app.py"
+	@echo "make accept        跑**验收**脚本（不打桩；自己起/杀 worker，需先停掉别的 worker）"
+	@echo "                   与 make test 的区别：test 是回归（打桩、离线可跑），accept 是真链路"
 	@echo ""
 	@echo "—— 单独启动（想在各自终端看日志时用）——"
 	@echo "make api       启动 FastAPI (8000)"
@@ -106,6 +115,25 @@ test:
 	$(PY) tests/test_module6_session_store.py
 	$(PY) tests/test_module7_redis_over_tcp.py
 	$(PY) tests/test_module8_mysql_session_store.py
+	$(PY) tests/test_module9_async_pipeline.py
+
+# ---------- 异步解析 Worker（P0-3a）----------
+# 池、并发、超时、投递语义**全部在 worker/app.py 里按 settings 配置**，
+# 所以这里不传 --concurrency / --pool / --max-tasks-per-child ——
+# 同一个参数在两处（.env 与 Makefile）配，就必然有一次只改了一边。
+# 唯一留在命令行的是日志级别（它属于「这一次怎么跑」，不是应用配置）。
+worker:
+	$(VENV)/bin/celery -A worker.app worker --loglevel=info
+
+# ---------- 验收（与 make test 是两件事，别混）----------
+# make test 是**回归**：队列 / worker / 向量库都打桩或换临时目录，快、离线可跑、必须永远全绿。
+# make accept 是**验收**：一处都不打桩 —— 真 MySQL + 真 Redis db1 + 真 worker + 真向量库，
+#                        全部走 HTTP，按计划书的验收标准逐条实测。
+# ⚠️ 它自己管 worker 的生命周期（起 → kill → 重启 → 停），
+#    所以**要求跑之前没有别的 worker 在跑**，否则会误杀。
+# 当前脚本对应 docs/PLAN-v2.0.0.md 的 P0-3a（版本号见文件名）。
+accept:
+	$(PY) tests/acceptance_p0_3a.py
 
 ollama:
 	@curl -s http://localhost:11434/api/tags | head -c 200; echo

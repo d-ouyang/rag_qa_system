@@ -70,8 +70,9 @@
 | **v2.0.0-p0.2** | 2026-09-23 | 鉴权网关：NestJS JWT 登录 + 全局守卫 + 限流 + 反代（NDJSON 透传）+ 统一错误体；前端登录页与 token 联动 | `iterations/v2.0.0-p0.2-auth-gateway.md` |
 | **v2.0.0-p1.5a** | 2026-09-23 | 本地中间件容器化：MySQL + Redis 编排（命名卷持久化 + 端口只绑回环 + 健康检查）、14 项自检脚本、Makefile `infra*` 目标；**应用代码零改动** | `iterations/v2.0.0-p1.5a-middleware-compose.md` |
 | **v2.0.0-p0.1b** | 2026-09-23 | **P0-1 返工交付**：会话 / 消息 / 用量 / 引用落 MySQL（Alembic `0001` 五张表 + `MySQLSessionStore` + `SELECT ... FOR UPDATE` + 软 TTL 归档）；抽共享存储契约、新增 module8（62 项）；`MEMORY_BACKEND` 改 `memory\|mysql`，退役取值**抛错而不静默回退**；**业务侧仍零改动** | `iterations/v2.0.0-p0.1-redis-session-store.md` §7.2 |
+| **v2.0.0-p0.3a** | 2026-09-23 | **P0-3 后端交付**：上传改**异步**（202 + `pending` + 入队，不再返回 `chunks_added`）；Celery + Redis db1 消费；`document` 状态机 + **原子 UPDATE 抢任务**（16 线程只 1 个成功）；迁移 `0002` 加 `parse_started_at` 回收**僵尸 parsing**；切片 metadata 补 `doc_id`/`project_id`/`chunk_index`（P0-4 前置）；`documents` 路由 7 接口重写 + 新增 `GET /api/v1/system/queue`；module9（166 项）+ 验收脚本（5 条标准全绿）；**前端未改（p0.3b 必修）**、问答链路零改动 | `iterations/v2.0.0-p0.3a-async-parsing.md` |
 
-> 当前应用版本：`2.0.0-p0.1b`
+> 当前应用版本：`2.0.0-p0.3a`
 >
 > 上表是**工程对账**口径（谁在哪个文件里改了什么）。
 > 如果是要**向人展示「这个项目怎么一步步完善的」**，读 `docs/RELEASES.md`。
@@ -84,12 +85,14 @@
 
 | 分组 | 任务 | 状态 |
 |------|------|------|
-| P0 上线硬前提 | P0-1 业务数据落 MySQL ✅、P0-2 鉴权网关 ✅、P0-3 异步解析、P0-4 向量元数据对齐 | 🔄 2 / 4 |
+| P0 上线硬前提 | P0-1 业务数据落 MySQL ✅、P0-2 鉴权网关 ✅、P0-3 异步解析（**3a 后端已完成，3b 前端未做**）、P0-4 向量元数据对齐 | 🔄 2 / 4 + 3a |
 | P1 容器化与部署 | P1-5 Docker 化（**5a 中间件已完成，5b 全栈未做**）、P1-6 模型目录、P1-7 TLS | 🔄 1 / 3 |
 | P2 生产化打磨 | P2-8 配置治理、P2-9 生产构建+备案号、P2-10 观测备份 | ⬜ 0 / 3 |
 
-> **2.0.0 大版本合计：P0-1 ✅、P0-2 ✅、P1-5a ✅（P1-5b 未做），其余未开始。**
-> **下一步：P0-3 异步解析链路**（上传立即返回 + Worker 消费队列，`document` 表已建好待启用）。
+> **2.0.0 大版本合计：P0-1 ✅、P0-2 ✅、P0-3a ✅、P1-5a ✅（P1-5b 未做），其余未开始。**
+> **下一步：P0-3b 前端轮询改造**（知识库管理页按 `status` 轮询、删除/重解析按钮按状态置灰），
+> 之后是 P0-4（引用反查 `GET /api/v1/chunks/{chunk_id}` + `scripts/reindex.py`）。
+> P0-3a 之后前端已经**故意与后端对不上**（上传不再返回 `chunks_added`），见迭代文档 §3.8。
 
 ### 修订（同版本内的返工，不新开子版本号）
 
@@ -105,6 +108,8 @@
 | 2026-09-23 | `2.0.0-p0.1` | **方案变更（架构级）**：会话真相源 Redis → **MySQL**；`RedisSessionStore` 从生产路径退役，`SessionStore` 抽象层与其契约测试保留；P0 新增 2 项、P1/P2 编号顺延 | p0.1 文档 §7.1；计划书 §0 |
 | 2026-09-23 | `2.0.0-p0.1b` | **返工交付**：新增 `core/db.py`、`core/schema.py`、`core/mysql_store.py`、`alembic/`（`0001` 建 5 张表）；新增 `tests/store_contract.py`（三后端共享契约）与 module8（62 项）；`MEMORY_BACKEND` 改 `memory\|mysql` 且退役/未知取值抛错；module7 的工厂装配断言改为显式注入 | p0.1 文档 §7.2 |
 | 2026-09-23 | `2.0.0-p0.1b` | **发现既有缺陷（本轮刻意未修）**：`add_exchange` 里 `_normalize_meta()` 的调用位置导致轮元数据整体错位一格（第 1 轮的 meta 被顶掉、末尾多一个空 dict）。已确认 memory 后端同样存在，与本次返工无关；为保住「业务侧零改动」这条验收证据不修，修法已在文档中写明 | p0.1 文档 §6.1 第 1 条 |
+| 2026-09-23 | `2.0.0-p0.3a` | **验收脚本第 4 条重写**：首轮把「对已 `success` 的文档重复入队」当幂等验证，但 `reset_for_reparse` 按设计**拒绝 `success`**，两条消息都被挡掉 —— 「没重复切片」是因为压根没跑，证不出幂等。改为用**新**文档在 worker 抢到前连推两条，并加断 `attempt_count == 1` | p0.3a 文档 §7；仅验收脚本，`core/` 无改动 |
+| 2026-09-23 | `2.0.0-p0.3a` | **修正一处失效指引**：`core/document_repo.py` 注释里指向的 `core/document_service.py` **并不存在**，实际编排在 `api/routes/documents.py` 的 `_purge_document` | p0.3a 文档 §7；仅注释 |
 
 ---
 

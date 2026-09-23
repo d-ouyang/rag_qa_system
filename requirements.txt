@@ -68,6 +68,21 @@ cryptography==50.0.1   # MySQL 8 的 caching_sha2_password 认证需要，不是
 # python>=3.11.3 下 redis 包无强制依赖
 redis==8.1.0
 
+# ---------- 异步任务队列（v2.0.0 P0-3 新增）----------
+# 文档解析（解析 + 切分 + 嵌入 + 写 Chroma）挪到独立进程执行，HTTP 请求立即返回。
+# 只做「投递与消费」，不做状态真相源 → 不配 result backend，状态看 MySQL document.status
+celery==5.6.3
+kombu==5.6.2           # Celery 的消息层（Redis/AMQP 传输抽象）
+amqp==5.4.0            # kombu 的 AMQP 协议实现
+billiard==4.3.0        # Celery 的多进程池（multiprocessing 的补丁版）
+vine==5.1.0            # Celery 的 promise/回调原语
+click-didyoumean==0.3.1
+click-plugins==1.1.1.2
+click-repl==0.4.0      # celery CLI 的交互式 shell（celery shell）
+prompt-toolkit==3.0.53 # click-repl 依赖
+wcwidth==0.8.4         # prompt-toolkit 依赖
+tzlocal==5.4.4         # Celery 解析本地时区用
+
 # ---------- 测试用 ----------
 # fakeredis 在内存里模拟 Redis，本地/CI 不必真的起 Redis 服务；
 # [lua] 提供 Lua 支持（fakeredis 的 evalsha 路径）

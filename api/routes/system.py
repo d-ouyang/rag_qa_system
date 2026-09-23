@@ -7,6 +7,7 @@
     GET /settings     关键配置项（分组返回，密钥脱敏只显示是否已配置）
     GET /health       与 /api/v1/qa/health 等价的轻量状态（服务进程/版本）
     GET /memory       会话存储与 Redis 内存水位（容量预警，运维用）
+    GET /queue        解析队列积压 + worker 存活 + 文档状态计数（运维用，P0-3）
 
 设计原则：
 1. 只读。配置来源是 .env + 环境变量（config/settings.py），修改配置应改
@@ -14,6 +15,9 @@
 2. 密钥绝不外泄：只返回 *_set 布尔值，告诉前端「是否已配置」。
 3. 嵌入模型信息从向量库管理器取（它是单例，与问答链路共用同一份模型），
    保证设置页展示的与真实检索用的是同一套配置。
+4. 运维接口必须**永不 5xx** —— 被监控的东西坏了正是它要报告的内容，
+   不是它自己该崩的理由。所以队列/Redis/worker 的探测全部走
+   「不抛异常、把原因写进返回值」的函数。
 """
 
 import logging
@@ -22,7 +26,9 @@ from typing import Any
 from fastapi import APIRouter
 
 from config.settings import settings
+from core import document_repo as repo
 from core.memory_manager import get_memory_manager
+from core.queue import queue_depth, worker_alive
 from core.vector_store import get_vector_store_manager
 
 logger = logging.getLogger(__name__)
@@ -161,3 +167,52 @@ def memory_status() -> dict[str, Any]:
     report = get_memory_manager().memory_report()
     logger.debug("记忆子系统报告 | 后端=%s", report.get("backend"))
     return report
+
+
+@router.get(
+    "/queue",
+    summary="解析队列与 Worker 状态",
+    description=(
+        "返回文档解析链路的运行情况：\n"
+        "- 队列积压深度（Redis LLEN）与已投递未确认数；\n"
+        "- Worker 存活情况（哪些 worker 在应答）；\n"
+        "- 文档状态计数（pending / parsing / success / fail），来自 MySQL 真相源。\n\n"
+        "⚠️ **本接口会阻塞约 1 秒**：worker 存活探测走 Celery 的 inspect().ping()，\n"
+        "它必须等满一个超时窗口才能确定「没有更多 worker 会应答」。\n"
+        "所以适合按分钟级抓取，**不要挂到高频探活上**。\n\n"
+        "判读建议：`documents.parsing` 长期大于 0 且 `worker.ok=false`，\n"
+        "说明有任务卡在解析中而 worker 已经死了 —— 等孤儿超时后重投。"
+    ),
+)
+def queue_status() -> dict[str, Any]:
+    """
+    解析链路运维视图。
+
+    为什么把三样东西放一个接口：它们单独看都没有意义。
+    「队列有 30 条积压」本身不是问题（worker 慢慢跑就行）；
+    「worker 不在线」也不是问题（没有任务时本来就该闲着）；
+    但「有积压 + worker 不在线」就是故障。拆成三个接口，告警规则就得跨接口拼，
+    而拼出来的规则没人维护。
+    """
+    depth = queue_depth()
+    worker = worker_alive()
+    # counts_by_status 读 MySQL。它失败时不应该让整个接口 500 —— 队列与 worker
+    # 的信息仍然有价值。所以单独 try，失败就报明原因。
+    try:
+        documents: dict[str, Any] = repo.counts_by_status()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("读取文档状态计数失败：%s", e)
+        documents = {"error": f"{type(e).__name__}: {e}"}
+
+    return {
+        "queue": {
+            "name": depth["queue"],
+            "broker_ok": depth["ok"],
+            "depth": depth["depth"],
+            "unacked": depth["unacked"],
+            "detail": depth["detail"],
+        },
+        "worker": worker,
+        "documents": documents,
+        "ping_timeout_seconds": settings.QUEUE_WORKER_PING_TIMEOUT_SECONDS,
+    }
