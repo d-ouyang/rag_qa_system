@@ -57,6 +57,75 @@ from core.embedding import get_embedding_model, get_embedding_model_info
 logger = logging.getLogger(__name__)
 
 
+# --------------------------------------------------------------------------- #
+# 切片引用键 chunk_id（v2.0.0 P0-4a）
+# --------------------------------------------------------------------------- #
+# 形态：`"<doc_id>:<chunk_index>"`，例如 `"12:3"` = 第 12 号文档的第 3 个切片。
+#
+# 为什么**不用 Chroma 自己那条记录的 UUID** 当引用键：
+#
+#   ① 拿不到。`langchain_community` 0.3.x 的 similarity_search_with_score 会把
+#      Chroma 的 id 丢掉（返回的 Document.id 是 None），而重排与 _extract_sources
+#      只透传 metadata（见 core/retriever.py 的 _rank / rag_chain.py 的 _extract_sources）。
+#      要用上 UUID，要么换 langchain_chroma（会牵动 langchain-core 的版本闸），
+#      要么绕过 LangChain 直连 _collection.query()（会动 module3 / module4 的既有断言）。
+#      两条路的成本都远大于收益。
+#
+#   ② 更要命的是**重建稳定性**。UUID 是随机生成的，reindex 跑一次就全变；
+#      而 chat_message.ref_ids 里存的是历史引用的 chunk_id —— 一旦引用键会变，
+#      「重建知识库」这个操作就等于把所有老会话的引用集体作废。
+#      `doc_id:chunk_index` 由业务数据推导，同一份文件重解析得到同一组键，
+#      历史引用过一遍 reindex 仍然点得开。
+#
+#   ③ 自描述。`12:3` 直接读得出归属，排查时不用先回库反查。
+#
+# 代价（已记入 docs/iterations/v2.0.0-p0.4a-*.md §3「否掉的方案」）：
+#   若将来改动**切分参数**，chunk_index → 正文的对应关系会漂移，
+#   老引用会解析到「另一个切片」也就是**错误的正文**，而不是干脆查不到。
+#   这条只能靠约定兜住：改切分参数 = 必须整库重建 + 清空历史引用。
+CHUNK_ID_SEP = ":"
+
+
+def build_chunk_id(doc_id: int, chunk_index: int) -> str:
+    """由「文档 + 片内序号」拼出引用键。写入侧与读取侧共用这一个拼法。"""
+    return f"{int(doc_id)}{CHUNK_ID_SEP}{int(chunk_index)}"
+
+
+def parse_chunk_id(chunk_id: str) -> tuple[int, int]:
+    """
+    把引用键解析回 `(doc_id, chunk_index)`，**格式不对直接抛 ValueError**。
+
+    :raises ValueError: 格式非法时。message 是给接口层直接回 400 用的，要能读懂。
+
+    为什么不静默容错（例如截掉多余的分段、或者把非数字当成 0）：
+    引用反查是「拿一个键去取一段正文」，容错在这里等于「猜用户想要哪个切片」。
+    猜错的后果是把 A 文档的正文展示成 B 文档的引用 —— 一个安静的错误，
+    比一个 400 难查得多。
+
+    为什么用 `isascii() and isdigit()` 而不是只 `isdigit()`：
+    `isdigit()` 对全角数字（"１２"）与上标（"²"）都返回 True，
+    但 `int("²")` 会抛 ValueError —— 于是「校验通过、转换炸掉」，
+    表现为 500 而不是 400。加上 isascii() 才是真的只放行 ASCII 数字。
+    """
+    text = (chunk_id or "").strip()
+    parts = text.split(CHUNK_ID_SEP)
+    if len(parts) != 2:
+        raise ValueError(
+            f"chunk_id 格式应为「doc_id{CHUNK_ID_SEP}chunk_index」（如 12{CHUNK_ID_SEP}3），收到：{chunk_id!r}"
+        )
+
+    raw_doc_id, raw_index = parts
+    if not (raw_doc_id.isascii() and raw_doc_id.isdigit()):
+        raise ValueError(f"chunk_id 的 doc_id 部分必须是数字，收到：{raw_doc_id!r}")
+    if not (raw_index.isascii() and raw_index.isdigit()):
+        raise ValueError(f"chunk_id 的 chunk_index 部分必须是数字，收到：{raw_index!r}")
+
+    doc_id, chunk_index = int(raw_doc_id), int(raw_index)
+    if doc_id <= 0:
+        raise ValueError(f"doc_id 必须是正整数，收到：{doc_id}")
+    return doc_id, chunk_index
+
+
 class VectorStoreManager:
     """向量库管理器：统一 Chroma / FAISS 的初始化、增删查、状态与清空操作。"""
 
@@ -485,6 +554,171 @@ class VectorStoreManager:
         if isinstance(value, bool) or not isinstance(value, int):
             return 1 << 30
         return value
+
+    # ------------------------------------------------------------------ #
+    # 引用反查 / 孤儿清理（v2.0.0 P0-4a）
+    # ------------------------------------------------------------------ #
+    # 为什么按 (doc_id, chunk_index) 定位，而不是先解析 chunk_id 再字符串比对：
+    # chunk_id 是**派生**值（= 上面 build_chunk_id 的拼法），权威事实是
+    # doc_id 与 chunk_index 两个元数据字段。按字段比对，那些「有 doc_id
+    # 与 chunk_index、但写入时还没带 chunk_id」的切片（P0-3a 期间入库的）
+    # 一样能被定位到，不必因为一个派生字段缺了就判它不可用。
+    @staticmethod
+    def _match_chunk_index(meta: dict[str, Any], chunk_index: int) -> bool:
+        """
+        元数据里的 chunk_index 是否等于目标值。
+
+        **类型不对一律视为不匹配**：Chroma 里存的是 int，但老数据/手写数据
+        可能落成字符串 "3"。`"3" == 3` 为假，所以这里天然只认 int；
+        显式挡掉 bool 是因为 `True == 1` 为真，会让 `True` 误命中第 1 片。
+        """
+        value = meta.get("chunk_index")
+        return isinstance(value, int) and not isinstance(value, bool) and value == chunk_index
+
+    @classmethod
+    def _chunk_payload(
+        cls, doc_id: int, chunk_index: int, content: str, meta: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        组装一个切片的返回体。
+
+        这个形状是给「引用反查」接口用的：正文 + 定位信息 + 展示用元数据。
+        `chunk_id` 在这里**重新拼一次**而不是读元数据 —— 保证出口的键永远是
+        规范形态（`01:3` 这类非规范写法不会从接口漏出去）。
+        """
+        return {
+            "chunk_id": build_chunk_id(doc_id, chunk_index),
+            "doc_id": doc_id,
+            "chunk_index": chunk_index,
+            "content": content,
+            "char_count": len(content),
+            "page": meta.get("page"),
+            "project_id": meta.get("project_id"),
+            "source": meta.get("source"),
+            "file_name": meta.get("file_name"),
+            "file_type": meta.get("file_type"),
+        }
+
+    def get_chunk_by_position(self, doc_id: int | str, chunk_index: int) -> dict[str, Any] | None:
+        """
+        取一个切片的正文与元数据。定位键是「文档 + 片内序号」。
+
+        返回 None 表示**这个位置没有切片** —— 可能是文档已被删除，
+        也可能是文档重新解析后切片数变少了。调用方（接口层）拿它去区分
+        「引用内容已随文档删除」与「引用片段已失效」，所以这里不做任何兜底猜测。
+
+        为什么不做成 `get_chunk_by_id(chunk_id)` 一步到位：调用方解析出 doc_id
+        之后还要拿它去 MySQL 查文件名/上传时间，本来就需要这两个字段分开；
+        让 store 再解析一次等于把同一个解析做两遍。
+        """
+        target = self._normalize_doc_id(doc_id)
+        store = self._store
+        if store is None:                       # FAISS 空库
+            return None
+
+        if isinstance(store, Chroma):
+            # include 三个都要：正文用于展示，元数据用于定位与兜底展示字段。
+            # 这里是「按 doc_id 取全部切片再筛」，不是按 id 点查 —— 一篇文档
+            # 通常只有几十片，代价可忽略；换来的是不必依赖 Chroma 的内部 id。
+            result = store.get(where={"doc_id": target}, include=["documents", "metadatas"])
+            docs = result.get("documents") or []
+            metas = result.get("metadatas") or []
+            for content, meta in zip(docs, metas):
+                m = meta or {}
+                if self._match_chunk_index(m, chunk_index):
+                    return self._chunk_payload(target, chunk_index, content, m)
+            return None
+
+        docstore = getattr(store, "docstore", None)
+        for doc in getattr(docstore, "_dict", {}).values():
+            m = getattr(doc, "metadata", None) or {}
+            if self._normalize_doc_id_safe(m.get("doc_id")) == target and self._match_chunk_index(m, chunk_index):
+                return self._chunk_payload(target, chunk_index, doc.page_content, m)
+        return None
+
+    @staticmethod
+    def _normalize_doc_id_safe(value: Any) -> int | None:
+        """遍历时的宽松版 doc_id 归一：拿不出 int 就返回 None（不抛异常）。"""
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isascii() and value.strip().isdigit():
+            return int(value.strip())
+        return None
+
+    def list_orphan_chunks(self, valid_doc_ids: set[int] | frozenset[int]) -> list[tuple[str, dict[str, Any]]]:
+        """
+        列出向量库里「不指向任何有效文档」的切片，返回 `[(库内 id, 元数据), ...]`。
+
+        「孤儿」有两种，合在一个口径里：
+            · 元数据里**根本没有** doc_id —— P0-3 之前入库的遗留切片，
+              它们按 source（磁盘路径）组织，文档一旦改名/搬目录就再也删不掉。
+            · doc_id 存在但**不在** valid_doc_ids 里 —— MySQL 里的文档记录
+              已经被删，切片却留下来了（删除链路半途失败）。
+
+        两者都是「检索能召回、但溯源与删除都对不上号」的切片，
+        也就是 P0-4 要清理干净的对象。
+
+        为什么不提供 FAISS/Chroma 各一套口径：这里返回的 id 只在传给
+        `store.delete(...)` 时有意义，调用方不需要理解两个后端 id 的差别。
+        """
+        store = self._store
+        if store is None:
+            return []
+
+        orphans: list[tuple[str, dict[str, Any]]] = []
+
+        def _is_orphan(meta: dict[str, Any]) -> bool:
+            # 显式排除 bool：True 会被 int 检查放过去，然后 `True in {1,2}` 命中，
+            # 于是一个脏值就把本该清掉的切片当成了「有效文档 1 的切片」。
+            value = meta.get("doc_id")
+            if isinstance(value, bool) or not isinstance(value, int):
+                return True
+            return value not in valid_doc_ids
+
+        if isinstance(store, Chroma):
+            # 注意：这里不带 limit，等于把整张 collection 的元数据读进内存。
+            # 对「知识库重建」这种离线运维动作可以接受；不要把它接进请求路径。
+            result = store.get(include=["metadatas"])
+            ids = result.get("ids") or []
+            metas = result.get("metadatas") or []
+            for cid, meta in zip(ids, metas):
+                m = meta or {}
+                if _is_orphan(m):
+                    orphans.append((cid, m))
+            return orphans
+
+        docstore = getattr(store, "docstore", None)
+        for key, doc in getattr(docstore, "_dict", {}).items():
+            m = getattr(doc, "metadata", None) or {}
+            if _is_orphan(m):
+                orphans.append((key, m))
+        return orphans
+
+    def purge_orphan_chunks(self, valid_doc_ids: set[int] | frozenset[int]) -> int:
+        """
+        删除全部孤儿切片，返回删除条数。
+
+        语义就是 `list_orphan_chunks` 的写版：先列出再删，保证「报告的数量」
+        与「实际删的数量」出自同一套判断，不会出现「干跑说 15 条、执行删了 3 条」。
+        """
+        orphan_ids = [cid for cid, _ in self.list_orphan_chunks(valid_doc_ids)]
+        if not orphan_ids:
+            return 0
+
+        store = self._store
+        if store is None:
+            return 0
+
+        if isinstance(store, Chroma):
+            store.delete(ids=orphan_ids)
+        else:
+            store.delete(orphan_ids)
+            self._save_faiss()              # FAISS 是纯内存索引，删完必须立刻落盘
+
+        logger.info("已清理孤儿切片 | 删除=%d | 剩余=%d", len(orphan_ids), self.count())
+        return len(orphan_ids)
 
     # ------------------------------------------------------------------ #
     # 检索（只做向量召回，不接大模型）

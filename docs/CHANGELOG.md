@@ -73,7 +73,9 @@
 | **v2.0.0-p0.3a** | 2026-09-23 | **P0-3 后端交付**：上传改**异步**（202 + `pending` + 入队，不再返回 `chunks_added`）；Celery + Redis db1 消费；`document` 状态机 + **原子 UPDATE 抢任务**（16 线程只 1 个成功）；迁移 `0002` 加 `parse_started_at` 回收**僵尸 parsing**；切片 metadata 补 `doc_id`/`project_id`/`chunk_index`（P0-4 前置）；`documents` 路由 7 接口重写 + 新增 `GET /api/v1/system/queue`；module9（166 项）+ 验收脚本（5 条标准全绿）；**前端未改（p0.3b 必修）**、问答链路零改动 | `iterations/v2.0.0-p0.3a-async-parsing.md` |
 | **v2.0.0-p0.3b** | 2026-09-23 | **P0-3 前端交付**（P0-3 完成）：知识库页从「等它做完」改成「看着它做」——`stores/documents.ts` 里做状态轮询（递归 `setTimeout` + 三条自我限制 + 失败退避），切走页面/关掉视图也照常收到完成提示；终态提示只发给「进过 `watched` 的文档」（避免一开页糊十几条 toast）；四按钮按 status 置灰**且说明原因**；失败原因整行展示 + 「重试」闭环；新增链路告警（有文档在排队但无 Worker，带可执行下一步）；下载改 `fetch`+blob（`<a href>` 带不上 token）；新增 `make accept-ui` 浏览器验收（56 项 / 0 失败，连跑两遍）；**后端一行未改**、`make test` 仍 725 项全绿 | `iterations/v2.0.0-p0.3b-frontend-polling.md` |
 
-> 当前应用版本：`2.0.0-p0.3b`
+| **v2.0.0-p0.4a** | 2026-09-23 | **P0-4 后端交付**：切片身份证 `chunk_id = "<doc_id>:<chunk_index>"`（`build/parse_chunk_id` 契约 + 写入侧 metadata + 读出侧 `_resolve_chunk_id` 三级取值）；反查接口 `GET /api/v1/chunks/{chunk_id}`（400 / 404 两种文案 / 200+`document_exists=false` 四种分工）；孤儿切片 `list/purge_orphan_chunks`；`scripts/reindex.py` 三步重建（补登记 → 幂等重灌 → 清孤儿，**默认干跑** + worker/后端两道闸门）；`chat_message.ref_ids` 首次真正有值；`document_repo.list_all()`；module10（87 项）+ 验收脚本（4 条标准全绿）；**前端未改（p0.4b 必修）** | `iterations/v2.0.0-p0.4a-chunk-refs.md` |
+
+> 当前应用版本：`2.0.0-p0.4a`
 >
 > 上表是**工程对账**口径（谁在哪个文件里改了什么）。
 > 如果是要**向人展示「这个项目怎么一步步完善的」**，读 `docs/RELEASES.md`。
@@ -83,11 +85,12 @@
 >
 > | 条件 | module9 | 合计 |
 > |------|---------|------|
-> | 无 worker 在应答 | 160 通过 / 0 失败（第 10 组 SKIP） | 719 |
-> | 有 worker 在应答 | 166 通过 / 0 失败 | 725 |
+> | 无 worker 在应答 | 160 通过 / 0 失败（第 10 组 SKIP） | 806 |
+> | 有 worker 在应答 | 166 通过 / 0 失败 | 812 |
 >
-> 差额正好 6 项 = 第 10 组的 6 条断言。**看到 719 不要当成回归**，先确认 `make worker` 起着。
+> 差额正好 6 项 = 第 10 组的 6 条断言。**看到 806 不要当成回归**，先确认 `make worker` 起着。
 > 两个数都是 0 失败，所以「全绿」这条结论不受影响。
+> （p0.4a 起基线从 719/725 抬到 806/812，差 87 项 = 新增的 module10，正好对得上。）
 
 ### 2.0.0 整体进度
 
@@ -97,13 +100,15 @@
 
 | 分组 | 任务 | 状态 |
 |------|------|------|
-| P0 上线硬前提 | P0-1 业务数据落 MySQL ✅、P0-2 鉴权网关 ✅、P0-3 异步解析 ✅、P0-4 向量元数据对齐 | 🔄 3 / 4 |
+| P0 上线硬前提 | P0-1 业务数据落 MySQL ✅、P0-2 鉴权网关 ✅、P0-3 异步解析 ✅、P0-4 向量元数据对齐（**后端 ✅ `p0.4a`，前端 ⬜ `p0.4b`**） | 🔄 3.5 / 4 |
 | P1 容器化与部署 | P1-5 Docker 化（**5a 中间件已完成，5b 全栈未做**）、P1-6 模型目录、P1-7 TLS | 🔄 1 / 3 |
 | P2 生产化打磨 | P2-8 配置治理、P2-9 生产构建+备案号、P2-10 观测备份 | ⬜ 0 / 3 |
 
-> **2.0.0 大版本合计：P0-1 ✅、P0-2 ✅、P0-3 ✅（3a 后端 + 3b 前端）、P1-5a ✅（P1-5b 未做），其余未开始。**
-> **下一步：P0-4 向量元数据对齐 + 知识库重建**（引用反查 `GET /api/v1/chunks/{chunk_id}` + `scripts/reindex.py`）。
-> P0-3a 之后前端与后端「对不上」的短期断点**已在 p0.3b 接上**（见迭代文档 §3.8）。
+> **2.0.0 大版本合计：P0-1 ✅、P0-2 ✅、P0-3 ✅（3a 后端 + 3b 前端）、P0-4 后端 ✅（`p0.4a`）、
+> P1-5a ✅（P1-5b 未做），其余未开始。**
+> **下一步：P0-4b 前端引用可点击**（把 `sources[].chunk_id` 渲染成可点按钮 + 调反查接口展示全文）。
+> 后端交接物已备好，P0-4b 不需要再改后端。
+> P0-4a 之后前端与后端「对不上」的短期断点与 P0-3a 同理（见迭代文档 §3.8）。
 > P0 四项全绿之后打阶段 tag `v2.0.0-p0.4`。
 
 ### 修订（同版本内的返工，不新开子版本号）
@@ -122,6 +127,10 @@
 | 2026-09-23 | `2.0.0-p0.1b` | **发现既有缺陷（本轮刻意未修）**：`add_exchange` 里 `_normalize_meta()` 的调用位置导致轮元数据整体错位一格（第 1 轮的 meta 被顶掉、末尾多一个空 dict）。已确认 memory 后端同样存在，与本次返工无关；为保住「业务侧零改动」这条验收证据不修，修法已在文档中写明 | p0.1 文档 §6.1 第 1 条 |
 | 2026-09-23 | `2.0.0-p0.3a` | **验收脚本第 4 条重写**：首轮把「对已 `success` 的文档重复入队」当幂等验证，但 `reset_for_reparse` 按设计**拒绝 `success`**，两条消息都被挡掉 —— 「没重复切片」是因为压根没跑，证不出幂等。改为用**新**文档在 worker 抢到前连推两条，并加断 `attempt_count == 1` | p0.3a 文档 §7；仅验收脚本，`core/` 无改动 |
 | 2026-09-23 | `2.0.0-p0.3a` | **修正一处失效指引**：`core/document_repo.py` 注释里指向的 `core/document_service.py` **并不存在**，实际编排在 `api/routes/documents.py` 的 `_purge_document` | p0.3a 文档 §7；仅注释 |
+| 2026-09-23 | `2.0.0-p0.4a` | **`response_model` 静默丢字段（本版最贵的一行）**：`_extract_sources()` 加了 `chunk_id`，但 `api/routes/qa.py` 的 `SourceItem` 未声明它 → pydantic 默认 `extra='ignore'`，问答接口与会话历史返回的 `sources` 里**根本没有 chunk_id**，且不报任何错、测试全绿（测的是内部函数，没测接口出参）。修法：`SourceItem` 加 `chunk_id: str \| None`；并在 module10 加「产出的键 ⊆ 模型字段」通用守卫（不绑定字段名）。否掉的方案：给模型加 `extra="forbid"` —— 同样能暴露问题，但暴露方式是**线上 500** 而不是测试红，对这种无害 drift 处罚过重 | p0.4a 文档 §3.10 / §7 |
+| 2026-09-23 | `2.0.0-p0.4a` | **回归测试会清空真实业务表**：`tests/test_module10_chunk_refs.py` 照抄 module9 的 `sa_delete(document_table)`（不带 `WHERE`），跑一次就把开发机上真实文档记录抹掉，留下「查得到正文、溯不到源」的幽灵引用且无报错提示。已按 `file_name LIKE 'm10_<uuid>%'` 收窄，结尾「按 `storage_path` 删文件」那段（遍历 `repo.list_all()` 全表）同样加了前缀过滤。**module9 仍是全表清空**（`total_documents == 1` 等断言依赖空表），列为遗留项；当前应对：跑完 `make test` 执行 `make reindex-apply` 即可恢复演示数据 | p0.4a 文档 §3.11 / §6 第 2 条 |
+| 2026-09-23 | `2.0.0-p0.4a` | **`scripts/reindex.py` 加第二道闸门**：验收时发现「多进程同时改写同一 Chroma `persist_directory`」会让 HNSW 索引不一致（查询返回 `documents=None` → langchain 构造 `Document` 直接 `ValidationError` → **问答接口 500**；或 hnswlib 抛 `ef or M is too small`）。后端在线时 `--apply` 拒绝执行，退出码 2。另注：**「重置单例」不等于「重启进程」** —— chromadb 同进程按 (目录, collection) 共享集合实例，`reset_vector_store_manager()` 之后拿回的还是同一个对象，实测照样崩 | p0.4a 文档 §3.6 / §3.7 |
+| 2026-09-23 | `2.0.0-p0.4a` | **验收脚本的「重建前后一致」改为多重集比较**：首轮夹具用「同一句话重复 40 遍」凑长度，切出的多片正文完全相同 → 重排分并列 → 两次检索顺序互换被误判成漂移。夹具每条加序号，断言改 `Counter` 比较。**并列是合法的，漂移才是 bug**，断言要能区分这两件事 | p0.4a 文档 §3.12 |
 | 2026-09-23 | `2.0.0-p0.3b` | **交付前自查**：`syncNow()` 开头调 `stopPolling()` 会把 `polling` 置 `false`，下一句 `ensurePolling()` 又置回 `true` → 界面「正在自动刷新」小圆点以轮询周期闪烁。拆出 `clearTimer()`（只清定时器句柄），`stopPolling()` = `clearTimer()` + 灭灯 | p0.3b 文档 §3.3 / §7 |
 | 2026-09-23 | `2.0.0-p0.3b` | **验收脚本自己会骗人（两处）**：① 首轮按**文案**去重记 toast，而同一文档重复失败的两次文案**一模一样**，第二次被吞 → 「重试真的又跑了一遍」假失败；改为按 DOM 元素记账（`WeakSet`）。② 第二轮点开抽屉后立刻 `count('.chunk-card')`，而抽屉正在异步取片段 → 数到 0（首轮是**假通过**）；改为 `tryWait(n >= chunkN)`。教训：**一次通过不算通过**，本轮验收连跑两遍才算数 | p0.3b 文档 §3.13 / §3.14 / §7；仅验收脚本，`frontend/src` 无改动 |
 

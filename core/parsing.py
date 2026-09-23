@@ -22,14 +22,22 @@ P0-3 把它挪到 worker，P0-4 还要写一个 `scripts/reindex.py` 扫描 `upl
     doc_id      int     document 表主键。**删除与反查的身份键**（不是路径）
     project_id  str     归属项目，多租户过滤用
     chunk_index int     该片段在文档内的序号，从 0 开始，用于稳定排序
+    chunk_id    str     切片引用键 `"<doc_id>:<chunk_index>"`（P0-4a 新增）。
+                        `sources` 带着它回前端，用户点引用 → `GET /api/v1/chunks/{chunk_id}`
+                        → 反查正文；同时它也是 chat_message.ref_ids 里存的值。
+                        这里写一份是让 Chroma 里那条记录**自描述**（外部工具/人
+                        直接看库也认得出引用键）；读取侧仍会从 doc_id+chunk_index
+                        兜底重拼一次，所以这个字段缺失不会让老切片变成死链路。
     source      str     磁盘**绝对**路径（沿用旧语义，兼容 delete_by_source 与老数据）
     file_name   str     **原始**文件名（不是 uuid 落盘名），展示用
     file_type   str     无点后缀
     page        int?    PDF/PPT 的页码，由 Loader 自己带（可能没有）
 
-`doc_id` 与 `chunk_index` 是本次新增的。它们必须在**写入时**就带上 ——
+`doc_id`、`chunk_index`、`chunk_id` 是新增的。前两个必须在**写入时**就带上 ——
 补不回来（事后无法从切片内容反推它属于哪次上传），所以这一步做漏了
 就得整库重建一次。这也是把 P0-4 的一部分提前到 P0-3 的唯一理由。
+`chunk_id` 是前两者的派生值，缺了还能补；但补出来的前提是前两个字段在 ——
+这也是「先有 doc_id/chunk_index、再有 chunk_id」这个顺序不能颠倒的原因。
 
 --------------------------------------------------------------------------
 关于 doc_id 的类型
@@ -49,7 +57,7 @@ from typing import Any
 from config.settings import settings
 from core import document_repo as repo
 from core.document_loader import DocumentLoader
-from core.vector_store import VectorStoreManager, get_vector_store_manager
+from core.vector_store import VectorStoreManager, build_chunk_id, get_vector_store_manager
 
 logger = logging.getLogger(__name__)
 
@@ -185,12 +193,15 @@ def parse_and_index(
         # 所以把话说明白：要么损坏，要么没有可提取文本。
         raise ParseError(f"解析失败或没有可提取文本（文件可能已损坏）：{display_name}")
 
-    # ---- 3. 补上切片序号 ----
+    # ---- 3. 补上切片序号与引用键 ----
     # 必须在切分**之后**编号：切分前的编号是「原始段」的序号，与最终切片不是一一对应。
     # 显式写 int，防止某些 Loader 把元数据值转成字符串。
+    # chunk_id 顺手一起写：它是 (doc_id, chunk_index) 的纯派生值，
+    # 放在同一个循环里能保证两者永远同源 —— 分开写就多了一个「只改了一处」的机会。
     for index, doc in enumerate(documents):
         doc.metadata["doc_id"] = int(doc_id)
         doc.metadata["chunk_index"] = index
+        doc.metadata["chunk_id"] = build_chunk_id(doc_id, index)
 
     # ---- 4. 幂等写入：先清旧切片，再写新的 ----
     removed = store.delete_by_doc_id(doc_id)

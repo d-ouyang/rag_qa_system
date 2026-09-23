@@ -246,10 +246,19 @@ class MySQLSessionStore(SessionStore):
         """
         从轮元数据里抽出引用切片 id 列表（PLAN §11 D3：只存 chunk_id，不存切片正文）。
 
-        ⚠️ 当前 `_extract_sources()` 产出的 source 只有
-        `index / source(磁盘路径) / snippet(200 字) / 两个分数`，**还没有 `chunk_id`**。
-        所以本列现在恒为 `[]`，等 P0-4 把 `chunk_id` 写进 Chroma metadata 后自动生效。
-        先建列是刻意的：P0-4 只改写入侧，不必再动 DDL。
+        这个键在 P0-1b 建表时就把列备好了（`chat_message.ref_ids`），
+        但直到 **P0-4a** 才真正有值 —— 在此之前 `_extract_sources()` 产出的
+        source 只有 `index / source(磁盘路径) / snippet / 两个分数`，没有 chunk_id，
+        于是本列恒为 `[]`。
+
+        P0-4a 之后：`core/parsing.py` 在写入切片时把 `chunk_id`
+        （`"<doc_id>:<chunk_index>"`）写进 Chroma metadata，`_extract_sources()`
+        把它带进 sources，这里就能读到了。前端据此调
+        `GET /api/v1/chunks/{chunk_id}` 反查那段引用的完整正文。
+
+        宽容度是有意的：老切片（P0-3 之前入库、连 doc_id 都没有）经
+        `_resolve_chunk_id()` 会得到 None，这里跳过而不写 null ——
+        存一个 null 进数组会让「引用了几条」这个计数虚高。
         """
         sources = meta.get("sources") or []
         refs: list[Any] = []

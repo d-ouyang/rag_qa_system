@@ -374,6 +374,25 @@ def list_documents(
     return [_row_to_record(r) for r in rows]
 
 
+def list_all() -> list[DocumentRecord]:
+    """
+    不分页列出**全部**文档记录，按 doc_id 升序（重建脚本与对账用）。
+
+    为什么要单独开一个，而不是让调用方用 `list_documents(limit=很大)`：
+    那等于把「分页参数」当成「要不要全量的开关」。哪天有人给 limit 加一个
+    上限（完全合理的一步加固），知识库重建脚本就会**静默地只重建一部分** ——
+    老切片永远清不掉、有效文档漏灌一半，而且不报错。全量与分页是两种意图，
+    就该有两个函数名。
+
+    排序用 doc_id 而不是 upload_time：重建脚本要的是「一条不落」，
+    顺序只影响日志可读性，而 doc_id 是唯一且稳定的。
+    """
+    stmt = select(document_table).order_by(document_table.c.id)
+    with session_scope() as session:
+        rows = session.execute(stmt).all()
+    return [_row_to_record(r) for r in rows]
+
+
 def counts_by_status(project_id: str | None = None) -> dict[str, int]:
     """
     各状态的文档数。四种状态**总是**全量出现（没有的补 0）——

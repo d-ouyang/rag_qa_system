@@ -14,7 +14,7 @@ DOCKER ?= docker
 .PHONY: help setup venv sync lock api web frontend gateway dev stop test memory releases clean ollama \
         infra infra-check infra-logs infra-stop infra-down \
         db-upgrade db-current db-downgrade db-revision db-sql \
-        worker accept accept-ui
+        worker accept accept-ui reindex reindex-apply accept-p04a
 
 help:
 	@echo "—— 一次性 ——"
@@ -41,14 +41,22 @@ help:
 	@echo "                   上传接口只把任务投进队列，解析在这里真正发生；"
 	@echo "                   不起它，文档会一直停在 pending"
 	@echo "                   池按平台自动选（macOS solo / Linux prefork），见 worker/app.py"
-	@echo "make accept        跑**验收**脚本（不打桩；自己起/杀 worker，需先停掉别的 worker）"
+	@echo "make accept        跑**验收**脚本（P0-3a 异步解析链路；不打桩；自己起/杀 worker，需先停掉别的 worker）"
 	@echo "                   与 make test 的区别：test 是回归（打桩、离线可跑），accept 是真链路"
+	@echo "make accept-p04a   跑**验收**脚本（P0-4a 引用反查 + 知识库重建；真跑一次重建脚本）"
+	@echo "                   与 make accept 的两处前提不同：要求**没有** worker 在跑、会改动 vector_db/"
 	@echo ""
 	@echo "—— 前端验收（P0-3b）——"
 	@echo "make accept-ui     跑**浏览器验收**（Playwright 驱动真 Chromium：登录 → 上传 → 轮询状态 →"
 	@echo "                   终态提示 → 失败重试 → 片段抽屉 → 下载 → 删除）"
 	@echo "                   前置：make infra + 四端全在（api / gateway / frontend / worker）"
 	@echo "                   与 make accept 的区别：accept 走 HTTP，accept-ui 走真浏览器（验 DOM 行为）"
+	@echo ""
+	@echo "—— 知识库重建（P0-4a）——"
+	@echo "make reindex       干跑：报告「要补登记哪些文件 / 要重灌几篇 / 有多少孤儿切片」"
+	@echo "                   一句话都不改数据。这个脚本会重灌整库，所以默认是干跑"
+	@echo "make reindex-apply 真执行（补登记 → 逐文档重灌 → 清掉缺 doc_id 的遗留切片）"
+	@echo "                   前置：先停掉 make worker（并发重灌会让切片翻倍）；需 MySQL + 向量库"
 	@echo ""
 	@echo "—— 单独启动（想在各自终端看日志时用）——"
 	@echo "make api       启动 FastAPI (8000)"
@@ -124,6 +132,7 @@ test:
 	$(PY) tests/test_module7_redis_over_tcp.py
 	$(PY) tests/test_module8_mysql_session_store.py
 	$(PY) tests/test_module9_async_pipeline.py
+	$(PY) tests/test_module10_chunk_refs.py
 
 # ---------- 异步解析 Worker（P0-3a）----------
 # 池、并发、超时、投递语义**全部在 worker/app.py 里按 settings 配置**，
@@ -143,6 +152,15 @@ worker:
 accept:
 	$(PY) tests/acceptance_p0_3a.py
 
+# ---------- 引用反查 + 知识库重建验收（P0-4a）----------
+# 与 make accept 同属「不打桩」的验收，区别在两条前提：
+#   · 要求**没有** worker 在跑（重建脚本会拒绝并发执行 —— 并发重灌会让切片翻倍）
+#   · 会真跑一次 scripts/reindex.py（subprocess），因此会改动 vector_db/
+# 这是 P0-4 的一次性成本：遗留切片会被清掉、upload/ 下无记录的文件会被补登记。
+# ⚠️ 前置：make infra。别在正跑着 make worker 的终端里跑这个。
+accept-p04a:
+	$(PY) tests/acceptance_p0_4a.py
+
 # ---------- 前端验收（P0-3b）----------
 # 与 make accept 一样是「不打桩」的验收，区别在**它驱动真浏览器**：
 # 真 NestJS 网关登录（也就真鉴权）、真上传、真 Celery Worker 解析、在真 Chromium 里读 DOM。
@@ -155,6 +173,16 @@ accept:
 # （脚本内部用 createRequire 借道 CJS 才拿得到），所以这里显式把路径传进去。
 accept-ui:
 	NODE_PATH="$$(npm root -g)" $(NODE) tests/acceptance_p0_3b_ui.mjs
+
+# ---------- 知识库重建（P0-4a）----------
+# 干跑是**默认**：这个脚本会重灌整库并删除遗留切片，不该在敲错命令时就直接动数据。
+# 所以拆成两个目标，reindex 永远安全，reindex-apply 才是要动手的那个。
+# ⚠️ 执行前请先停掉 make worker —— 见 scripts/reindex.py 文件头「为什么拒绝并发执行」。
+reindex:
+	$(PY) scripts/reindex.py
+
+reindex-apply:
+	$(PY) scripts/reindex.py --apply
 
 ollama:
 	@curl -s http://localhost:11434/api/tags | head -c 200; echo

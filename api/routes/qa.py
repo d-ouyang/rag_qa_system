@@ -63,6 +63,16 @@ class SourceItem(BaseModel):
     """单条溯源信息（检索到的资料片段）。"""
 
     index: int = Field(description="资料序号（与 prompt 中【资料N】对应）")
+    # chunk_id 是 P0-4a 加的**引用键**：前端拿它调 GET /api/v1/chunks/{chunk_id} 反查切片全文。
+    # ⚠️ 这个字段必须写在这里，不能指望 response_model 透传 ——
+    #    pydantic 默认 extra='ignore'，`_extract_sources()` 多给的键会被**静默丢掉**，
+    #    现象是「后端日志里有 chunk_id、接口返回里没有」，且不会报任何错。
+    #    由 tests/test_module10_chunk_refs.py 的「溯源字段契约」用例守着。
+    chunk_id: str | None = Field(
+        default=None,
+        description="切片引用键（格式 `<doc_id>:<chunk_index>`）；P0-3 之前的遗留切片为 null，"
+                    "前端应渲染成不可点击的纯文本",
+    )
     source: str = Field(description="来源文件路径")
     snippet: str = Field(description="片段摘要（前 200 字）")
     rerank_score: float | None = Field(default=None, description="重排分数 0~1，越大越相关")

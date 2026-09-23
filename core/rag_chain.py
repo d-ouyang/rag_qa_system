@@ -64,6 +64,7 @@ from core.intent_router import Intent, IntentResult, get_intent_classifier
 from core.llm_client import LLMClient, get_llm_client
 from core.memory_manager import MemoryManager, get_memory_manager
 from core.retriever import RAGRetriever, get_rag_retriever
+from core.vector_store import build_chunk_id
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +232,31 @@ def _extract_usage(message: Any) -> dict[str, int]:
 # 会与「不知道就说不知道」的护栏竞争，实测空上下文时模型可能编造数字。
 # 检索结果为空 → 压根不进 LLM，直接返回固定话术，幻觉概率归零。
 _NO_CONTEXT_ANSWER = "根据现有资料无法回答该问题。请先向知识库录入相关资料，或换个问法重试。"
+
+
+def _resolve_chunk_id(metadata: dict[str, Any]) -> str | None:
+    """
+    从切片元数据里取出引用键；元数据里没有就用 doc_id + chunk_index 现拼一个。
+
+    存在的意义：P0-3a 与 P0-4a 之间入库的那批切片只有 doc_id / chunk_index，
+    没有 chunk_id。它们的正文完好、反查通道也通，唯一缺的就是「键」。
+    在这里补一次，等于让那批切片不必为了一个派生字段整库重建。
+
+    两级都拿不到（P0-3 之前的遗留切片）返回 None —— 调用方（前端）据此
+    把引用渲染成不可点击的纯文本。**不要**退化成返回 source 路径：
+    那会让前端以为「有键可查」，点下去必然 404。
+    """
+    existing = metadata.get("chunk_id")
+    if isinstance(existing, str) and existing:
+        return existing
+
+    doc_id = metadata.get("doc_id")
+    chunk_index = metadata.get("chunk_index")
+    if isinstance(doc_id, bool) or not isinstance(doc_id, int):
+        return None
+    if isinstance(chunk_index, bool) or not isinstance(chunk_index, int):
+        return None
+    return build_chunk_id(doc_id, chunk_index)
 
 
 def format_docs(docs: list[Document]) -> str:
@@ -519,14 +545,31 @@ class RAGChain:
 
         同时透传两种分数（重排分 / 向量相似度）：两者量纲不同但方向一致，
         前端展示「相关度」用 rerank_score 优先，退化到 vector_similarity。
+
+        `chunk_id` 是 P0-4a 加的**引用键**：前端据此调
+        `GET /api/v1/chunks/{chunk_id}` 反查切片正文，`core/mysql_store.py`
+        的 `_extract_ref_ids()` 也据它往 `chat_message.ref_ids` 落库 ——
+        在那个键出现之前，`ref_ids` 列一直是空的。
+
+        取值是「先读元数据、读不到再拼」的两级：
+            · 元数据里有 chunk_id —— P0-4a 之后入库的切片，直接用；
+            · 没有 —— P0-3a 期间入库的切片（那时只写了 doc_id 与 chunk_index），
+              由这两个字段现拼一个。
+        不这么做的话，那批切片在界面上会变成「点不开的引用」，
+        而它们的正文其实好端端地躺在库里 —— 纯粹是键没带上而已。
+
+        两级都拿不到（P0-3 之前的遗留切片，连 doc_id 都没有）就返回 None：
+        这类切片**本来就无法反查**，前端应当把它渲染成不可点击的纯文本，
+        而不是给一个点了报错的按钮。
         """
         sources: list[dict[str, Any]] = []
         for index, doc in enumerate(docs, start=1):
             metadata = doc.metadata
             sources.append({
                 "index": index,
+                "chunk_id": _resolve_chunk_id(metadata),
                 "source": metadata.get("source", "未知来源"),
-                # 片段摘要：接口不把全文吐出去，前端需要全文可以按 source 再查
+                # 片段摘要：接口不把全文吐出去，前端需要全文可以按 chunk_id 反查
                 "snippet": doc.page_content[:200],
                 "rerank_score": metadata.get("rerank_score"),
                 "vector_similarity": metadata.get("vector_similarity"),
