@@ -177,6 +177,50 @@ export async function uploadFile<T>(path: string, file: File): Promise<T> {
   return (await res.json()) as T
 }
 
+/** 一次文件下载的结果：二进制本体 + 服务端建议的文件名。 */
+export interface DownloadedFile {
+  blob: Blob
+  filename: string
+}
+
+/**
+ * 取二进制文件（目前只有「下载知识库原文件」用）。
+ *
+ * 为什么不能写成 `<a href="/api/v1/documents/download?doc_id=1">`：
+ * 那样发出的请求**不带 Authorization 头**，会被网关直接拒成 401
+ * （浏览器的导航请求无法附加自定义头）。而把 token 塞进 URL 又会进
+ * 浏览器历史与访问日志 —— 等于泄露凭据。
+ * 所以只能 fetch 取 blob，再在调用方用一个临时 object URL 触发保存。
+ *
+ * 文件名从 `Content-Disposition` 取，且**必须兼容 RFC 5987**：
+ * Starlette 对非 ASCII 文件名会输出 `filename*=utf-8''%E5%B7%AE%E6%97%85...`，
+ * 直接读 `filename="..."` 会拿到一串百分号编码（甚至拿到空串）。
+ */
+export async function getFile(path: string): Promise<DownloadedFile> {
+  const res = await ensureOk(await fetch(`${API_BASE}${path}`, { headers: buildHeaders(false) }))
+  return {
+    blob: await res.blob(),
+    filename: parseFilename(res.headers.get('content-disposition')),
+  }
+}
+
+/** 默认兜底文件名：`Content-Disposition` 缺失或解析不出时用，避免存成一个没有扩展名的怪东西。 */
+const FALLBACK_FILENAME = 'download'
+
+function parseFilename(disposition: string | null): string {
+  if (!disposition) return FALLBACK_FILENAME
+  const extended = /filename\*=(?:UTF-8|utf-8)''([^;]+)/.exec(disposition)
+  if (extended) {
+    try {
+      return decodeURIComponent(extended[1])
+    } catch {
+      /* 百分号编码坏了就往下走普通 filename */
+    }
+  }
+  const plain = /filename="?([^";]+)"?/.exec(disposition)
+  return plain ? plain[1] : FALLBACK_FILENAME
+}
+
 /**
  * NDJSON 流式请求：POST + ReadableStream 逐行解析，每解析出一行回调一次。
  *

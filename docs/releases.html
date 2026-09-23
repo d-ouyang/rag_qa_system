@@ -85,7 +85,7 @@
   }
   .badge .live { width: 6px; height: 6px; border-radius: 50%; background: var(--added); }
 
-  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
   .stat {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 12px; padding: 15px 16px;
@@ -104,7 +104,7 @@
   .track { height: 7px; border-radius: 4px; background: var(--surface-3); overflow: hidden; display: flex; gap: 2px; }
   .seg { flex: 1; border-radius: 4px; background: var(--surface-3); }
   .seg.done { background: var(--seg, var(--added)); }
-  /* 半项（如 P0-3 只完成后端 3a）：一半实心一半空 —— 不让「做了一半」看起来像「做完了」 */
+  /* 半项（如 P1-5 只完成了 5a 中间件容器化）：一半实心一半空 —— 不让「做了一半」看起来像「做完了」 */
   .seg.partial { background: linear-gradient(90deg, var(--seg, var(--added)) 50%, var(--surface-3) 50%); }
   .bar-row .num { font-family: var(--mono); font-size: 12px; color: var(--text-2); text-align: right; }
 
@@ -235,7 +235,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p0.3a</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p0.3b</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -244,28 +244,29 @@
     <div class="stats">
       <div class="stat"><div class="k">后端自动化测试</div><div class="v">725<span class="u">项</span></div></div>
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
-      <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">3.5<span class="u">/ 10</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">6<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
+      <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">4<span class="u">/ 10</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">7<span class="u">个</span></div></div>
     </div>
   </section>
 
   <section>
     <div class="prog-head">
       <h2>2.0.0 迭代进度</h2>
-      <span class="sub">问答记录已落数据库、鉴权网关与中间件容器化已完成；异步解析的<strong>后端</strong>已完成（前端待做）</span>
+      <span class="sub">问答记录已落数据库、鉴权网关已完成；<strong>异步解析的前后端都已完成</strong>（知识库页可看到解析进度与失败原因）。P1-5 只完成了一半（中间件已容器化，应用容器化待做），故显示为半格。</span>
     </div>
     <div class="bars">
       <div class="bar-row">
         <div class="lbl">P0 上线硬前提 <em>数据落库 · 鉴权 · 异步解析 · 向量元数据</em></div>
         <div class="track" style="--seg:#3fb950">
-          <div class="seg done"></div><div class="seg done"></div><div class="seg partial"></div><div class="seg"></div>
+          <div class="seg done"></div><div class="seg done"></div><div class="seg done"></div><div class="seg"></div>
         </div>
-        <div class="num">2 / 4</div>
+        <div class="num">3 / 4</div>
       </div>
       <div class="bar-row">
         <div class="lbl">P1 容器化与部署 <em>容器 · 模型 · TLS</em></div>
         <div class="track" style="--seg:#58a6ff">
-          <div class="seg done"></div><div class="seg"></div><div class="seg"></div>
+          <div class="seg partial"></div><div class="seg"></div><div class="seg"></div>
         </div>
         <div class="num">1 / 3</div>
       </div>
@@ -293,8 +294,8 @@
   <footer>
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
-      2.0.0 是进行中的大版本——异步解析的前端改造、向量元数据对齐、应用容器化、TLS 都还没有做完，
-      所以「当前版本 2.0.0-p0.3a」不等于「可以上线」。
+      2.0.0 是进行中的大版本——向量元数据对齐、应用容器化、TLS 都还没有做完，
+      所以「当前版本 2.0.0-p0.3b」不等于「可以上线」。
     </p>
     <dl>
       <div><dt>docs/RELEASES.md</dt><dd>对外变更叙事（本页内容来源）</dd></div>
@@ -314,6 +315,53 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p0.3b",
+    date: "2026-09-23",
+    accent: "#58a6ff",
+    tagline: "后台在做什么，页面上看得见：解析进度、失败原因、一键重试",
+    problem: "上一版把上传改成了「提交立刻返回、解析交给后台慢慢做」。这条路是对的，但它把一个问题推到了前台：界面上看不出后台在干什么。上一版的界面还在问「这一次入库了多少片段」——而这个数字在提交那一刻根本不存在，要等后台解析完才知道。于是上一版之后，知识库管理页实际上是坏的：点了上传，页面不给任何反馈，用户不知道文件到底进去了没有，只能反复点、或者关掉重试。能力做对了，界面还在按旧节奏说话。这一版把界面接到新的节奏上，核心就一句话：后台在做什么，页面上要看得见。",
+    sections: [
+      { type: "added", items: [
+        { star: true, h: "状态列：排队中 / 解析中 / 已完成 / 失败", t: "提交之后不用猜，看着它从「排队中」走到「解析中」再到「已完成」；一段时间没动静也不会误以为卡死——状态自己会更新。" },
+        { h: "完成时弹一次提示，写明切成了多少片段", t: "片段数不是装饰：检索、引用、喂给模型的都是片段，不是原文档整体，所以这个数是用户判断「这份文档有没有被好好处理」的唯一依据。" },
+        { h: "失败可以一键重试", t: "以前失败就是失败，用户只能把文件删掉重传；现在失败那一行直接给一个「重试」按钮，点一下重新排队。" },
+        { star: true, h: "「解析进程是不是在跑」会显示出来", t: "这是异步化带来的新故障类型：后台那个常驻进程如果没启动，提交上去的任务会静静地躺在队列里，页面看起来就是「一直在转圈」，而且转多久都不会好。这一版会明确告诉用户「有几份文档在等待解析，但没有检测到解析进程在运行」，并给出该执行哪条命令——这是用户唯一能自己修的一类故障，不告诉他等于让他干等。" },
+        { h: "可以下载原文件", t: "排查「我上传的到底是不是那份」时不用再去服务器上找。" }
+      ]},
+      { type: "fixed", items: [
+        { star: true, h: "上传后不会再因为「没反应」而重复上传", t: "这是上一版最直接的副作用：用户点上传、页面没反馈，于是再点一次，于是又提交一份。这一版提交后立刻给一句「已提交，正在后台解析」，并且刻意不说「成功」——受理不等于完成，这时候说成功就是在骗人。" }
+      ]},
+      { type: "improved", items: [
+        { h: "轮询只在有必要的时候才转", t: "三道限制：全部文档都处理完了就不转；页面切到后台（切走标签页）就不转，切回来立刻补一次；请求连续失败就逐步拉长间隔（最多拉长到 30 秒一次）。一个不做限制的轮询器，就是一台持续消耗服务器的机器。" },
+        { star: true, h: "切走页面、关掉标签页，回来照样能看到结果", t: "解析要几十秒甚至更久，用户在等的时候一定会去干别的。如果进度和完成提示「一离开页面就没了」，那用户就只能在知识库页干等——那等于没做成异步。做法是把「盯着进度」这件事放在页面之外的地方，而不是挂在某个具体的页面上。验收里专门验了这条：切到别的页面之后，完成提示照样弹出来。" },
+        { h: "失败原因整行展开，写成人话", t: "它要回答的是「我下一步该干什么」，所以必须完整可见、指明是哪个文件；塞进一个小格子里被截断，等于没给。" },
+        { h: "按钮置灰时必须说明原因", t: "比如「已成功解析的文档不支持重试」——置灰而不解释，用户只会以为页面坏了。" },
+        { h: "下载按钮带上了登录凭据", t: "下载链接如果直接点，浏览器不会带上登录信息，结果就是一个「未授权」的错误页；改成一键保存，并且文件名保持中文原样不乱码。" }
+      ]},
+      { type: "verified", items: [
+        { star: true, h: "", t: "浏览器端到端验收 56 项、0 失败，连跑两遍。专门写了一个用真实浏览器跑的验收脚本：用真实账号登录 → 真实上传 → 等真实的后台进程解析 → 读页面上的状态与提示 → 真实下载 → 真实删除，全程零控制台报错。它验的是那些用接口测试看不见的东西：状态列到底有没有在动、按钮到底有没有灰、失败原因到底能不能读懂。" },
+        { h: "", t: "上一版的验收标准全部重跑一遍，5 条依然成立：50MB 上传响应立即返回（实测 0.60 秒）、关掉浏览器任务照常跑完、同一任务入队两次不会产生重复内容、损坏文件标记失败且原因可读、杀掉后台进程再重启任务继续被消费。" },
+        { h: "", t: "后端全套 725 项、0 失败，项数与上一版一字不差。本轮是纯界面改造，没加任何后端测试，也不该改变任何既有行为——「项数不变且全绿」本身就是「这次改动对后端零影响」的证据。" },
+        { h: "", t: "顺带记一个会让下一个人误判的点：后端测试的总项数取决于当时有没有后台进程在跑。探测不到进程时，有一组端到端测试会自动跳过，总数从 725 变成 719——看到 719 不要当成回归，两个数都是 0 失败。" }
+      ]},
+      { type: "boundary", items: [
+        { h: "提示条会盖住页面顶部的一段说明文字", t: "同时出现两三条提示时比较明显。之所以这一版没动它：这个提示条是所有页面共用的，改位置会影响问答页和设置页的观感，超出了这次「把知识库页接上后台节奏」的范围。已截图留证，留作一次独立的界面打磨。（顺带说明：这一版之前这里最多同时出现一条提示，所以看不太出来。）" },
+        { h: "侧边栏的「片段总数」里含一批旧数据", t: "知识库列表为空时它显示 15，那是早期（切片还没带文档编号时）写入的遗留内容，列表里看不到、也管不了。这不是本版的缺陷，而正是下一步要做的「知识库重建」要清理的对象。" }
+      ]}
+    ],
+    postmortem: {
+      title: "复盘 · 一次「假通过」的验收",
+      rows: [
+        ["发现方式", "第一次跑全绿了。为了确认不是运气，又跑了一遍 —— 第二遍挂了 2 项。"],
+        ["现象", "「抽屉里列出了片段」数到 0 个。但同一个断言第一次跑是通过的。"],
+        ["关键判断", "不是渲染坏了，是数得太早：抽屉打开时会异步去取片段，那一刻列表还是空的。第一遍恰好在数据回来之后才数，所以通过了。"],
+        ["同类问题", "另有一处更早的版本：验收脚本把两条文案完全相同的提示当成一条，于是「重试真的又跑了一遍」这条断言假失败（明明跑了，却只记到一次）。改动是按「界面元素」记账而不是按「文案」去重。"],
+        ["处理", "改成「等到数量够了再断言」，顺手把断言加强成「抽屉列出的片段数与列表里的完全一致」。"],
+        ["教训", "一次通过不算通过。一个在赌时间的断言，跑十次会绿九次，然后把一个真问题盖住。所以这一版的验收结论是「连跑两遍」，而不是「跑过了」。"]
+      ]
+    }
+  },
   {
     version: "v2.0.0-p0.3a",
     date: "2026-09-23",

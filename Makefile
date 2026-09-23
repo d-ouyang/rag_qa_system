@@ -6,13 +6,15 @@ PYTHON_VERSION ?= 3.11
 UV ?= uv
 VENV := .venv
 PY := $(VENV)/bin/python
+# 前端验收脚本要跑 node；窄 PATH 环境（沙箱）可用 `make accept-ui NODE=/abs/path/node` 覆盖
+NODE ?= node
 # 用变量包一层是为了让沙箱/窄 PATH 环境能通过 `make infra DOCKER=/usr/local/bin/docker` 覆盖
 DOCKER ?= docker
 
 .PHONY: help setup venv sync lock api web frontend gateway dev stop test memory releases clean ollama \
         infra infra-check infra-logs infra-stop infra-down \
         db-upgrade db-current db-downgrade db-revision db-sql \
-        worker accept
+        worker accept accept-ui
 
 help:
 	@echo "—— 一次性 ——"
@@ -41,6 +43,12 @@ help:
 	@echo "                   池按平台自动选（macOS solo / Linux prefork），见 worker/app.py"
 	@echo "make accept        跑**验收**脚本（不打桩；自己起/杀 worker，需先停掉别的 worker）"
 	@echo "                   与 make test 的区别：test 是回归（打桩、离线可跑），accept 是真链路"
+	@echo ""
+	@echo "—— 前端验收（P0-3b）——"
+	@echo "make accept-ui     跑**浏览器验收**（Playwright 驱动真 Chromium：登录 → 上传 → 轮询状态 →"
+	@echo "                   终态提示 → 失败重试 → 片段抽屉 → 下载 → 删除）"
+	@echo "                   前置：make infra + 四端全在（api / gateway / frontend / worker）"
+	@echo "                   与 make accept 的区别：accept 走 HTTP，accept-ui 走真浏览器（验 DOM 行为）"
 	@echo ""
 	@echo "—— 单独启动（想在各自终端看日志时用）——"
 	@echo "make api       启动 FastAPI (8000)"
@@ -134,6 +142,19 @@ worker:
 # 当前脚本对应 docs/PLAN-v2.0.0.md 的 P0-3a（版本号见文件名）。
 accept:
 	$(PY) tests/acceptance_p0_3a.py
+
+# ---------- 前端验收（P0-3b）----------
+# 与 make accept 一样是「不打桩」的验收，区别在**它驱动真浏览器**：
+# 真 NestJS 网关登录（也就真鉴权）、真上传、真 Celery Worker 解析、在真 Chromium 里读 DOM。
+# 之所以必须用浏览器：本次改造的验收对象（状态列真的在轮询、切走页面后提示还在、
+# 按钮按状态置灰、失败原因可读）全是 DOM 行为，HTTP 断言里看不见。
+# 只有两处桩，且都是**前端渲染分支**（脚本头注释写明了是哪两处、为什么）：
+# /api/v1/system/queue 的 worker 存活、文档列表里注入一条 pending 记录。
+# ⚠️ 前置：make infra + 四端全在（make api / gateway / frontend / worker）。
+# playwright 装在全球 node_modules 下，而 ESM 的 import 不认 NODE_PATH
+# （脚本内部用 createRequire 借道 CJS 才拿得到），所以这里显式把路径传进去。
+accept-ui:
+	NODE_PATH="$$(npm root -g)" $(NODE) tests/acceptance_p0_3b_ui.mjs
 
 ollama:
 	@curl -s http://localhost:11434/api/tags | head -c 200; echo

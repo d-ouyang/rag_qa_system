@@ -63,32 +63,152 @@ export interface TurnUsage {
   cache_read_tokens: number
 }
 
-/** 知识库文档（GET /api/v1/documents） */
+/**
+ * 文档解析状态 —— 与后端 `document.status` 的四态一一对应。
+ *
+ * 这个状态由**后台 Worker 推进**（P0-3a 起），不是前端轮询出来的中间态：
+ * 上传接口返回的是 `pending`，解析在另一个进程里跑，前端只能读、不能推。
+ * 所以四态里没有「上传中」——「上传中」是 HTTP 请求还没回来，属于另一回事。
+ */
+export type DocStatus = 'pending' | 'parsing' | 'success' | 'fail'
+
+/**
+ * 知识库文档（`GET /api/v1/documents/`）。
+ *
+ * ⚠️ 数据源是 **MySQL**，不是向量库。原因：正在解析 / 解析失败的文档在向量库里
+ * 根本没有切片，只看向量库会让人以为「文件没上传成功」。
+ * 所以这里有 status / fail_reason 这些向量库提供不了的字段。
+ */
 export interface KnowledgeDoc {
-  source: string
+  /** document 表主键。**删除、重解析、查切片、下载都用它**（不再用磁盘路径当身份） */
+  doc_id: number
+  project_id: string
+  /** 原始文件名（展示与下载用）。磁盘名是 uuid，见 storage_path */
   file_name: string
-  file_type: string
+  /** 磁盘相对路径（uuid 名）。接口返回但**不该用于拼任何地址** */
+  storage_path: string
+  file_size: number
+  status: DocStatus
+  /** 切片数。仅 status=success 时有意义；失败会被后端归零 */
   chunk_count: number
+  /** 失败原因（**给人看的文案**，status=fail 时有值；其余状态为空串） */
+  fail_reason: string
+  /** 被解析过几次。重试会累加，用于展示「试了 3 次还是失败」 */
+  attempt_count: number
+  /** 上传时间。后端统一成 `YYYY-MM-DD HH:mm:ss` 字符串（不是 ISO-T，见后端 to_dict） */
+  upload_time: string
+  /** 本次解析开始时间，**仅 parsing 时非空**；非空且过久 = 卡住的孤儿任务 */
+  parse_started_at: string | null
 }
 
-/** 文档切分片段（GET /api/v1/documents/chunks） */
+/** 文档状态计数。四个状态**恒全量出现**（没有的补 0），所以可以直接读 */
+export interface DocStatusCounts {
+  pending: number
+  parsing: number
+  success: number
+  fail: number
+  total: number
+}
+
+export interface DocumentListResponse {
+  /** 本次返回的条数（受 limit 限制），不是库里总数 */
+  total_documents: number
+  /** 向量库里的切片总数（含正在解析中的文档已写入的部分） */
+  total_chunks: number
+  counts: DocStatusCounts
+  documents: KnowledgeDoc[]
+}
+
+/**
+ * 上传受理响应（`POST /api/v1/documents/upload` → **202**）。
+ *
+ * ⚠️ 这里**没有 `chunks_added`** —— 响应发出的那一刻解析还没开始，
+ * 那个数根本不存在。前端必须改成轮询 `status`（这就是 P0-3b 的全部理由）。
+ */
+export interface UploadAccepted {
+  doc_id: number
+  file_name: string
+  /** 恒为 pending（受理成功但尚未解析） */
+  status: DocStatus
+  file_size: number
+  /** 无点后缀，如 pdf */
+  file_type: string
+  project_id: string
+  /** 是否成功投进解析队列。**false 表示已入库但排队失败**（消息队列不可用），可用 reparse 补投 */
+  queued: boolean
+  /** queued=false 时后端给的处理建议 */
+  detail?: string
+}
+
+/** 手动重解析（`POST /api/v1/documents/{doc_id}/reparse` → 202） */
+export interface ReparseAccepted {
+  doc_id: number
+  status: DocStatus
+  queued: boolean
+  detail?: string
+}
+
+/** 删除文档（`DELETE /api/v1/documents/{doc_id}`）：三件事的执行结果 */
+export interface DeleteDocumentResponse {
+  doc_id: number
+  /** 从向量库删掉的切片数 */
+  deleted_chunks: number
+  /** 磁盘原文件是否删掉了 */
+  file_removed: boolean
+  /** MySQL 记录是否删掉了 */
+  record_removed: boolean
+  file_name?: string
+  /** 记录本来就不存在时的说明（删除是幂等的，不算错误） */
+  detail?: string
+}
+
+/** 文档切分片段（`GET /api/v1/documents/{doc_id}/chunks`，按 chunk_index 升序） */
 export interface DocumentChunk {
+  /** 展示序号，**从 1 开始**（后端 enumerate(start=1)） */
   index: number
   content: string
   char_count: number
+  /** PDF/PPT 的页码，可能没有 */
   page?: number | null
+  /** 库内序号，**从 0 开始**；老数据可能没有（null） */
+  chunk_index?: number | null
 }
 
 export interface DocumentChunksResponse {
-  source: string
+  doc_id: number
+  file_name: string
+  status: DocStatus
   chunk_count: number
   chunks: DocumentChunk[]
 }
 
-export interface DocumentListResponse {
-  total_documents: number
-  total_chunks: number
-  documents: KnowledgeDoc[]
+/**
+ * 解析链路运行状态（`GET /api/v1/system/queue`）。
+ *
+ * ⚠️ **本接口服务端会阻塞约 1 秒**：worker 存活探测走 Celery 的 inspect().ping()，
+ * 它必须等满一个超时窗口才能确定「不会再有 worker 应答」。
+ * 所以前端**不能**把它挂到跟文档列表同频的轮询上（见 stores/documents.ts 的降频逻辑）。
+ */
+export interface ParseQueueStatus {
+  queue: {
+    name: string
+    broker_ok: boolean
+    /** 待消费消息数（LLEN）；broker 不可达时为 null */
+    depth: number | null
+    /** 已投递未被确认的消息数 */
+    unacked: number | null
+    detail: string
+  }
+  worker: {
+    ok: boolean
+    /** 应答的 worker 名单，如 ["celery@host"] */
+    workers: string[]
+    detail: string
+  }
+  /** 文档状态计数（MySQL）；读失败时只有 error 字段 */
+  documents: Partial<DocStatusCounts> & { error?: string }
+  /** 上面那个 1 秒超时的具体数值，让调用方知道本接口最坏多慢 */
+  ping_timeout_seconds: number
 }
 
 export interface VectorStats {

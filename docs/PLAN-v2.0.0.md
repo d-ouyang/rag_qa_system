@@ -79,7 +79,7 @@
 |------|------|------|----------|
 | P0-1 业务数据持久化（MySQL 真相源） | ✅ **已完成**（Redis 版作废，MySQL 版交付于 `p0.1b`） | `2.0.0-p0.1b` | `iterations/v2.0.0-p0.1-redis-session-store.md`（§7.1 方案变更 / §7.2 返工交付） |
 | P0-2 鉴权网关（NestJS） | ✅ 已完成 | `2.0.0-p0.2` | `iterations/v2.0.0-p0.2-auth-gateway.md` |
-| P0-3 异步解析链路（队列 + Worker） | 🔄 **3a 后端已完成，3b 前端未做**（见 §P0-3 的「3a/3b 拆分」） | `2.0.0-p0.3a` | `iterations/v2.0.0-p0.3a-async-parsing.md` |
+| P0-3 异步解析链路（队列 + Worker） | ✅ **已完成**（3a 后端 `p0.3a` + 3b 前端 `p0.3b`） | `2.0.0-p0.3b` | `iterations/v2.0.0-p0.3a-async-parsing.md`（后端）<br>`iterations/v2.0.0-p0.3b-frontend-polling.md`（前端） |
 | P0-4 向量元数据对齐 + 知识库重建 | ⬜ 未开始 | — | — |
 | P1-5 Docker 化（本地全栈 + 服务器预演） | 🔄 **5a 中间件已完成**，5b 待 P0 后 | `2.0.0-p1.5a` | `iterations/v2.0.0-p1.5a-middleware-compose.md` |
 | P1-6 模型目录处理 | ⬜ 未开始 | — | — |
@@ -91,8 +91,8 @@
 > 状态标记：⬜ 未开始 / 🔄 进行中 / ✅ 已完成。每完成一项就在此表更新状态，
 > 并同步「版本」与「迭代文档」两列 —— 这是计划书与 `CHANGELOG.md` 的对账依据。
 >
-> 大版本合计：**P0-1 完成；P0-2 完成；P0-3a 完成（P0-3b 未做）；P1-5a 完成（P1-5b 未做）；其余未开始。**
-> P0 阶段 tag `v2.0.0-p0.4` 要等 P0-3 + P0-4 做完。
+> 大版本合计：**P0-1 完成；P0-2 完成；P0-3 完成（3a 后端 + 3b 前端）；P1-5a 完成（P1-5b 未做）；其余未开始。**
+> P0 阶段 tag `v2.0.0-p0.4` 要等 P0-3 + P0-4 做完 —— 现在只差 P0-4。
 >
 > **编号顺序 ≠ 执行顺序**（这是本版计划书的新情况，别被绕进去）：
 > P1-5a 是 P0-1 的前置，所以它在 P0-1 之前完成 —— 于是会出现「`p1.5a` 早于 `p0.1b`」的版本号顺序。
@@ -239,7 +239,7 @@
 
 ### P0-3 异步解析链路：上传即返回 + Worker 消费
 
-> **状态：3a 后端 ✅ 已完成（`v2.0.0-p0.3a`）；3b 前端 ⬜ 未做。**
+> **状态：3a 后端 ✅ 已完成（`v2.0.0-p0.3a`）；3b 前端 ✅ 已完成（`v2.0.0-p0.3b`）。P0-3 整体完成。**
 >
 > **为什么拆成两半**（原计划是一项）：
 > 后端（队列 + worker + `document` 状态机 + 7 个接口）与前端（轮询 + 按钮状态机）是
@@ -256,7 +256,14 @@
 > - **3b 要做什么**：`frontend/src/api/documents.ts` / `stores/documents.ts` /
 >   `views/KnowledgeView.vue` / `types.ts` —— 提交后按 `status` 轮询、
 >   删除与重解析按钮按状态置灰、失败原因展示与「重试」入口。
-> - 实现细节与「否掉的方案 + 代价」见 `docs/iterations/v2.0.0-p0.3a-async-parsing.md`。
+> - **3b 实际交付**：上述四个文件 + `api/http.ts`（下载要带 token，`<a href>` 带不上）；
+>   轮询放在 store 而非视图（`App.vue` 用 `v-if`，切走会卸载组件并导致提示丢失）；
+>   终态提示只发给「进过 `watched` 的文档」（否则一开页糊十几条 toast）；
+>   新增链路告警（「有文档在排队但没有 Worker 在跑」——用户唯一能自己修的故障）；
+>   新增 `make accept-ui` 浏览器验收（56 项 / 0 失败，连跑两遍）。
+>   **后端一行未改**，`make test` 项数与 p0.3a 持平且全绿。
+> - 实现细节与「否掉的方案 + 代价」见 `docs/iterations/v2.0.0-p0.3a-async-parsing.md`（后端）
+>   与 `docs/iterations/v2.0.0-p0.3b-frontend-polling.md`（前端）。
 
 - **现状问题**：`api/routes/documents.py` 的上传是**同步**的 —— HTTP 请求里直接 `load_file` → `add_documents`（解析 + 切分 + 嵌入 + 入库）。大文件会把请求挂住几十秒，且无法批量上传。
 - **改造后的链路**：
@@ -291,13 +298,14 @@
 
 **前端联动**：知识库管理页的上传改为「提交 → 列表轮询 `status`」，删除/重解析按钮按状态置灰。
 
-**验收**（3a 已逐条实测通过，见 `tests/acceptance_p0_3a.py`；3b 完成后需再跑一遍，含前端）：
+**验收**（3a 用 `tests/acceptance_p0_3a.py`（HTTP 口径）逐条实测通过；3b 完成后已重跑一遍，
+并用 `tests/acceptance_p0_3b_ui.mjs`（`make accept-ui`，浏览器口径）补上前端部分）：
 
 1. 上传 50MB 文件，HTTP 响应立即返回（不含解析耗时）；  ← ✅ 实测 0.57s
 2. 提交后关闭浏览器，任务照常跑完，重开页面状态正确；  ← ✅
 3. 手动 `kill` Worker 后重启，`pending` 任务继续被消费；  ← ✅
 4. 人为让同一 `doc_id` 入队两次 → Chroma 不出现重复切片；  ← ✅ `attempt_count==1`
-5. 上传损坏文件 → `status=fail` + `fail_reason` 可读，前端能重试。  ← ✅（**「前端能重试」的前端部分待 3b**）
+5. 上传损坏文件 → `status=fail` + `fail_reason` 可读，前端能重试。  ← ✅（后端；**「前端能重试」已由 `make accept-ui` 补上**：`.fail-row` 展示原因 + 「重试」可用 + 重试后 `attempt_count` 变 2 且再次失败）
 
 ### P0-4 向量元数据对齐 + 知识库重建
 
