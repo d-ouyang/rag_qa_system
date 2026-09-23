@@ -10,9 +10,13 @@ PY := $(VENV)/bin/python
 NODE ?= node
 # 用变量包一层是为了让沙箱/窄 PATH 环境能通过 `make infra DOCKER=/usr/local/bin/docker` 覆盖
 DOCKER ?= docker
+# 全栈容器对外端口（与 docker-compose.yml 的默认值保持一致；改 .env 后这里也要改）
+FRONTEND_PORT ?= 8080
+GATEWAY_PORT ?= 3000
 
 .PHONY: help setup venv sync lock api web frontend gateway dev stop test memory releases clean ollama \
         infra infra-check infra-logs infra-stop infra-down \
+        stack-up stack-ps stack-logs stack-down stack-rebuild \
         db-upgrade db-current db-downgrade db-revision db-sql \
         worker accept accept-ui reindex reindex-apply accept-p04a accept-ui-p04b
 
@@ -28,6 +32,13 @@ help:
 	@echo "make infra-logs    跟踪容器日志"
 	@echo "make infra-stop    停容器（保留数据）"
 	@echo "make infra-down    移除容器与网络（保留 volume，数据不丢）"
+	@echo ""
+	@echo "—— 全栈容器（P1-5b）——"
+	@echo "make stack-up      起全栈（中间件 + backend/worker/gateway/frontend，会先构建镜像）"
+	@echo "make stack-ps      看全栈容器状态"
+	@echo "make stack-logs    跟踪全栈日志"
+	@echo "make stack-down    只停四个应用容器（中间件继续跑）"
+	@echo "make stack-rebuild 重建单个服务的镜像（make stack-rebuild s=backend）"
 	@echo ""
 	@echo "—— 数据库迁移（Alembic，P0-1）——"
 	@echo "make db-upgrade    把库升到最新结构（alembic upgrade head）"
@@ -224,6 +235,36 @@ infra-down:
 	@echo ""
 	@echo "容器已移除，volume（mysql_data / redis_data）保留，业务数据未丢。"
 	@echo "如需彻底清空：$(DOCKER) compose down -v   ⚠️ 会删除全部业务数据"
+
+# ---------- 全栈容器（P1-5b）----------
+# 应用服务挂在 `full` profile 下（原因见 docker-compose.yml 头部注释）：
+# 不加 --profile 的命令看到的只有中间件，与 P1-5a 时期行为一致。
+#
+# ⚠️ 起全栈前先停掉宿主机上裸跑的 backend(8000) / gateway(3000) / frontend(5173)，
+# 否则端口冲突会让容器反复重启（frontend 用的是 8080，不冲突，但 gateway 的 3000 会）。
+stack-up:
+	$(DOCKER) compose --profile full up -d --build
+	@echo ""
+	@echo "全栈已启动。前端入口：http://127.0.0.1:$(FRONTEND_PORT)  网关：http://127.0.0.1:$(GATEWAY_PORT)"
+	@echo "看状态：make stack-ps      看日志：make stack-logs"
+
+stack-ps:
+	$(DOCKER) compose --profile full ps
+
+stack-logs:
+	$(DOCKER) compose --profile full logs -f --tail=80
+
+# 只停应用服务，中间件继续跑（日常开发还要用）
+stack-down:
+	$(DOCKER) compose --profile full stop backend worker gateway frontend
+	@echo ""
+	@echo "应用容器已停，中间件仍在跑（要一起停：make infra-stop）。"
+
+# 重建某个服务的镜像（改了 Dockerfile 或依赖之后）
+# 例：make stack-rebuild s=backend
+stack-rebuild:
+	@test -n "$(s)" || (echo "用法：make stack-rebuild s=backend|worker|gateway|frontend" && exit 1)
+	$(DOCKER) compose --profile full up -d --build $(s)
 
 # ---------- 数据库迁移（Alembic，P0-1）----------
 # 连接串不在这里传 —— alembic/env.py 从 config/settings.py（即 .env）读取，

@@ -1,0 +1,9 @@
+# 网关镜像的构建上下文排除清单
+
+.git
+.gitignore
+node_modules
+# 构建产物：容器内重新 build，不复用本机的（本机 dist 可能是旧代码或 dev 产物）
+dist
+*.tsbuildinfo
+.DS_Store

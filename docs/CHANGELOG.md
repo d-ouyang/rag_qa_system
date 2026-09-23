@@ -79,7 +79,9 @@
 
 | **v2.0.0-p0.4c** | 2026-09-24 | **修 `p0.1` 期潜伏至今的轮元数据错位**（用户真实使用中暴露）：`add_exchange()` 里 `_normalize_meta()` 从「append 消息**之后**」移到**之前** —— 原位置让每轮凭空多补一个空占位，再被 `_trim()` 防御分支从头部砍掉，净效果是**每写一轮就挤掉最老一轮的 meta**（连写 5 轮实测 `[i3, {}, i4, {}, i5]`，前两轮蒸发）。表现为「只有第一次提问有引用，刷新后后面几轮全空」。新增 module6 第 3B 组（14 条，memory/redis 各 7 条，**写死轮号**并复刻线上 `metas[i//2]` 回填逻辑）+ **反向验证**（还原 bug → 8 条红，证明断言有效）+ `scripts/e2e_p0_4c_meta.py`（连问 3 轮 → 刷新 → 每轮引用都在）。顺带修 `tests/test_module5_rag_chain_api.py` 第 1 组**不传 store 导致连真实业务库**（`.env` 切 mysql 后 2 条假失败，且 `cleanup_expired()` 会归档真实会话），改为显式注入 `MemorySessionStore`。**不写存量数据迁移脚本**（会话可重建，用户已确认） | `iterations/v2.0.0-p0.4c-meta-alignment.md` |
 
-> 当前应用版本：`2.0.0-p0.4c`
+| **v2.0.0-p1.5b** | 2026-09-24 | **P1-5b 应用容器化（⚠️ 未联调）**：新增 `Dockerfile`（python:3.11-slim + `requirements.lock.txt`）、`frontend/Dockerfile`（node:20-alpine → nginx:alpine）、`frontend/nginx.conf`（`/api` 反代 + **`proxy_buffering off`** + SPA 回落）、`gateway/Dockerfile`、三个 `.dockerignore`；compose 追加 `backend`/`worker`/`gateway`/`frontend` **全部挂 `profiles: [full]`**（否则 `make infra` 会与裸跑的 8000/3000/5173 撞端口）；靠 compose `environment` **覆盖** `env_file` 实现「同一份 .env 两种模式共存」（`MYSQL_HOST=mysql`、两个 Redis URL、`GATEWAY_BACKEND_URL=http://backend:8000`、`GATEWAY_TRUST_PROXY=true`）；worker **复用后端镜像** + `USE_RERANKER=false`（省 1.1G，解析不用重排）；`vector_db`/`upload`/`models` 用 **bind mount**（复用宿主机已有数据，命名卷会让容器里知识库是空的）；backend **不映射 8000**（网关要求内网可达）；worker **不配 healthcheck**（`celery inspect ping` 会误判健康 worker）；`extra_hosts: host.docker.internal:host-gateway`（容器连宿主机服务）；新增 `make stack-up/ps/logs/down/rebuild`。**应用代码一行未改** | `iterations/v2.0.0-p1.5b-app-containers.md` |
+
+> 当前应用版本：`2.0.0-p1.5b`
 >
 > 上表是**工程对账**口径（谁在哪个文件里改了什么）。
 > 如果是要**向人展示「这个项目怎么一步步完善的」**，读 `docs/RELEASES.md`。
@@ -111,19 +113,23 @@
 
 | 分组 | 任务 | 状态 |
 |------|------|------|
-| P0 上线硬前提 | P0-1 业务数据落 MySQL ✅、P0-2 鉴权网关 ✅、P0-3 异步解析 ✅、P0-4 向量元数据对齐 ✅（`p0.4a` 后端 + `p0.4b` 前端） | ✅ **4 / 4** |
-| P1 容器化与部署 | P1-5 Docker 化（**5a 中间件已完成，5b 全栈未做**）、P1-6 模型目录、P1-7 TLS | 🔄 1 / 3 |
+| P0 上线硬前提 | P0-1 业务数据落 MySQL ✅、P0-2 鉴权网关 ✅、P0-3 异步解析 ✅、P0-4 向量元数据对齐 ✅（`p0.4a` 后端 + `p0.4b` 前端 + `p0.4c` 修错位） | ✅ **4 / 4** |
+| P1 容器化与部署 | P1-5 Docker 化（5a ✅ + **5b ⚠️ 交付未联调**）、P1-6 模型目录、P1-7 TLS | 🔄 1.5 / 3 |
 | P2 生产化打磨 | P2-8 配置治理、P2-9 生产构建+备案号、P2-10 观测备份 | ⬜ 0 / 3 |
 
-> **2.0.0 大版本合计：P0-1 ✅、P0-2 ✅、P0-3 ✅（3a 后端 + 3b 前端）、P0-4 ✅（`p0.4a` 后端 + `p0.4b` 前端）、
-> P1-5a ✅（P1-5b 未做），其余未开始。完成 5 / 10。**
+> **2.0.0 大版本合计：P0-1 ✅、P0-2 ✅、P0-3 ✅（3a 后端 + 3b 前端）、P0-4 ✅（`p0.4a` 后端 + `p0.4b` 前端 + `p0.4c` 修复）、
+> P1-5a ✅、P1-5b ⚠️（已交付、**未联调**），其余未开始。完成 5 / 10（P1-5b 计半项）。**
 >
 > 🎉 **P0 阶段已全部完成，阶段 tag `v2.0.0-p0.4` 已打**（与本次交付 tag `v2.0.0-p0.4b` 指向同一个 commit）。
 > 至此「上线硬前提」四项全部就位：数据落库、鉴权、异步解析、引用可反查可点击。
 >
-> **下一步：P1-5b 应用容器化**（把 fastapi / gateway / frontend / worker 也搬进 compose），
+> **下一步：联调 P1-5b**（`make stack-up` 构建 + 六容器起来 + 流式与上传链路），
 > 之后 P1-6 模型目录 → P1-7 TLS。
-> 执行顺序：P1-5a ✅ → P0-1 ✅ → P0-3a ✅ → P0-3b ✅ → P0-4a ✅ → **P0-4b ✅** → P1-5b → P1-6 → P1-7。
+> 执行顺序：P1-5a ✅ → P0-1 ✅ → P0-3a ✅ → P0-3b ✅ → P0-4a ✅ → P0-4b ✅ → P0-4c ✅ → **P1-5b（待联调）** → P1-6 → P1-7。
+>
+> ⚠️ **`v2.0.0-p1.5b` 是「写得对」不是「跑得通」**：按用户指示，本版只做实现与静态校验，
+> 完整验证等 P0 与 P1-5 全部就位后统一做。**阶段 tag `v2.0.0-p1.5` 留到联调通过后补打** ——
+> 阶段 tag 的语义是「这个阶段可用了」，没验收就打等于给自己一个假的完成标记。
 
 ### 修订（同版本内的返工，不新开子版本号）
 

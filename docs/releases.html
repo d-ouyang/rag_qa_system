@@ -145,6 +145,18 @@
   }
   .problem p { margin: 0; color: var(--text); font-size: 13.5px; }
 
+  /* 「尚未验证」状态提示条（v2.0.0-p1.5b 起）：按用户要求，未完成联调的版本
+     必须显式标出来，不能让静态检查的结果被读成「已经跑通了」 */
+  .warnbar {
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    background: rgba(240,136,62,.09); border-left: 2px solid #f0883e;
+  }
+  .warnbar .k {
+    font-size: 11px; color: #f0883e; letter-spacing: .4px;
+    margin-bottom: 5px; text-transform: uppercase;
+  }
+  .warnbar p { margin: 0; color: var(--text); font-size: 13px; line-height: 1.6; }
+
   .grp { padding: 17px 20px; border-top: 1px solid var(--border); }
   .grp:first-of-type { border-top: none; }
   .grp-head { display: flex; align-items: center; gap: 9px; margin-bottom: 11px; }
@@ -246,14 +258,14 @@
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
       <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">5<span class="u">/ 10</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">10<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">11<span class="u">个</span></div></div>
     </div>
   </section>
 
   <section>
     <div class="prog-head">
       <h2>2.0.0 迭代进度</h2>
-      <span class="sub"><strong>P0 四项已全部完成</strong>（数据落库 · 鉴权 · 异步解析 · 引用可反查可点击），阶段标记为 tag <code>v2.0.0-p0.4</code>。P1-5 只完成了一半（中间件已容器化，应用容器化待做），故显示为半格。</span>
+      <span class="sub"><strong>P0 四项已全部完成</strong>（数据落库 · 鉴权 · 异步解析 · 引用可反查可点击），阶段标记为 tag <code>v2.0.0-p0.4</code>。P1-5 已交付但<strong>尚未联调</strong>，故显示为半格（容器化写完未跑通 ≠ 完成）。</span>
     </div>
     <div class="bars">
       <div class="bar-row">
@@ -295,7 +307,7 @@
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
       2.0.0 是进行中的大版本——向量元数据对齐、应用容器化、TLS 都还没有做完，
-      所以「当前版本 2.0.0-p0.4c」不等于「可以上线」。
+      所以「当前版本 2.0.0-p1.5b」不等于「可以上线」。
     </p>
     <dl>
       <div><dt>docs/RELEASES.md</dt><dd>对外变更叙事（本页内容来源）</dd></div>
@@ -315,6 +327,41 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p1.5b",
+    date: "2026-09-24",
+    accent: "#58a6ff",
+    tagline: "整套系统一条命令起来（尚未联调）",
+    problem: "在此之前，把系统跑起来要开四个终端：起数据库容器、起后端、起网关、起前端，再起一个解析进程，端口和启动顺序全靠人记。换一台机器就得把这套动作重做一遍，漏一步的表现通常是「页面能开，但一问就 500」这种不带上下文的失败。这一版把这四件事写进同一份编排文件。",
+    warning: "这一版只完成了「写得对」，还没完成「跑得通」。按计划，等前置任务全部就位后会做一次完整联调；在那之前它是待验状态，本文也照实区分「已确认」和「待验证」，不把静态检查说成跑通过。",
+    sections: [
+      { type: "added", items: [
+        { star: true, h: "四个应用服务进容器", t: "后端、解析进程、网关、前端各一个容器，加上此前的数据库与缓存共六个服务。依赖关系与健康检查都写死在文件里——数据库没就绪就不会去启动后端，不再靠启动顺序碰运气。" },
+        { h: "前端由 nginx 托管", t: "构建产物只有一堆静态文件，运行只需要一个极小的 web 服务器，不再需要 node 进程常驻。" },
+        { h: "两条命令管全栈", t: "起、停、看状态、看日志、重建单个服务，都有对应入口。" }
+      ]},
+      { type: "fixed", items: [
+        { star: true, h: "「起个数据库」不再顺手把四个应用也拉起来", t: "应用服务默认不随日常命令启动。日常开发仍然只起数据库与缓存，应用继续在宿主机上跑（有热重载、能断点调试）；要起全栈是另一个明确的命令。否则会和正在调试的进程抢端口。" },
+        { h: "容器里的 localhost 不是宿主机的 localhost", t: "如果将来要用本机的大模型服务，容器里写 localhost 连不到宿主机——已预留好固定的访问通道。" },
+        { h: "消掉一个「改了不生效」的配置项", t: "环境文件里有个 Redis 地址变量，代码其实并不读它（真正生效的是另一条完整地址）。已明确标注，避免以后有人改它然后困惑。" }
+      ]},
+      { type: "improved", items: [
+        { star: true, h: "流式输出靠一行配置保住", t: "web 服务器默认会把响应攒起来再发，后端逐字吐出的回答会被攒成一整坨，前端变成「转圈半天然后一次性出现」。特点是**不报错，只是慢**，极容易被当成模型慢而去查错方向。" },
+        { star: true, h: "反向代理的启动顺序", t: "web 服务器启动时会去解析上游服务名，上游还没起来它就会直接退出；配上自动重启就是刷一片日志，看起来像「网关挂了」，实际是它自己起不来。已改成请求时再解析。" },
+        { h: "后端只能是单进程", t: "多个进程同时写同一个向量库目录会损坏索引，表现是问答接口直接报 500。这条限制已写进启动命令的注释里，不是可选的优化项。" },
+        { star: true, h: "解析进程不加载重排模型", t: "解析用不到它，关掉约省 1.1GB 内存——这是 4G 内存的服务器上「跑不跑得动」的关键一条，且不影响解析结果。" }
+      ]},
+      { type: "verified", items: [
+        { h: "已做：静态校验", t: "编排文件解析通过（变量替换、挂载路径、依赖关系逐项核对）；三个镜像构建脚本静态检查零告警；命令入口展开正确。" },
+        { star: true, h: "未做：构建与联调（按计划延后）", t: "镜像实际构建、六容器协同、流式在反向代理后的真实表现、容器内上传解析链路——这些留到前置任务全部完成后统一验证。现在说「能用」是没有证据的。" }
+      ]},
+      { type: "boundary", items: [
+        { h: "向量库仍由两个进程共享同一份目录", t: "这个结构在容器里没变，所以「刚上传的文档要重启后端才检索得到」依旧存在，根治方案另记。" },
+        { h: "模型目录仍走宿主机挂载", t: "本机它是个软链，容器内能否跟随取决于 Docker 的文件共享设置，上服务器前要换成真实目录。" },
+        { h: "容器以 root 运行、日志写在容器内部", t: "跨域白名单也还是本地地址——都属于后续打磨项。" }
+      ]}
+    ]
+  },
   {
     version: "v2.0.0-p0.4c",
     date: "2026-09-24",
@@ -737,6 +784,14 @@ function renderRelease(r) {
       "</dl></div>";
   }
 
+  // 「尚未验证」这类状态提示。为什么单独做一个字段而不是塞进 problem：
+  // 它是**关于这一版本身的可信度说明**，不是「解决了什么问题」，混在正文里
+  // 会被当成功能描述读过去。放在 problem 正下方、用独立色条，读者先看到它。
+  var warn = "";
+  if (r.warning) {
+    warn = '<div class="warnbar"><span class="k">状态说明</span><p>' + esc(r.warning) + "</p></div>";
+  }
+
   const groups = r.sections.map(function (sec) {
     const meta = C[sec.type];
     const lis = sec.items.map(function (it) {
@@ -766,6 +821,7 @@ function renderRelease(r) {
     "</div>" +
     '<div class="card">' +
       '<div class="problem"><div class="k">这一版解决了什么问题</div><p>' + esc(r.problem) + "</p></div>" +
+      warn +
       groups +
     "</div>" +
   "</article>";

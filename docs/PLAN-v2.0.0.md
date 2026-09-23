@@ -81,7 +81,7 @@
 | P0-2 鉴权网关（NestJS） | ✅ 已完成 | `2.0.0-p0.2` | `iterations/v2.0.0-p0.2-auth-gateway.md` |
 | P0-3 异步解析链路（队列 + Worker） | ✅ **已完成**（3a 后端 `p0.3a` + 3b 前端 `p0.3b`） | `2.0.0-p0.3b` | `iterations/v2.0.0-p0.3a-async-parsing.md`（后端）<br>`iterations/v2.0.0-p0.3b-frontend-polling.md`（前端） |
 | P0-4 向量元数据对齐 + 知识库重建 | ✅ **已完成**（4a 后端 `p0.4a` + 4b 前端 `p0.4b` + **4c 修轮元数据错位** `p0.4c`） | `2.0.0-p0.4c` | `iterations/v2.0.0-p0.4a-chunk-refs.md`（后端）<br>`iterations/v2.0.0-p0.4b-chunk-ref-ui.md`（前端）<br>`iterations/v2.0.0-p0.4c-meta-alignment.md`（4c 修复） |
-| P1-5 Docker 化（本地全栈 + 服务器预演） | 🔄 **5a 中间件已完成**，5b 待 P0 后 | `2.0.0-p1.5a` | `iterations/v2.0.0-p1.5a-middleware-compose.md` |
+| P1-5 Docker 化（本地全栈 + 服务器预演） | 🔄 **5a ✅；5b ⚠️ 已交付、未联调**（按用户指示，完整验证等 P1-5 全部就位后统一做） | `2.0.0-p1.5b` | `iterations/v2.0.0-p1.5a-middleware-compose.md`<br>`iterations/v2.0.0-p1.5b-app-containers.md` |
 | P1-6 模型目录处理 | ⬜ 未开始 | — | — |
 | P1-7 TLS 证书 | ⬜ 未开始（卡 ICP 备案） | — | — |
 | P2-8 配置与密钥治理 | ⬜ 未开始 | — | — |
@@ -92,10 +92,13 @@
 > 并同步「版本」与「迭代文档」两列 —— 这是计划书与 `CHANGELOG.md` 的对账依据。
 >
 > 大版本合计：**P0-1 完成；P0-2 完成；P0-3 完成（3a 后端 + 3b 前端）；
-> P0-4 完成（4a 后端 + 4b 前端）→ P0 四项全绿**；P1-5a 完成（P1-5b 未做）；其余未开始。
-> 完成 **5 / 10**。
+> P0-4 完成（4a 后端 + 4b 前端 + 4c 修轮元数据错位）→ P0 四项全绿**；
+> **P1-5a 完成、P1-5b 已交付但未联调**；其余未开始。
+> 完成 **5 / 10**（P1-5b 计半项）。
 > 🎉 **P0 阶段已完成**，阶段 tag `v2.0.0-p0.4` 已打（与交付 tag `v2.0.0-p0.4b` 同一个 commit）。
-> **下一步 = P1-5b 应用容器化**（fastapi / gateway / frontend / worker 进 compose）。
+> ⚠️ **P1-5 的阶段 tag `v2.0.0-p1.5` 留到全栈联调通过后补打** —— 阶段 tag 的语义是
+> 「这个阶段可用了」，未验收就打等于给自己一个假的完成标记。
+> **下一步 = 联调 P1-5b**（`make stack-up` → 构建 + 六容器 + 流式与上传链路），之后 P1-6 → P1-7。
 >
 > **编号顺序 ≠ 执行顺序**（这是本版计划书的新情况，别被绕进去）：
 > P1-5a 是 P0-1 的前置，所以它在 P0-1 之前完成 —— 于是会出现「`p1.5a` 早于 `p0.1b`」的版本号顺序。
@@ -345,7 +348,13 @@
 
 ### P1-5 Docker 化（本地全栈 + 服务器预演）
 
-> 拆成两阶段：**5a（仅中间件）必须先于 P0-1**，5b（全栈）放在 P0 之后。
+> **状态：🔄 5a ✅ 已完成；5b ⚠️ 已交付、尚未联调。**
+> 5b 的应用服务全部挂在 `profiles: [full]` 下（`make stack-up`）—— 这样 `make infra`
+> 的行为与 5a 时期一致，不与宿主机裸跑的 8000/3000/5173 撞端口（决策 D1）。
+> 主机名靠 compose 的 `environment` 覆盖 `env_file` 实现「同一份 .env 两种模式共存」。
+> **应用代码一行未改**；当前只做了静态校验（compose 解析 + 三个 Dockerfile lint），
+> 构建与联调按用户指示留到 P1-5 全部就位后统一做。
+> 详见 `iterations/v2.0.0-p1.5b-app-containers.md`。
 
 - **5a 中间件 compose**：`mysql:8` + `redis:7-alpine`，`volume` 落 `mysql_data` / `redis_data`；
   Redis 启动参数 `--appendonly yes --maxmemory 128mb --maxmemory-policy noeviction`（队列可以做 AOF 备份，但**不依赖它保任务**）。

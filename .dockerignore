@@ -1,0 +1,50 @@
+# 后端镜像（Dockerfile）的构建上下文排除清单。
+#
+# 三条排除原则：
+#   ① 密钥绝不进镜像层：.env 走 `env_file` 在**运行时**注入，一旦 COPY 进镜像，
+#      任何拿到镜像的人都能 docker history 翻出来，且改密码必须重新构建。
+#   ② 本机专属的大目录不进镜像：models / upload / vector_db 走 bind mount 或 volume，
+#      它们是**数据**不是代码。models 尤其大（嵌入 + 重排约 2GB）。
+#   ③ 与运行无关的产物不进镜像：.venv（本机虚拟环境，容器里会重装）、
+#      node_modules（前端的，后端用不到）、__pycache__、测试与文档。
+#
+# 不看体积的话，这份清单最实际的作用是**构建速度**：不排除 gateway/node_modules
+# （几百 MB）的话，每次改一行 Python 都要多传一份上下文。
+
+# ---- 密钥与配置 ----
+.env
+.env.*
+!.env.example
+
+# ---- 版本控制 ----
+.git
+.gitignore
+
+# ---- Python ----
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# ---- 数据（走挂载，不进镜像）----
+models
+upload
+vector_db
+data
+app.log
+*.log
+
+# ---- 其他子项目（各有自己的 Dockerfile）----
+frontend
+gateway
+web
+
+# ---- 与运行无关 ----
+tests
+docs
+scripts/e2e_p0_4c_meta.py
+.DS_Store
+*.md

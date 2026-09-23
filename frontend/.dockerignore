@@ -1,0 +1,11 @@
+# 前端镜像的构建上下文排除清单（只影响构建速度，不影响产物）
+
+.git
+.gitignore
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+# 构建期的类型检查缓存，进上下文只会让层缓存白白失效
+*.tsbuildinfo

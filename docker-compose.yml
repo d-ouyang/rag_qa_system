@@ -1,19 +1,30 @@
-# 本地基础设施编排（MySQL + Redis）。
+# 全栈编排（P1-5）：中间件 + 应用。
 #
 # 阶段说明（见 docs/PLAN-v2.0.0.md 的 P1-5）：
-#   P1-5a（当前）只含 mysql + redis 两个中间件 —— backend / worker / gateway / frontend
-#                 仍在宿主机裸跑，保留热重载与断点调试（决策 D1：中间件容器化 + 应用裸跑）。
-#   P1-5b（后续）在同一份文件里追加应用服务，届时按需 `--profile full` 或直接 up 全部。
+#   P1-5a  mysql + redis 两个中间件；
+#   P1-5b  backend / worker / gateway / frontend 四个应用服务（本次追加）。
+#
+# ⚠️ 应用服务全部挂在 `profiles: [full]` 下（这是本次最关键的一个决定）：
+#   决策 D1 定的是「日常开发 = 中间件容器 + 应用裸跑」—— 裸跑才有热重载与断点调试。
+#   若应用服务进默认 profile，`make infra` 就会把它们一起拉起来，
+#   和宿主机上正在裸跑的 8000 / 3000 / 5173 **直接撞端口**。
+#   挂在 full 下之后，不带 --profile 的命令行为与 P1-5a 时期完全一致，两种模式互不干扰。
 #
 # 常用命令：
-#   make infra            起中间件（= docker compose up -d mysql redis）
+#   make infra            起中间件（= docker compose up -d mysql redis，默认 profile）
 #   make infra-check      看状态与连通性
 #   make infra-logs       跟踪日志
-#   make infra-down       停（保留 volume，数据不丢）
+#   make infra-stop       停（保留 volume，数据不丢）
 #   docker compose down -v   ⚠️ 停并删 volume，清空全部业务数据
 #
-# 为什么端口只绑 127.0.0.1：这两个库只被宿主机上的应用访问，绑 0.0.0.0 等于把
+#   make stack-up         起全栈（--profile full，含四个应用服务）
+#   make stack-ps         看全栈状态
+#   make stack-logs       跟踪全栈日志
+#   make stack-down       停全栈（保留数据）
+#
+# 为什么中间件端口默认只绑 127.0.0.1：日常它们只被宿主机上的应用访问，绑 0.0.0.0 等于把
 # 3306 / 6379 暴露给同网段的任何机器。开发机常连咖啡厅 / 公司网络，这种默认暴露最容易被扫到。
+# 需要对外（服务器预演）时把 `BIND_ADDR` 改成 0.0.0.0（见 .env.example）。
 
 name: rag-qa-system
 
@@ -78,8 +89,174 @@ services:
       retries: 10
       start_period: 5s
 
+  # ================================================================== #
+  # 以下四个是 P1-5b 新增的应用服务，全部在 `full` profile 下           #
+  # ================================================================== #
+
+  backend:
+    profiles: [full]
+    # Worker 复用同一个镜像（见 worker 服务的注释），这里只起后端进程。
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rag-qa-backend:latest
+    container_name: rag-backend
+    restart: unless-stopped
+    # 密钥与开关全部来自 .env（不进镜像层）；下面 environment 里只写
+    # 「容器网络下必须改的那几个」—— compose 中 environment 优先于 env_file，
+    # 这正是两种模式（裸跑 localhost / 容器 mysql）共存又不硬编码的落点。
+    env_file: .env
+    environment:
+      # ⚠️ 这三行是全栈模式能跑起来的关键：.env 里写的是 localhost（裸跑用），
+      # 容器网络里必须换成服务名。少改任何一处，症状都是「连不上数据库」，
+      # 而这类报错不带上下文，查起来很费时间。
+      MYSQL_HOST: mysql
+      REDIS_URL: redis://redis:6379/0
+      REDIS_QUEUE_URL: redis://redis:6379/1
+      # 容器里必须监听 0.0.0.0，默认的 localhost 会让外部（含 nginx / 网关）连不进来
+      API_HOST: 0.0.0.0
+      TZ: Asia/Shanghai
+    # ⚠️ 不映射 8000 到宿主机：后端只应内网可达（网关注释里明确要求），
+    # 全栈模式下访问入口是 frontend(8080)，API 走 gateway(3000)。
+    # 想直接连后端调试：docker compose --profile full exec backend ...
+    volumes:
+      # 与 worker 共享同一份向量库和原始文件 —— 共享不是优化，是正确性要求：
+      # worker 解析写入的切片，后端必须能立刻读到，两者必须看到同一套文件。
+      - ./vector_db:/app/vector_db
+      - ./upload:/app/upload
+      # 模型走 bind mount 而不是 COPY 进镜像（P1-6 定的方案）：
+      # 镜像保持小（models 约 2GB），且模型可独立更新而不必重新构建镜像。
+      # 注意本机 models 是软链到 ~/Downloads/... ，是否跟随软链取决于 Docker Desktop
+      # 的文件共享设置；上服务器前要换成真实目录（P1-6 收尾）。
+      - ./models:/app/models:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # 让容器能访问**宿主机**上的服务（典型场景：本机裸跑的 Ollama）。
+    # 容器里的 localhost 是容器自己，写 http://localhost:11434 连不到宿主机的模型服务，
+    # 而症状只是「连接被拒绝」，看不出是地址语义错了。
+    # host-gateway 是 Docker 20.10+ 的跨平台写法（Linux 上自动解析成宿主机网桥 IP，
+    # 不用手工查 IP，也不用写死）；要用时把 .env 的 OLLAMA_BASE_URL 改成
+    # http://host.docker.internal:11434 即可。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # slim 镜像里没有 curl，用 python 自带的标准库探活，零额外依赖
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/system/health').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      # 首次启动要加载嵌入 + 重排模型，实测十几秒到一分钟，给足窗口
+      start_period: 90s
+
+  worker:
+    profiles: [full]
+    # 复用后端镜像：同一份依赖、同一份代码，只是入口换成 celery。
+    # 两个服务写相同的 build 配置 + 同一个 image 名，Docker 只会真正构建一次。
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rag-qa-backend:latest
+    container_name: rag-worker
+    restart: unless-stopped
+    # 池、并发、超时全部在 worker/app.py 里按 settings 配置（P0-3a 定下的规矩：
+    # 同一个参数绝不在两处配），所以这里只给日志级别。
+    command: ["celery", "-A", "worker.app", "worker", "--loglevel=info"]
+    env_file: .env
+    environment:
+      MYSQL_HOST: mysql
+      REDIS_URL: redis://redis:6379/0
+      REDIS_QUEUE_URL: redis://redis:6379/1
+      # ⚠️ 解析链路只用到嵌入模型，用不到重排。关掉它约省 1.1GB 常驻内存 ——
+      # 这是 4C4G 服务器上「跑不跑得动」的关键一条（PLAN §11.1 对策①）。
+      # 语义无损：重排只发生在问答链路（后端），不影响解析结果。
+      USE_RERANKER: "false"
+      TZ: Asia/Shanghai
+    volumes:
+      # 必须与 backend 挂载**同一份**（见 backend 的注释）
+      - ./vector_db:/app/vector_db
+      - ./upload:/app/upload
+      - ./models:/app/models:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # 同 backend：解析链路若要用宿主机上的服务（如本地 Ollama 做兜底），走这条通道
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # 不给 worker 配 healthcheck：Celery 没有 HTTP 端口，
+    # 而 `celery inspect ping` 探的是「有没有 worker 应答自己」，
+    # 在单 worker + prefetch 场景下会时通时不通，容易把健康的 worker 判死并重启。
+    # 队列健康改由后端 /api/v1/system/queue 暴露（P2-10 观测项）。
+
+  gateway:
+    profiles: [full]
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    image: rag-qa-gateway:latest
+    container_name: rag-gateway
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # 容器网络里后端叫 backend；本机裸跑时 .env 里是 http://127.0.0.1:8000
+      GATEWAY_BACKEND_URL: http://backend:8000
+      # 网关跑在 nginx 后面，X-Forwarded-* 里的真实来源 IP 才可信。
+      # 不开的话限流会把所有请求算成同一个来源（nginx 的容器 IP），
+      # 一个人刷接口就会把所有人都限掉。
+      GATEWAY_TRUST_PROXY: "true"
+      NODE_ENV: production
+      # 全栈模式下浏览器看到的来源是前端站点（默认 8080）。走同源反代时浏览器不带
+      # Origin，CORS 不介入；但直接访问网关端口（调试 / 验收脚本）时 Origin 就是它，
+      # 不在白名单里会被拦掉，且表现是「没有响应头」这类难查的失败。
+      # 用变量兜住，服务器部署时改成真实域名（P2-8 配置治理一起收口）。
+      GATEWAY_ALLOWED_ORIGINS: ${GATEWAY_ALLOWED_ORIGINS:-http://localhost:8080}
+      TZ: Asia/Shanghai
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${GATEWAY_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  frontend:
+    profiles: [full]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: rag-qa-frontend:latest
+    container_name: rag-frontend
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      # 全栈模式的唯一对外入口。绑 127.0.0.1 是为了本地预演时不把服务暴露到局域网；
+      # 服务器部署改 BIND_ADDR=0.0.0.0（P1-7 配 TLS 时一起处理）。
+      - "${BIND_ADDR:-127.0.0.1}:${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      # nginx:alpine 自带 wget，没有 curl
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:80/"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
 volumes:
   # 业务元数据真相源，必须持久化
   mysql_data:
   # 队列 AOF，非强持久
   redis_data:
+  # 注：vector_db / upload / models 用 bind mount（./xxx）而不是命名卷，
+  # 原因见 backend 服务 volumes 段的注释 —— 本地要复用宿主机已有的知识库数据，
+  # 且备份可以直接 rsync 目录而不必绕 docker 中转。
