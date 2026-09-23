@@ -7,8 +7,9 @@
  *              （输入 / 缓存命中 / 缓存未命中 / 输出 / 缓存命中率进度条）。
  */
 import { computed, ref } from 'vue'
-import type { ChatMessage } from '@/types'
+import type { ChatMessage, ChunkDetail, SourceItem } from '@/types'
 import { useSessionStore } from '@/stores/sessions'
+import { getChunk, isValidChunkId } from '@/api/chunks'
 
 const props = defineProps<{ message: ChatMessage; index: number }>()
 const sessions = useSessionStore()
@@ -81,6 +82,54 @@ function fileName(source: string): string {
   const parts = source.split('/')
   return parts[parts.length - 1] || source
 }
+
+// ----- 引用反查（P0-4b）：点引用取切片全文 -----
+/**
+ * 当前展开全文的 chunk_id（null = 都收着）。一次只展开一条：
+ * 引用条本身很窄，同时展开几条会把对话挤得读不下去。
+ */
+const openChunkId = ref<string | null>(null)
+
+/**
+ * 每条引用的取数状态，按 chunk_id 存 —— 这是一层**缓存**，两个理由：
+ *   1. 同一条引用反复展开不该每次都打一次接口；
+ *   2. 「取过但失败了」也要记住。否则用户关掉再点开，会看到一次假的
+ *      「正在取回」然后又弹同一个错，像是网络在抽风。
+ */
+const chunkStates = ref<Record<string, { loading: boolean; data?: ChunkDetail; error?: string }>>({})
+
+/** 当前展开那一条的状态（未展开时为 null），模板里只读这一个就够了 */
+const opened = computed(() =>
+  openChunkId.value ? (chunkStates.value[openChunkId.value] ?? null) : null,
+)
+const openedData = computed<ChunkDetail | null>(() => opened.value?.data ?? null)
+
+function toggleChunk(s: SourceItem): void {
+  const id = s.chunk_id
+  if (!isValidChunkId(id)) return // 遗留切片没有键：按钮压根不该出现，这里是兜底
+  if (openChunkId.value === id) {
+    openChunkId.value = null
+    return
+  }
+  openChunkId.value = id
+  if (chunkStates.value[id]) return // 已取过（成功或失败）→ 直接复用
+  void loadChunk(id)
+}
+
+async function loadChunk(id: string): Promise<void> {
+  chunkStates.value[id] = { loading: true }
+  try {
+    chunkStates.value[id] = { loading: false, data: await getChunk(id) }
+  } catch (e) {
+    // 后端给的 detail 就是一句人话（「引用内容已随文档删除」/
+    // 「引用片段已失效，请刷新后重试」），前端**照原样展示**，不要重写文案：
+    // 重写一次就多一处与后端对不上的风险，而且后端改口径时前端永远慢半拍。
+    chunkStates.value[id] = {
+      loading: false,
+      error: e instanceof Error ? e.message : '取回原文失败',
+    }
+  }
+}
 </script>
 
 <template>
@@ -127,10 +176,43 @@ function fileName(source: string): string {
               <div v-for="s in message.sources" :key="s.index" class="source-item">
                 <div class="source-head">
                   <span class="source-idx">资料{{ s.index }}</span>
-                  <span class="source-name" :title="s.source">{{ fileName(s.source) }}</span>
+                  <!-- 有 chunk_id 才能点。没有键的（P0-3 之前入库的遗留切片）
+                       渲染成纯文本 + tooltip 说明原因，不给一个点了会失败的按钮 -->
+                  <button
+                    v-if="isValidChunkId(s.chunk_id)"
+                    class="source-name is-link"
+                    :title="`查看切片全文（${s.chunk_id}）`"
+                    @click="toggleChunk(s)"
+                  >
+                    {{ fileName(s.source) }}
+                    <span class="source-chev">{{ openChunkId === s.chunk_id ? '▲' : '▼' }}</span>
+                  </button>
+                  <span
+                    v-else
+                    class="source-name"
+                    :title="`${fileName(s.source)}：这条引用没有可反查的编号，无法展开全文`"
+                  >{{ fileName(s.source) }}</span>
                   <span v-if="s.rerank_score != null" class="source-score">重排 {{ s.rerank_score.toFixed(3) }}</span>
                 </div>
                 <div class="source-snippet">{{ s.snippet }}</div>
+
+                <!-- 展开区：切片全文 + 源文档信息（来自 MySQL，不是从路径猜的） -->
+                <div v-if="isValidChunkId(s.chunk_id) && openChunkId === s.chunk_id" class="chunk-detail">
+                  <div v-if="opened?.loading" class="chunk-hint">正在取回原文…</div>
+                  <div v-else-if="opened?.error" class="chunk-hint is-error">{{ opened.error }}</div>
+                  <template v-else-if="openedData">
+                    <div class="chunk-meta">
+                      <span class="chunk-file">{{ openedData.file_name }}</span>
+                      <span v-if="openedData.page != null">第 {{ openedData.page + 1 }} 页</span>
+                      <span>第 {{ openedData.chunk_index + 1 }} 片</span>
+                      <span>{{ openedData.char_count }} 字</span>
+                      <span v-if="openedData.upload_time">{{ openedData.upload_time }}</span>
+                      <!-- 正文还在、MySQL 记录没了：如实标出来，这是「该跑重建脚本了」的信号 -->
+                      <span v-if="!openedData.document_exists" class="chunk-warn">文档记录缺失</span>
+                    </div>
+                    <pre class="chunk-content">{{ openedData.content }}</pre>
+                  </template>
+                </div>
               </div>
             </div>
           </template>
@@ -532,6 +614,25 @@ function fileName(source: string): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 可点的那条：与不可点的纯文本拉开区别（蓝字 + 手型），否则用户看不出能点 */
+.source-name.is-link {
+  color: var(--primary);
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  min-width: 0; /* flex 子项允许收缩，不然长文件名会把重排分挤出去 */
+}
+.source-name.is-link:hover {
+  text-decoration: underline;
+}
+.source-chev {
+  font-size: 9px;
+  margin-left: 3px;
+  color: var(--text-3);
+}
 .source-score {
   margin-left: auto;
   color: var(--text-3);
@@ -544,5 +645,53 @@ function fileName(source: string): string {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* ---------- 引用反查：展开的切片全文 ---------- */
+.chunk-detail {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+.chunk-hint {
+  color: var(--text-3);
+  font-size: 11px;
+  padding: 2px 0;
+}
+/* 后端给的四种结论里，两种是失败：照原样展示，前端不重写文案 */
+.chunk-hint.is-error {
+  color: var(--danger);
+}
+.chunk-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  color: var(--text-3);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.chunk-file {
+  color: var(--text-2);
+  font-weight: 500;
+}
+.chunk-warn {
+  color: var(--danger);
+}
+/* 切片全文：保留原文的换行与空格（PDF 抽出来的文本里空行是有意义的），
+   但允许长行换行，不然一个表格行能把气泡撑到屏幕外 */
+.chunk-content {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-2);
+  background: var(--bg-hover);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
 }
 </style>

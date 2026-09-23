@@ -5,10 +5,41 @@ export type Role = 'user' | 'assistant'
 /** 单条溯源信息（检索命中的资料片段） */
 export interface SourceItem {
   index: number
+  /**
+   * 切片引用键，格式 `<doc_id>:<chunk_index>`（P0-4a 起）。
+   *
+   * `null` 表示这条引用**无法反查**（P0-3 之前的遗留切片，连文档编号都没有）——
+   * 前端必须把它渲染成不可点击的纯文本，**不要**退化成用 `source` 路径去查：
+   * 那会让用户以为「有键可查」，点下去必然失败。
+   */
+  chunk_id?: string | null
   source: string
   snippet: string
   rerank_score?: number | null
   vector_similarity?: number | null
+}
+
+/** 切片详情（GET /api/v1/chunks/{chunk_id}，对应后端 ChunkDetail） */
+export interface ChunkDetail {
+  chunk_id: string
+  doc_id: number
+  chunk_index: number
+  /** 切片全文（接口不截断；snippet 是它的前缀） */
+  content: string
+  char_count: number
+  page?: number | null
+  file_name: string
+  file_type?: string | null
+  file_size?: number | null
+  /** 上传时间，格式 `YYYY-MM-DD HH:MM:SS`（后端按本地时区拼的字符串） */
+  upload_time?: string | null
+  project_id?: string | null
+  /**
+   * 切片在库里、但 MySQL 里没有对应文档记录时为 false（脏数据）。
+   * 正文照常可用，这个标记是给运维的信号：该跑重建脚本了。
+   */
+  document_exists: boolean
+  document_status?: string | null
 }
 
 /** 会话列表项（GET /api/v1/qa/sessions） */

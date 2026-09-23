@@ -75,7 +75,9 @@
 
 | **v2.0.0-p0.4a** | 2026-09-23 | **P0-4 后端交付**：切片身份证 `chunk_id = "<doc_id>:<chunk_index>"`（`build/parse_chunk_id` 契约 + 写入侧 metadata + 读出侧 `_resolve_chunk_id` 三级取值）；反查接口 `GET /api/v1/chunks/{chunk_id}`（400 / 404 两种文案 / 200+`document_exists=false` 四种分工）；孤儿切片 `list/purge_orphan_chunks`；`scripts/reindex.py` 三步重建（补登记 → 幂等重灌 → 清孤儿，**默认干跑** + worker/后端两道闸门）；`chat_message.ref_ids` 首次真正有值；`document_repo.list_all()`；module10（87 项）+ 验收脚本（4 条标准全绿）；**前端未改（p0.4b 必修）** | `iterations/v2.0.0-p0.4a-chunk-refs.md` |
 
-> 当前应用版本：`2.0.0-p0.4a`
+| **v2.0.0-p0.4b** | 2026-09-24 | **P0-4 前端交付（P0-4 完成，P0 四项全绿）**：`types.ts` 加 `SourceItem.chunk_id` + `ChunkDetail`；新增 `api/chunks.ts`（`getChunk` + `isValidChunkId`，**不用 `encodeURIComponent`** 以免冒号被代理二次编码）；`api/qa.ts` 的内联 sources 类型换成 `SourceItem`（消除第二份定义）；`MessageBubble.vue` 引用条可点化 + 展开区（全文/元信息/加载中/错误文案）+ 按 chunk_id 缓存（**失败也缓存**）+ 样式；新增 `tests/acceptance_p0_4b_ui.mjs`（18 项，连跑两遍）；`make accept-ui-p04b`。**后端一行未改** | `iterations/v2.0.0-p0.4b-chunk-ref-ui.md` |
+
+> 当前应用版本：`2.0.0-p0.4b`
 >
 > 上表是**工程对账**口径（谁在哪个文件里改了什么）。
 > 如果是要**向人展示「这个项目怎么一步步完善的」**，读 `docs/RELEASES.md`。
@@ -100,16 +102,19 @@
 
 | 分组 | 任务 | 状态 |
 |------|------|------|
-| P0 上线硬前提 | P0-1 业务数据落 MySQL ✅、P0-2 鉴权网关 ✅、P0-3 异步解析 ✅、P0-4 向量元数据对齐（**后端 ✅ `p0.4a`，前端 ⬜ `p0.4b`**） | 🔄 3.5 / 4 |
+| P0 上线硬前提 | P0-1 业务数据落 MySQL ✅、P0-2 鉴权网关 ✅、P0-3 异步解析 ✅、P0-4 向量元数据对齐 ✅（`p0.4a` 后端 + `p0.4b` 前端） | ✅ **4 / 4** |
 | P1 容器化与部署 | P1-5 Docker 化（**5a 中间件已完成，5b 全栈未做**）、P1-6 模型目录、P1-7 TLS | 🔄 1 / 3 |
 | P2 生产化打磨 | P2-8 配置治理、P2-9 生产构建+备案号、P2-10 观测备份 | ⬜ 0 / 3 |
 
-> **2.0.0 大版本合计：P0-1 ✅、P0-2 ✅、P0-3 ✅（3a 后端 + 3b 前端）、P0-4 后端 ✅（`p0.4a`）、
-> P1-5a ✅（P1-5b 未做），其余未开始。**
-> **下一步：P0-4b 前端引用可点击**（把 `sources[].chunk_id` 渲染成可点按钮 + 调反查接口展示全文）。
-> 后端交接物已备好，P0-4b 不需要再改后端。
-> P0-4a 之后前端与后端「对不上」的短期断点与 P0-3a 同理（见迭代文档 §3.8）。
-> P0 四项全绿之后打阶段 tag `v2.0.0-p0.4`。
+> **2.0.0 大版本合计：P0-1 ✅、P0-2 ✅、P0-3 ✅（3a 后端 + 3b 前端）、P0-4 ✅（`p0.4a` 后端 + `p0.4b` 前端）、
+> P1-5a ✅（P1-5b 未做），其余未开始。完成 5 / 10。**
+>
+> 🎉 **P0 阶段已全部完成，阶段 tag `v2.0.0-p0.4` 已打**（与本次交付 tag `v2.0.0-p0.4b` 指向同一个 commit）。
+> 至此「上线硬前提」四项全部就位：数据落库、鉴权、异步解析、引用可反查可点击。
+>
+> **下一步：P1-5b 应用容器化**（把 fastapi / gateway / frontend / worker 也搬进 compose），
+> 之后 P1-6 模型目录 → P1-7 TLS。
+> 执行顺序：P1-5a ✅ → P0-1 ✅ → P0-3a ✅ → P0-3b ✅ → P0-4a ✅ → **P0-4b ✅** → P1-5b → P1-6 → P1-7。
 
 ### 修订（同版本内的返工，不新开子版本号）
 
@@ -127,6 +132,7 @@
 | 2026-09-23 | `2.0.0-p0.1b` | **发现既有缺陷（本轮刻意未修）**：`add_exchange` 里 `_normalize_meta()` 的调用位置导致轮元数据整体错位一格（第 1 轮的 meta 被顶掉、末尾多一个空 dict）。已确认 memory 后端同样存在，与本次返工无关；为保住「业务侧零改动」这条验收证据不修，修法已在文档中写明 | p0.1 文档 §6.1 第 1 条 |
 | 2026-09-23 | `2.0.0-p0.3a` | **验收脚本第 4 条重写**：首轮把「对已 `success` 的文档重复入队」当幂等验证，但 `reset_for_reparse` 按设计**拒绝 `success`**，两条消息都被挡掉 —— 「没重复切片」是因为压根没跑，证不出幂等。改为用**新**文档在 worker 抢到前连推两条，并加断 `attempt_count == 1` | p0.3a 文档 §7；仅验收脚本，`core/` 无改动 |
 | 2026-09-23 | `2.0.0-p0.3a` | **修正一处失效指引**：`core/document_repo.py` 注释里指向的 `core/document_service.py` **并不存在**，实际编排在 `api/routes/documents.py` 的 `_purge_document` | p0.3a 文档 §7；仅注释 |
+| 2026-09-24 | `2.0.0-p0.4b` | **验收脚本的两个假信号（本轮唯一返工）**：① 第 7 组「文档已删除」首轮**假失败** —— 它挑的是一条**已被展开过**的引用，结果已进组件内缓存、再点不发请求，于是「假装 404」的桩永远拦不到，那一组实际在验缓存而不是验错误分支。改为用 `usedIdx` 显式挑未展开过的引用。② `page.route` 的 glob `**/api/v1/chunks/**` 对**带冒号**的 URL 不保险，换成 predicate 函数（`url.pathname.startsWith`）。③ 侧边栏选择器 `.app-sidebar` → `.sidebar`（写错的表现是「登录失败」，易往鉴权方向查错） | p0.4b 文档 §3.7 / §7 |
 | 2026-09-23 | `2.0.0-p0.4a` | **`response_model` 静默丢字段（本版最贵的一行）**：`_extract_sources()` 加了 `chunk_id`，但 `api/routes/qa.py` 的 `SourceItem` 未声明它 → pydantic 默认 `extra='ignore'`，问答接口与会话历史返回的 `sources` 里**根本没有 chunk_id**，且不报任何错、测试全绿（测的是内部函数，没测接口出参）。修法：`SourceItem` 加 `chunk_id: str \| None`；并在 module10 加「产出的键 ⊆ 模型字段」通用守卫（不绑定字段名）。否掉的方案：给模型加 `extra="forbid"` —— 同样能暴露问题，但暴露方式是**线上 500** 而不是测试红，对这种无害 drift 处罚过重 | p0.4a 文档 §3.10 / §7 |
 | 2026-09-23 | `2.0.0-p0.4a` | **回归测试会清空真实业务表**：`tests/test_module10_chunk_refs.py` 照抄 module9 的 `sa_delete(document_table)`（不带 `WHERE`），跑一次就把开发机上真实文档记录抹掉，留下「查得到正文、溯不到源」的幽灵引用且无报错提示。已按 `file_name LIKE 'm10_<uuid>%'` 收窄，结尾「按 `storage_path` 删文件」那段（遍历 `repo.list_all()` 全表）同样加了前缀过滤。**module9 仍是全表清空**（`total_documents == 1` 等断言依赖空表），列为遗留项；当前应对：跑完 `make test` 执行 `make reindex-apply` 即可恢复演示数据 | p0.4a 文档 §3.11 / §6 第 2 条 |
 | 2026-09-23 | `2.0.0-p0.4a` | **`scripts/reindex.py` 加第二道闸门**：验收时发现「多进程同时改写同一 Chroma `persist_directory`」会让 HNSW 索引不一致（查询返回 `documents=None` → langchain 构造 `Document` 直接 `ValidationError` → **问答接口 500**；或 hnswlib 抛 `ef or M is too small`）。后端在线时 `--apply` 拒绝执行，退出码 2。另注：**「重置单例」不等于「重启进程」** —— chromadb 同进程按 (目录, collection) 共享集合实例，`reset_vector_store_manager()` 之后拿回的还是同一个对象，实测照样崩 | p0.4a 文档 §3.6 / §3.7 |

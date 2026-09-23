@@ -1,6 +1,6 @@
 /** 问答与会话接口（对应后端 api/routes/qa.py） */
 import { del, get, patchJson, postJson, postNdjson } from './http'
-import type { ChatMessage, SessionInfo, StreamFrame } from '@/types'
+import type { ChatMessage, SessionInfo, SourceItem, StreamFrame } from '@/types'
 
 export const listSessions = () => get<SessionInfo[]>('/api/v1/qa/sessions')
 
@@ -36,7 +36,9 @@ export const askSync = (question: string, sessionId: string) =>
     route: string
     intent_source: string
     standalone_question?: string | null
-    sources: { index: number; source: string; snippet: string; rerank_score?: number | null; vector_similarity?: number | null }[]
+    // 直接复用 SourceItem，不在这里再抄一遍字段：
+    // 抄一份就多一处漂移点 —— 后端给 sources 加字段时，只有一处会记得改。
+    sources: SourceItem[]
     elapsed_ms: number
   }>('/api/v1/qa/ask', { question, session_id: sessionId })
 

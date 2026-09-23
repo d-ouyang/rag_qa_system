@@ -14,7 +14,7 @@ DOCKER ?= docker
 .PHONY: help setup venv sync lock api web frontend gateway dev stop test memory releases clean ollama \
         infra infra-check infra-logs infra-stop infra-down \
         db-upgrade db-current db-downgrade db-revision db-sql \
-        worker accept accept-ui reindex reindex-apply accept-p04a
+        worker accept accept-ui reindex reindex-apply accept-p04a accept-ui-p04b
 
 help:
 	@echo "—— 一次性 ——"
@@ -46,11 +46,14 @@ help:
 	@echo "make accept-p04a   跑**验收**脚本（P0-4a 引用反查 + 知识库重建；真跑一次重建脚本）"
 	@echo "                   与 make accept 的两处前提不同：要求**没有** worker 在跑、会改动 vector_db/"
 	@echo ""
-	@echo "—— 前端验收（P0-3b）——"
+	@echo "—— 前端验收（P0-3b / P0-4b）——"
 	@echo "make accept-ui     跑**浏览器验收**（Playwright 驱动真 Chromium：登录 → 上传 → 轮询状态 →"
 	@echo "                   终态提示 → 失败重试 → 片段抽屉 → 下载 → 删除）"
 	@echo "                   前置：make infra + 四端全在（api / gateway / frontend / worker）"
 	@echo "                   与 make accept 的区别：accept 走 HTTP，accept-ui 走真浏览器（验 DOM 行为）"
+	@echo "make accept-ui-p04b 跑**浏览器验收**（P0-4b：登录 → 提问 → 点引用 → 展开切片全文 →"
+	@echo "                   收起 / 只展开一条 / 不重复请求 / 后端说查不到时展示后端文案）"
+	@echo "                   前置：make infra + 三端在跑（api / gateway / frontend）+ 知识库有已解析文档"
 	@echo ""
 	@echo "—— 知识库重建（P0-4a）——"
 	@echo "make reindex       干跑：报告「要补登记哪些文件 / 要重灌几篇 / 有多少孤儿切片」"
@@ -173,6 +176,16 @@ accept-p04a:
 # （脚本内部用 createRequire 借道 CJS 才拿得到），所以这里显式把路径传进去。
 accept-ui:
 	NODE_PATH="$$(npm root -g)" $(NODE) tests/acceptance_p0_3b_ui.mjs
+
+# ---------- 前端验收（P0-4b 引用可点击）----------
+# 与 accept-ui 同一套打法（真浏览器读 DOM），但不需要 worker：
+# 它问一个真问题，然后验「点引用 → 展开切片全文」这条交互链。
+# 只有一处桩：把反查请求改成 404，验「后端说查不到时前端展示后端那句人话」。
+# 为什么必须用桩：文档真的删掉之后这条引用就检索不到了，场景无法用真链路复现。
+# ⚠️ 前置：make infra + 三端在跑（make api / gateway / frontend），
+#    且知识库里至少有一份已解析成功的文档（否则问不出引用）。
+accept-ui-p04b:
+	NODE_PATH="$$(npm root -g)" $(NODE) tests/acceptance_p0_4b_ui.mjs
 
 # ---------- 知识库重建（P0-4a）----------
 # 干跑是**默认**：这个脚本会重灌整库并删除遗留切片，不该在敲错命令时就直接动数据。
