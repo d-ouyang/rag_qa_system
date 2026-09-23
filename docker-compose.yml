@@ -1,0 +1,85 @@
+# 本地基础设施编排（MySQL + Redis）。
+#
+# 阶段说明（见 docs/PLAN-v2.0.0.md 的 P1-5）：
+#   P1-5a（当前）只含 mysql + redis 两个中间件 —— backend / worker / gateway / frontend
+#                 仍在宿主机裸跑，保留热重载与断点调试（决策 D1：中间件容器化 + 应用裸跑）。
+#   P1-5b（后续）在同一份文件里追加应用服务，届时按需 `--profile full` 或直接 up 全部。
+#
+# 常用命令：
+#   make infra            起中间件（= docker compose up -d mysql redis）
+#   make infra-check      看状态与连通性
+#   make infra-logs       跟踪日志
+#   make infra-down       停（保留 volume，数据不丢）
+#   docker compose down -v   ⚠️ 停并删 volume，清空全部业务数据
+#
+# 为什么端口只绑 127.0.0.1：这两个库只被宿主机上的应用访问，绑 0.0.0.0 等于把
+# 3306 / 6379 暴露给同网段的任何机器。开发机常连咖啡厅 / 公司网络，这种默认暴露最容易被扫到。
+
+name: rag-qa-system
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: rag-mysql
+    restart: unless-stopped
+    command:
+      # 字符集是硬要求不是可选：中文正文 + 用户可能输入的 emoji，utf8mb3 存不下 4 字节字符。
+      # 显式写而不靠镜像默认值，是为了避免将来换镜像 tag 时静默漂移。
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      # 统一时区。不设的话容器默认 UTC，会出现「消息时间比实际早 8 小时」这类难查的问题
+      - --default-time-zone=+08:00
+      # 4C4G 服务器内存预算很紧（见 PLAN §11.1），buffer pool 显式压到 128M
+      - --innodb-buffer-pool-size=134217728
+      - --max-connections=100
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 中设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rag_qa}
+      MYSQL_USER: ${MYSQL_USER:-rag}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      # $$ 在 compose 里转义成字面 $，由容器内 shell 展开，从而能读到注入的环境变量
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      # 首次启动要初始化数据目录，给足 30s 再开始判定失败
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    restart: unless-stopped
+    command:
+      # AOF 做个备份，但**不依赖它保任务**：队列任务的真相对齐 MySQL document.status
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 128mb
+      # noeviction：写满时宁可直接报错，也不静默驱逐。
+      # 静默丢数据比报错难查得多；而队列消息丢了可以靠 MySQL 状态手动重解析。
+      - --maxmemory-policy
+      - noeviction
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  # 业务元数据真相源，必须持久化
+  mysql_data:
+  # 队列 AOF，非强持久
+  redis_data:

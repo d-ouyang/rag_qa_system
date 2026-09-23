@@ -6,14 +6,24 @@ PYTHON_VERSION ?= 3.11
 UV ?= uv
 VENV := .venv
 PY := $(VENV)/bin/python
+# 用变量包一层是为了让沙箱/窄 PATH 环境能通过 `make infra DOCKER=/usr/local/bin/docker` 覆盖
+DOCKER ?= docker
 
-.PHONY: help setup venv sync lock api web frontend gateway dev stop test memory releases clean ollama
+.PHONY: help setup venv sync lock api web frontend gateway dev stop test memory releases clean ollama \
+        infra infra-check infra-logs infra-stop infra-down
 
 help:
 	@echo "—— 一次性 ——"
 	@echo "make setup     创建 .venv 并安装依赖"
 	@echo "make dev       一键启动三件套：后端 8000 + 网关 3000 + 前端 5173（Ctrl-C 全部停止）"
 	@echo "make stop      按端口停掉三件套（8000 / 3000 / 5173）"
+	@echo ""
+	@echo "—— 本地中间件（MySQL + Redis，Docker）——"
+	@echo "make infra         起容器（mysql 3306 + redis 6379，仅绑 127.0.0.1）"
+	@echo "make infra-check   看容器状态 + 两库连通性自检"
+	@echo "make infra-logs    跟踪容器日志"
+	@echo "make infra-stop    停容器（保留数据）"
+	@echo "make infra-down    移除容器与网络（保留 volume，数据不丢）"
 	@echo ""
 	@echo "—— 单独启动（想在各自终端看日志时用）——"
 	@echo "make api       启动 FastAPI (8000)"
@@ -90,6 +100,31 @@ test:
 
 ollama:
 	@curl -s http://localhost:11434/api/tags | head -c 200; echo
+
+# ---------- 本地中间件（MySQL + Redis，P1-5a）----------
+# 决策 D1：中间件容器化、应用裸跑。应用通过 127.0.0.1 连这两个端口，
+# 因此容器端口只绑回环地址（见 docker-compose.yml 的注释）。
+infra:
+	$(DOCKER) compose up -d mysql redis
+	@echo ""
+	@echo "中间件已启动。自检：make infra-check"
+
+infra-check:
+	@bash scripts/infra-check.sh "$(DOCKER)"
+
+infra-logs:
+	$(DOCKER) compose logs -f --tail=50
+
+# 停容器，保留容器与数据（再 start 即可恢复）
+infra-stop:
+	$(DOCKER) compose stop
+
+# 移除容器与网络；volume 保留，数据不丢
+infra-down:
+	$(DOCKER) compose down
+	@echo ""
+	@echo "容器已移除，volume（mysql_data / redis_data）保留，业务数据未丢。"
+	@echo "如需彻底清空：$(DOCKER) compose down -v   ⚠️ 会删除全部业务数据"
 
 clean:
 	rm -rf $(VENV) __pycache__ */__pycache__

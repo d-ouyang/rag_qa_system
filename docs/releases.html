@@ -233,7 +233,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p0.2</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.5a</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -241,31 +241,31 @@
     </p>
     <div class="stats">
       <div class="stat"><div class="k">后端自动化测试</div><div class="v">497<span class="u">项</span></div></div>
-      <div class="stat"><div class="k">网关端到端冒烟</div><div class="v">25<span class="u">项</span></div></div>
-      <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">2<span class="u">/ 8</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">3<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
+      <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">2<span class="u">/ 10</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">4<span class="u">个</span></div></div>
     </div>
   </section>
 
   <section>
     <div class="prog-head">
       <h2>2.0.0 迭代进度</h2>
-      <span class="sub">P0 上线硬前提已全部完成，P1 / P2 尚未开工</span>
+      <span class="sub">鉴权网关与中间件容器化已完成；持久化方案变更需返工，P1 应用容器化与上线仍待办</span>
     </div>
     <div class="bars">
       <div class="bar-row">
-        <div class="lbl">P0 上线硬前提 <em>持久化 · 鉴权</em></div>
+        <div class="lbl">P0 上线硬前提 <em>数据落库 · 鉴权 · 异步解析</em></div>
         <div class="track" style="--seg:#3fb950">
-          <div class="seg done"></div><div class="seg done"></div>
+          <div class="seg done"></div><div class="seg"></div><div class="seg"></div><div class="seg"></div>
         </div>
-        <div class="num">2 / 2</div>
+        <div class="num">1 / 4</div>
       </div>
       <div class="bar-row">
-        <div class="lbl">P1 部署与运维 <em>容器 · TLS</em></div>
+        <div class="lbl">P1 容器化与部署 <em>容器 · 模型 · TLS</em></div>
         <div class="track" style="--seg:#58a6ff">
-          <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+          <div class="seg done"></div><div class="seg"></div><div class="seg"></div>
         </div>
-        <div class="num">0 / 3</div>
+        <div class="num">1 / 3</div>
       </div>
       <div class="bar-row">
         <div class="lbl">P2 生产化打磨 <em>配置 · 观测 · 备份</em></div>
@@ -291,7 +291,7 @@
   <footer>
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
-      2.0.0 是进行中的大版本——P0 完成后仍必须经过 P1 的容器化与 TLS 才能公开访问，
+      2.0.0 是进行中的大版本——数据落库、异步解析与应用容器化、TLS 都还没有做完，
       所以「当前版本 2.0.0-p0.2」不等于「可以上线」。
     </p>
     <dl>
@@ -312,6 +312,44 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p1.5a",
+    date: "2026-09-23",
+    accent: "#58a6ff",
+    tagline: "把数据库和缓存搬进容器",
+    problem: "在这之前，要让项目跑起来，得先在电脑上单独装好数据库和缓存两个服务，再手工调字符集、时区、内存上限；换一台机器就要重来一遍，而且很容易漏掉某一项而查不出原因。这一版把它们装进容器：一条命令起停，参数全部写死在配置文件里。",
+    sections: [
+      { type: "added", items: [
+        { h: "一条命令起停的两个基础服务", t: "数据库与缓存改用容器运行，起来、看日志、停掉、彻底移除各对应一条命令。容器只是运行方式，里面的数据存在容器之外的独立空间里 —— 所以删掉容器重建，数据依然在。" },
+        { h: "端口只对本机开放", t: "两个服务的端口只绑定本机地址，同一网络下的其他机器连不上。开发机经常连公司网或公共 Wi-Fi，这个默认值比顺手写一个「对所有地址开放」安全得多。" },
+        { h: "启动自检脚本（14 项）", t: "一条命令检查服务是否健康、账号能不能连上、中文和 emoji 会不会存坏、时间会不会差 8 小时、缓存的内存上限是否真的生效、本机端口是否通。以前这些要挨个手动验，且「验过没有」无法追溯。" },
+        { h: "建表权限的提前检查", t: "自检里会真的建一张临时表再删掉。下一步要用迁移工具创建业务表，如果账号只有读写权限没有建表权限，到那时才会卡住 —— 而那时代码已经写了一堆。" }
+      ]},
+      { type: "fixed", items: [
+        { star: true, h: "（环境问题）镜像下载不下来", t: "本机网络下 Docker 官方镜像仓库不可达，容器因此一直起不来。排查确认不是代理故障，而是那个仓库地址在当前网络下被阻断。完整排查过程见下方复盘。" }
+      ]},
+      { type: "improved", items: [
+        { h: "中文与时区一次性配好", t: "字符集、排序规则、时区都写在服务的启动参数里，每次启动都生效。特意不写在「只在第一次启动时执行的初始化脚本」里 —— 那种脚本改了不会重跑，很容易出现「配置里明明写了、实际没生效」这种最难查的状态。" },
+        { h: "缓存写满时宁可报错，也不悄悄丢数据", t: "缓存在本项目里还承担着「排队等处理的任务」的角色。如果内存满了就自动删掉最旧的内容，被删的可能正是排队中的任务，而且事后查不到任何痕迹。改成直接报错后，问题会当场暴露、可以重试。" },
+        { h: "应用不使用最高权限数据库账号", t: "业务连接用单独的低权限账号，最高权限账号只用于容器初始化。" }
+      ]},
+      { type: "verified", items: [
+        { h: "", t: "自检脚本 14 项全绿。" },
+        { h: "", t: "决定性验证：把容器整个删掉再重建，数据库与缓存里的数据都还在。（特意用「删除 + 重建」而不是「重启」——重启只是重启进程，证明不了数据存在容器之外的独立空间里。）" },
+        { h: "", t: "应用配置未受影响：新增的配置项被安全忽略，业务代码一行未改。" }
+      ]}
+    ],
+    postmortem: {
+      title: "复盘 · 半小时的「下载卡死」其实是两个假象",
+      rows: [
+        ["现象", "执行启动命令后，镜像一直下载不动，界面上只有计时器在走，看不到任何进度。"],
+        ["第一个假象", "查到系统代理指向本机一个端口，而查监听状态的工具显示那个端口没有在监听，于是判断「代理挂了」。实际上那个端口是通的——只是在这种受限环境里，工具看不到其他程序的监听状态。换成直接连一下，真相立刻出来。"],
+        ["第二个假象", "命令的输出在非交互终端下会被缓冲——它可能正在正常下载，只是不往外打印。中途因此两次误判为卡死，把进程杀掉重来，白白浪费时间。"],
+        ["真正的根因", "分段测试后确认：代理没问题，能正常访问其他站点；问题出在 Docker 官方镜像仓库的地址在当前网络下被阻断，无论走不走代理都不通。给 Docker 配上国内加速源即解决。"],
+        ["教训", "判断「是不是卡住了」不能看界面输出安静不安静，要看实际产生的数据量或落盘日志。另外，这个环境里用 lsof 这类工具查监听端口会给出假阴性，要换直连测试来确认。"]
+      ]
+    }
+  },
   {
     version: "v2.0.0-p0.2",
     date: "2026-09-23",
