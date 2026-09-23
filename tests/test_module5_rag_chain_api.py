@@ -47,8 +47,15 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 # --------------------------------------------------------------------------- #
 print("\n== 第 1 组：会话记忆管理 ==")
 from core.memory_manager import MemoryManager
+from core.session_store import MemorySessionStore
 
-mm = MemoryManager(max_turns=3, ttl_seconds=3600)
+# ⚠️ 必须显式注入进程内存储，不能吃默认后端（2026-09-24 修正）。
+# 默认后端按 settings.MEMORY_BACKEND 建 —— 本机 .env 是 mysql，于是这组单元测试
+# 会连上**真实业务库**：`会话计数 == 2` 被库里既有的真实会话顶翻（假失败），
+# 更糟的是后面 `cleanup_expired()` 会把真实会话一并归档（测试污染业务数据）。
+# 单元测试既不该碰业务库，也不该随 .env 漂移。
+# （TTL 也要同步下传给 Store，否则 Manager 与 Store 各说各话。）
+mm = MemoryManager(max_turns=3, ttl_seconds=3600, store=MemorySessionStore(ttl_seconds=3600))
 
 # 多会话隔离
 mm.add_exchange("s1", "问题A1", "回答A1")
@@ -74,7 +81,7 @@ check("清空不存在的会话返回 False", mm.clear_session("s2") is False)
 check("清空后计数减少", mm.session_count() == 1)
 
 # TTL：构造一个 ttl=0 的管理器，会话立刻过期
-mm_ttl = MemoryManager(max_turns=3, ttl_seconds=0)
+mm_ttl = MemoryManager(max_turns=3, ttl_seconds=0, store=MemorySessionStore(ttl_seconds=0))
 mm_ttl.add_exchange("old", "q", "a")
 time.sleep(0.01)
 # 过期后再访问：历史应被重置（返回空），而不是报错

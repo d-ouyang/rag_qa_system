@@ -199,6 +199,11 @@ class MemoryManager:
           · v1.0.0 存量数据里只有「带 meta 的轮」被记录过（稀疏数组）；
           · 未来某条调用链忘了传 meta。
         统一在这里补齐，比在每个读取点写兜底判断更不容易漏。
+
+        ⚠️ 调用时机：必须在**本轮消息 append 之前**调用。
+        它的语义是「补齐历史」，不是「给当前轮预留位置」——
+        放错位置会让每轮多补一个占位，最终把最老那轮的 meta 挤掉。
+        详见 `add_exchange()` 里的注释。
         """
         expected = len(snapshot.messages) // 2
         missing = expected - len(snapshot.exchange_meta)
@@ -289,6 +294,19 @@ class MemoryManager:
         """
         with self.store.session_lock(session_id):
             snapshot = self._load(session_id) or SessionSnapshot()
+            # ⚠️ 这一句必须在 append 消息**之前**（2026-09-24 修复，别再挪回去）。
+            #
+            # 放错位置的后果（p0.1 起潜伏，p0.4 才在真实会话里暴露）：
+            #   `expected = len(messages) // 2` 在 append 之后就等于「含当前轮」的轮数，
+            #   于是每轮都凭空补一个空占位；紧接着 append 本轮 meta 让数组比轮数多 1，
+            #   再由 `_trim()` 末尾的防御分支从头部砍掉 1 条 —— 净效果是
+            #   **每一轮都把最老那轮的 meta 挤掉**，数组永远停留在「错位 + 一个空洞」。
+            #   连写 3 轮实测：`[轮2meta, {}, 轮3meta]`（应为 `[轮1, {}, 轮3]`）。
+            #   用户侧现象：刷新后只有第一轮有引用资料，后面几轮全空。
+            #
+            # 放在 append 之前，补齐的对象就是「历史遗留的稀疏数组」，
+            # 补完再 append 本轮，长度恰好等于新轮数 —— 索引语义才成立。
+            self._normalize_meta(snapshot)
             snapshot.messages.append({"role": "user", "content": question})
             snapshot.messages.append({"role": "assistant", "content": answer})
             # 元数据**必须与轮对齐**：没传 meta 的轮也占一个空位。
@@ -296,7 +314,6 @@ class MemoryManager:
             # 如果只在「有 meta 时」append，一旦中间某轮没带 meta，
             # 后面所有轮的元数据都会整体前移错配（引用资料显示到别的问题上）。
             # 空 dict 占位把「稀疏数组」变成「等长数组」，索引语义才成立。
-            self._normalize_meta(snapshot)
             snapshot.exchange_meta.append(dict(meta) if meta is not None else {})
             self._trim(snapshot)
             snapshot.last_active = time.time()

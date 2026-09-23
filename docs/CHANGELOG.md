@@ -77,7 +77,9 @@
 
 | **v2.0.0-p0.4b** | 2026-09-24 | **P0-4 前端交付（P0-4 完成，P0 四项全绿）**：`types.ts` 加 `SourceItem.chunk_id` + `ChunkDetail`；新增 `api/chunks.ts`（`getChunk` + `isValidChunkId`，**不用 `encodeURIComponent`** 以免冒号被代理二次编码）；`api/qa.ts` 的内联 sources 类型换成 `SourceItem`（消除第二份定义）；`MessageBubble.vue` 引用条可点化 + 展开区（全文/元信息/加载中/错误文案）+ 按 chunk_id 缓存（**失败也缓存**）+ 样式；新增 `tests/acceptance_p0_4b_ui.mjs`（18 项，连跑两遍）；`make accept-ui-p04b`。**后端一行未改** | `iterations/v2.0.0-p0.4b-chunk-ref-ui.md` |
 
-> 当前应用版本：`2.0.0-p0.4b`
+| **v2.0.0-p0.4c** | 2026-09-24 | **修 `p0.1` 期潜伏至今的轮元数据错位**（用户真实使用中暴露）：`add_exchange()` 里 `_normalize_meta()` 从「append 消息**之后**」移到**之前** —— 原位置让每轮凭空多补一个空占位，再被 `_trim()` 防御分支从头部砍掉，净效果是**每写一轮就挤掉最老一轮的 meta**（连写 5 轮实测 `[i3, {}, i4, {}, i5]`，前两轮蒸发）。表现为「只有第一次提问有引用，刷新后后面几轮全空」。新增 module6 第 3B 组（14 条，memory/redis 各 7 条，**写死轮号**并复刻线上 `metas[i//2]` 回填逻辑）+ **反向验证**（还原 bug → 8 条红，证明断言有效）+ `scripts/e2e_p0_4c_meta.py`（连问 3 轮 → 刷新 → 每轮引用都在）。顺带修 `tests/test_module5_rag_chain_api.py` 第 1 组**不传 store 导致连真实业务库**（`.env` 切 mysql 后 2 条假失败，且 `cleanup_expired()` 会归档真实会话），改为显式注入 `MemorySessionStore`。**不写存量数据迁移脚本**（会话可重建，用户已确认） | `iterations/v2.0.0-p0.4c-meta-alignment.md` |
+
+> 当前应用版本：`2.0.0-p0.4c`
 >
 > 上表是**工程对账**口径（谁在哪个文件里改了什么）。
 > 如果是要**向人展示「这个项目怎么一步步完善的」**，读 `docs/RELEASES.md`。
@@ -93,6 +95,13 @@
 > 差额正好 6 项 = 第 10 组的 6 条断言。**看到 806 不要当成回归**，先确认 `make worker` 起着。
 > 两个数都是 0 失败，所以「全绿」这条结论不受影响。
 > （p0.4a 起基线从 719/725 抬到 806/812，差 87 项 = 新增的 module10，正好对得上。）
+>
+> **p0.4c 本轮口径**：按用户指示**未跑 module9**，逐个跑 module2~8、10 合计
+> **666 通过 / 0 失败**（module2 118 / module3 100 / module4 85 / module5 44 /
+> module6 127（含新增 14 条）/ module7 43 / module8 62 / module10 87；
+> module1 是日志系统演示脚本，无计数汇总行）。
+> **666 不与 806/812 基线直接可比**，差额约 146 项即 module9 的贡献。
+> 恢复 `make test` 全量口径须补跑 module9，并留意它会全表清空 `document`（见下方遗留项）。
 
 ### 2.0.0 整体进度
 
@@ -129,7 +138,7 @@
 | 2026-09-23 | `2.0.0-p0.2` | 补上白名单放行两个上游健康检查（计划书要求、首轮实现漏掉）；冒烟 22 → 25 项 | p0.2 文档 §7 |
 | 2026-09-23 | `2.0.0-p0.1` | **方案变更（架构级）**：会话真相源 Redis → **MySQL**；`RedisSessionStore` 从生产路径退役，`SessionStore` 抽象层与其契约测试保留；P0 新增 2 项、P1/P2 编号顺延 | p0.1 文档 §7.1；计划书 §0 |
 | 2026-09-23 | `2.0.0-p0.1b` | **返工交付**：新增 `core/db.py`、`core/schema.py`、`core/mysql_store.py`、`alembic/`（`0001` 建 5 张表）；新增 `tests/store_contract.py`（三后端共享契约）与 module8（62 项）；`MEMORY_BACKEND` 改 `memory\|mysql` 且退役/未知取值抛错；module7 的工厂装配断言改为显式注入 | p0.1 文档 §7.2 |
-| 2026-09-23 | `2.0.0-p0.1b` | **发现既有缺陷（本轮刻意未修）**：`add_exchange` 里 `_normalize_meta()` 的调用位置导致轮元数据整体错位一格（第 1 轮的 meta 被顶掉、末尾多一个空 dict）。已确认 memory 后端同样存在，与本次返工无关；为保住「业务侧零改动」这条验收证据不修，修法已在文档中写明 | p0.1 文档 §6.1 第 1 条 |
+| 2026-09-23 | `2.0.0-p0.1b` | **发现既有缺陷（本轮刻意未修，已于 `p0.4c` 修复）**：`add_exchange` 里 `_normalize_meta()` 的调用位置导致轮元数据整体错位一格（第 1 轮的 meta 被顶掉、末尾多一个空 dict）。已确认 memory 后端同样存在，与本次返工无关；为保住「业务侧零改动」这条验收证据不修，修法已在文档中写明 | p0.1 文档 §6.1 第 1 条 |
 | 2026-09-23 | `2.0.0-p0.3a` | **验收脚本第 4 条重写**：首轮把「对已 `success` 的文档重复入队」当幂等验证，但 `reset_for_reparse` 按设计**拒绝 `success`**，两条消息都被挡掉 —— 「没重复切片」是因为压根没跑，证不出幂等。改为用**新**文档在 worker 抢到前连推两条，并加断 `attempt_count == 1` | p0.3a 文档 §7；仅验收脚本，`core/` 无改动 |
 | 2026-09-23 | `2.0.0-p0.3a` | **修正一处失效指引**：`core/document_repo.py` 注释里指向的 `core/document_service.py` **并不存在**，实际编排在 `api/routes/documents.py` 的 `_purge_document` | p0.3a 文档 §7；仅注释 |
 | 2026-09-24 | `2.0.0-p0.4b` | **验收脚本的两个假信号（本轮唯一返工）**：① 第 7 组「文档已删除」首轮**假失败** —— 它挑的是一条**已被展开过**的引用，结果已进组件内缓存、再点不发请求，于是「假装 404」的桩永远拦不到，那一组实际在验缓存而不是验错误分支。改为用 `usedIdx` 显式挑未展开过的引用。② `page.route` 的 glob `**/api/v1/chunks/**` 对**带冒号**的 URL 不保险，换成 predicate 函数（`url.pathname.startsWith`）。③ 侧边栏选择器 `.app-sidebar` → `.sidebar`（写错的表现是「登录失败」，易往鉴权方向查错） | p0.4b 文档 §3.7 / §7 |
@@ -138,6 +147,7 @@
 | 2026-09-23 | `2.0.0-p0.4a` | **`scripts/reindex.py` 加第二道闸门**：验收时发现「多进程同时改写同一 Chroma `persist_directory`」会让 HNSW 索引不一致（查询返回 `documents=None` → langchain 构造 `Document` 直接 `ValidationError` → **问答接口 500**；或 hnswlib 抛 `ef or M is too small`）。后端在线时 `--apply` 拒绝执行，退出码 2。另注：**「重置单例」不等于「重启进程」** —— chromadb 同进程按 (目录, collection) 共享集合实例，`reset_vector_store_manager()` 之后拿回的还是同一个对象，实测照样崩 | p0.4a 文档 §3.6 / §3.7 |
 | 2026-09-23 | `2.0.0-p0.4a` | **验收脚本的「重建前后一致」改为多重集比较**：首轮夹具用「同一句话重复 40 遍」凑长度，切出的多片正文完全相同 → 重排分并列 → 两次检索顺序互换被误判成漂移。夹具每条加序号，断言改 `Counter` 比较。**并列是合法的，漂移才是 bug**，断言要能区分这两件事 | p0.4a 文档 §3.12 |
 | 2026-09-23 | `2.0.0-p0.3b` | **交付前自查**：`syncNow()` 开头调 `stopPolling()` 会把 `polling` 置 `false`，下一句 `ensurePolling()` 又置回 `true` → 界面「正在自动刷新」小圆点以轮询周期闪烁。拆出 `clearTimer()`（只清定时器句柄），`stopPolling()` = `clearTimer()` + 灭灯 | p0.3b 文档 §3.3 / §7 |
+| 2026-09-24 | `2.0.0-p0.4c` | **单元测试会连真实业务库（本轮连带修复）**：`tests/test_module5_rag_chain_api.py` 第 1 组的 `MemoryManager(...)` **不传 store** → 按 `.env` 的 `MEMORY_BACKEND` 建。本次排障把 `.env` 从 `memory` 改成 `mysql` 后，这组单元测试就連上真实业务库：`session_count() == 2` 被库里既有会话顶翻（2 条假失败），且 `cleanup_expired()` 会把真实会话一并**归档**。判据：`MEMORY_BACKEND=memory` 重跑 → 44/0 全绿，据此确认与本次代码改动无关。修法：显式注入 `MemorySessionStore` 并同步下传 TTL。**单元测试既不该碰业务库，也不该随 `.env` 漂移** | p0.4c 文档 §3.5 |
 | 2026-09-23 | `2.0.0-p0.3b` | **验收脚本自己会骗人（两处）**：① 首轮按**文案**去重记 toast，而同一文档重复失败的两次文案**一模一样**，第二次被吞 → 「重试真的又跑了一遍」假失败；改为按 DOM 元素记账（`WeakSet`）。② 第二轮点开抽屉后立刻 `count('.chunk-card')`，而抽屉正在异步取片段 → 数到 0（首轮是**假通过**）；改为 `tryWait(n >= chunkN)`。教训：**一次通过不算通过**，本轮验收连跑两遍才算数 | p0.3b 文档 §3.13 / §3.14 / §7；仅验收脚本，`frontend/src` 无改动 |
 
 ---

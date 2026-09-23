@@ -80,7 +80,7 @@
 | P0-1 业务数据持久化（MySQL 真相源） | ✅ **已完成**（Redis 版作废，MySQL 版交付于 `p0.1b`） | `2.0.0-p0.1b` | `iterations/v2.0.0-p0.1-redis-session-store.md`（§7.1 方案变更 / §7.2 返工交付） |
 | P0-2 鉴权网关（NestJS） | ✅ 已完成 | `2.0.0-p0.2` | `iterations/v2.0.0-p0.2-auth-gateway.md` |
 | P0-3 异步解析链路（队列 + Worker） | ✅ **已完成**（3a 后端 `p0.3a` + 3b 前端 `p0.3b`） | `2.0.0-p0.3b` | `iterations/v2.0.0-p0.3a-async-parsing.md`（后端）<br>`iterations/v2.0.0-p0.3b-frontend-polling.md`（前端） |
-| P0-4 向量元数据对齐 + 知识库重建 | ✅ **已完成**（4a 后端 `p0.4a` + 4b 前端 `p0.4b`） | `2.0.0-p0.4b` | `iterations/v2.0.0-p0.4a-chunk-refs.md`（后端）<br>`iterations/v2.0.0-p0.4b-chunk-ref-ui.md`（前端） |
+| P0-4 向量元数据对齐 + 知识库重建 | ✅ **已完成**（4a 后端 `p0.4a` + 4b 前端 `p0.4b` + **4c 修轮元数据错位** `p0.4c`） | `2.0.0-p0.4c` | `iterations/v2.0.0-p0.4a-chunk-refs.md`（后端）<br>`iterations/v2.0.0-p0.4b-chunk-ref-ui.md`（前端）<br>`iterations/v2.0.0-p0.4c-meta-alignment.md`（4c 修复） |
 | P1-5 Docker 化（本地全栈 + 服务器预演） | 🔄 **5a 中间件已完成**，5b 待 P0 后 | `2.0.0-p1.5a` | `iterations/v2.0.0-p1.5a-middleware-compose.md` |
 | P1-6 模型目录处理 | ⬜ 未开始 | — | — |
 | P1-7 TLS 证书 | ⬜ 未开始（卡 ICP 备案） | — | — |
@@ -318,6 +318,12 @@
 > `p0.4b` **后端一行未改** —— 这正是当初把 P0-4 拆成两半想换来的东西：
 > 后端契约先落地验完，前端按稳定靶子接，不必互相甩锅。
 > **P0 四项至此全部完成**（阶段 tag `v2.0.0-p0.4`）。
+>
+> **`p0.4c` 补记（2026-09-24，用户真实使用中暴露）**：P0-4 交付后出现
+> 「同一会话只有第一次提问有引用、刷新后后面几轮全空」。根因是 `p0.1` 期写入的
+> `add_exchange()` 里 `_normalize_meta()` 调用位置错误（每写一轮挤掉最老一轮的 meta）。
+> 已修 + 补回归断言（含反向验证）+ 端到端脚本；顺带修 module5 测试连真实业务库的问题。
+> 详见 `iterations/v2.0.0-p0.4c-meta-alignment.md`。
 >
 > **现状**：Chroma metadata 只有 `source`（磁盘路径），没有 `doc_id`，所以「引用反查」和「按文档删除」都只能靠路径字符串匹配，脆弱且和 MySQL 对不上。
 - **改造**：metadata 扩为 `{doc_id, project_id, chunk_index, source, page}`。

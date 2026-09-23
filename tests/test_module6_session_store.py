@@ -315,6 +315,89 @@ check("memory_report 含 Redis 内存段", "redis_memory" in report)
 
 
 # --------------------------------------------------------------------------- #
+# 第 3B 组：轮元数据与轮严格对齐（回归：_normalize_meta 的调用位置）
+# --------------------------------------------------------------------------- #
+print("\n== 第 3B 组：轮元数据对齐（回归） ==")
+
+from core.session_store import MemorySessionStore  # noqa: E402
+
+
+def _run_meta_alignment(store, label: str) -> None:
+    """
+    同一套断言在两个后端上各跑一遍 —— 换后端不该换出不同的 bug。
+
+    为什么这组断言值得单独写：这个错位从 p0.1 就潜伏着（当时只在文档里记了一笔），
+    三个子版本的模块测试全绿，直到真实会话刷新页面才现形。原因是
+    **单轮断言看不出错位** —— 必须「连写 3 轮，且中间故意有一轮不带 meta」才能暴露。
+    所以这里每一步都写死轮号，不许用「长度对不对」这种能蒙混过关的断言。
+    """
+    m = MemoryManager(max_turns=10, ttl_seconds=3600, store=store)
+    sid = f"align-{label}"
+    m.add_exchange(sid, "q1", "a1", meta={"intent": "i1", "sources": ["c1"]})
+    m.add_exchange(sid, "q2", "a2")                 # 中间轮故意不带 meta
+    m.add_exchange(sid, "q3", "a3", meta={"intent": "i3", "sources": ["c3"]})
+
+    metas = m.get_exchange_meta(sid)
+    msgs = m.get_messages(sid)
+    check(f"[{label}] 消息条数 == 6（3 轮）", len(msgs) == 6, f"实际 {len(msgs)} 条")
+    check(f"[{label}] 元数据条数 == 轮数", len(metas) == 3, f"实际 {len(metas)} 条：{metas}")
+    check(
+        f"[{label}] 第 1 轮元数据还在（不被后面的轮顶掉）",
+        len(metas) > 0 and metas[0].get("intent") == "i1",
+        f"实际 {metas[:1]}",
+    )
+    check(
+        f"[{label}] 中间无 meta 的轮是空占位，不是错位",
+        len(metas) > 1 and metas[1] == {},
+        f"实际 {metas[1:2]}",
+    )
+    check(
+        f"[{label}] 第 3 轮元数据落在正确下标",
+        len(metas) > 2 and metas[2].get("intent") == "i3",
+        f"实际 {metas[2:3]}",
+    )
+
+    # 直接照抄历史接口的回填方式（api/routes/qa.py：`turn = 消息下标 // 2`）
+    # —— 复用线上同一段索引逻辑，避免「测试对了、线上还是错的」
+    backfilled = [metas[i // 2] if i // 2 < len(metas) else {} for i in range(len(msgs))]
+    hits = [len(b.get("sources") or []) for b in backfilled]
+    check(
+        f"[{label}] 按 轮号=下标//2 回填后第 1 轮拿到自己的引用",
+        (backfilled[1].get("sources") or []) == ["c1"],
+        f"实际 {backfilled[1]}",
+    )
+    check(
+        f"[{label}] 回填后第 3 轮拿到自己的引用",
+        (backfilled[5].get("sources") or []) == ["c3"],
+        f"实际 {backfilled[5]}",
+    )
+    check(
+        f"[{label}] 引用只落在它该在的轮上（中间轮为空占位）",
+        hits == [1, 1, 0, 0, 1, 1],
+        f"实际 {hits}",
+    )
+
+    # 连续更多轮也不该漂移：再写两轮，前 3 轮的元数据必须原地不动
+    m.add_exchange(sid, "q4", "a4", meta={"intent": "i4"})
+    m.add_exchange(sid, "q5", "a5", meta={"intent": "i5"})
+    metas5 = m.get_exchange_meta(sid)
+    check(
+        f"[{label}] 续写 2 轮后前 3 轮元数据原地不动",
+        [d.get("intent") for d in metas5[:3]] == ["i1", None, "i3"],
+        f"实际 {metas5}",
+    )
+    check(
+        f"[{label}] 续写后仍严格等长",
+        len(metas5) == len(m.get_messages(sid)) // 2 == 5,
+        f"实际元数据 {len(metas5)} 条",
+    )
+
+
+_run_meta_alignment(MemorySessionStore(ttl_seconds=3600), "memory")
+_run_meta_alignment(RedisSessionStore(client=make_fake_redis(), ttl_seconds=3600), "redis")
+
+
+# --------------------------------------------------------------------------- #
 # 第 4 组：Redis 内存预警分级
 # --------------------------------------------------------------------------- #
 print("\n== 第 4 组：Redis 内存预警 ==")
