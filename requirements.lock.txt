@@ -627,3 +627,19 @@ yarl==1.24.5
     # via aiohttp
 zstandard==0.25.0
     # via langsmith
+
+# ---------- 会话存储（v2.0.0 新增）----------
+# 手工追加而非重跑 make lock：redis 无强制依赖（python>=3.11.3 不需要 async-timeout），
+# 重跑 `uv pip compile` 会顺带把 emoji/filelock/langsmith/protobuf 等一批包升小版本，
+# 那属于与本次迭代无关的依赖漂移，不该混在功能提交里。
+# 下次因其他原因重新 lock 时这几行会被自动收敛，届时删掉本注释即可。
+redis==8.1.0
+    # via -r requirements.in
+
+# ---------- 测试用（fakeredis 模拟 Redis，CI 无需真实 Redis）----------
+fakeredis==2.38.0
+    # via -r requirements.in
+lupa==2.8
+    # via fakeredis
+sortedcontainers==2.4.0
+    # via fakeredis

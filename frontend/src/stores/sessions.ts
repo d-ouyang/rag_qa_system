@@ -239,6 +239,22 @@ export const useSessionStore = defineStore('sessions', () => {
     }
   }
 
+  /**
+   * 清空所有本地会话状态（登出时调用）。
+   *
+   * 为什么必须清：这些数据是「上一个登录用户的对话内容」，属于隐私。
+   * 不清的话下一个登录的人（同一台电脑/同一浏览器）会直接看到别人的历史，
+   * 而且因为前端拿的是内存里的旧数据，看起来就像「后端串号了」。
+   * 服务端数据不动（那些属于原用户，换个账号自然看不到）。
+   */
+  function resetAll() {
+    sessions.value = []
+    currentId.value = null
+    messages.value = []
+    lastMeta.value = {}
+    streaming.value = false
+  }
+
   return {
     sessions,
     currentId,
@@ -258,5 +274,6 @@ export const useSessionStore = defineStore('sessions', () => {
     removeSession,
     renameSession,
     togglePin,
+    resetAll,
   }
 })

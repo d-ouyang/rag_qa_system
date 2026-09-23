@@ -27,4 +27,11 @@ web/dist/
 # 实际 Vue 应用（frontend/）的构建产物与依赖
 frontend/node_modules/
 frontend/dist/
+# TS 增量编译缓存：每次构建都变，入库只会制造无意义的 diff 噪音
+*.tsbuildinfo
+# 网关（gateway/）自带的 .gitignore 已覆盖 node_modules/ dist/ .env，
+# 这里再兜一层，防止将来有人误删那份文件
+gateway/node_modules/
+gateway/dist/
+gateway/.env
 .DS_Store

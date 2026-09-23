@@ -6,6 +6,7 @@
 --------------------------------------------------------------------------
     GET /settings     关键配置项（分组返回，密钥脱敏只显示是否已配置）
     GET /health       与 /api/v1/qa/health 等价的轻量状态（服务进程/版本）
+    GET /memory       会话存储与 Redis 内存水位（容量预警，运维用）
 
 设计原则：
 1. 只读。配置来源是 .env + 环境变量（config/settings.py），修改配置应改
@@ -21,6 +22,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from config.settings import settings
+from core.memory_manager import get_memory_manager
 from core.vector_store import get_vector_store_manager
 
 logger = logging.getLogger(__name__)
@@ -134,3 +136,28 @@ def system_health() -> dict[str, Any]:
         "name": settings.PROJECT_NAME,
         "version": settings.PROJECT_VERSION,
     }
+
+
+@router.get(
+    "/memory",
+    summary="会话存储与 Redis 内存水位",
+    description=(
+        "返回会话存储后端的运行情况：\n"
+        "- 后端类型（memory/redis）、会话数、单会话平均体积、连通性延迟；\n"
+        "- Redis 内存水位分级（ok/warn/critical/fatal）、阈值、处置建议；\n"
+        "- 是否因内存高压进入了写入只读保护。\n"
+        "运维可把这个接口接进监控：`redis_memory.level` 非 ok 即告警。"
+    ),
+)
+def memory_status() -> dict[str, Any]:
+    """
+    记忆子系统运行报告（数据源是 MemoryManager.memory_report）。
+
+    为什么值得单独开一个接口而不是塞进 /health：
+    /health 会被探活/负载均衡高频调用，必须保持轻量；
+    本接口涉及 Redis INFO、key 采样等相对昂贵的操作，适合按分钟级抓取，
+    两者混在一起会让探活变成压测。
+    """
+    report = get_memory_manager().memory_report()
+    logger.debug("记忆子系统报告 | 后端=%s", report.get("backend"))
+    return report

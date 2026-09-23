@@ -54,3 +54,13 @@ tqdm==4.70.0
 
 # ---------- Streamlit 前端（教学阶段保留，Vue 前端上线后删除此行即可）----------
 streamlit==1.63.0
+
+# ---------- 会话存储（v2.0.0 新增）----------
+# 生产：会话落 Redis，重启/多 worker 下不丢历史（MEMORY_BACKEND=redis 时生效）
+# python>=3.11.3 下 redis 包无强制依赖
+redis==8.1.0
+
+# ---------- 测试用 ----------
+# fakeredis 在内存里模拟 Redis，本地/CI 不必真的起 Redis 服务；
+# [lua] 提供 Lua 支持（会话级分布式锁的释放脚本用）
+fakeredis[lua]==2.38.0

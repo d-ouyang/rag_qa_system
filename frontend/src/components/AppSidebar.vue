@@ -4,8 +4,10 @@
  * ① 项目信息（名称/版本/服务状态）
  * ② 会话列表（新建 / 切换 / 删除，切换后右侧加载该会话历史）
  * ③ 底部功能入口：文件传输 → 知识库管理；系统设置 → 配置页
+ * ④ 当前登录用户 + 退出登录
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useAuthStore } from '@/stores/auth'
 import { useSessionStore, type LocalSession } from '@/stores/sessions'
 import { useSettingsStore } from '@/stores/settings'
 import { useUiStore, type ActiveView } from '@/stores/ui'
@@ -13,6 +15,22 @@ import { useUiStore, type ActiveView } from '@/stores/ui'
 const ui = useUiStore()
 const sessions = useSessionStore()
 const settingsStore = useSettingsStore()
+const auth = useAuthStore()
+
+/** 头像占位字符：用户名首字母（没有用户名时退化成问号，不显示空白） */
+const userInitial = computed(() => (auth.username || '?').slice(0, 1).toUpperCase())
+
+/**
+ * 退出登录。
+ *
+ * 不做二次确认：登出是可逆操作（重新登录即可，会话数据在后端），
+ * 弹确认框反而增加一次无意义的点击；而「误触登出」的代价只是再输一次密码。
+ * 清空本地数据、回到登录页由 auth store + App.vue 的 watch 统一处理。
+ */
+async function onLogout() {
+  await auth.logout()
+  ui.toast('已退出登录', 'info')
+}
 
 /** 当前展开「⋯」菜单的会话 id */
 const menuFor = ref<string | null>(null)
@@ -249,6 +267,22 @@ function fmtTime(ts: number | null): string {
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
         </svg>
         系统设置
+      </button>
+    </div>
+
+    <!-- ④ 当前登录用户 + 退出登录 -->
+    <div class="user-bar">
+      <div class="user-avatar">{{ userInitial }}</div>
+      <div class="user-meta">
+        <span class="user-name" :title="auth.username">{{ auth.username || '未登录' }}</span>
+        <span v-if="auth.expiresSoon" class="user-hint">登录即将过期</span>
+      </div>
+      <button class="logout-btn" title="退出登录" aria-label="退出登录" @click="onLogout">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+          <polyline points="16 17 21 12 16 7" />
+          <line x1="21" y1="12" x2="9" y2="12" />
+        </svg>
       </button>
     </div>
   </aside>
@@ -534,5 +568,60 @@ function fmtTime(ts: number | null): string {
   background: var(--bg-active);
   color: var(--primary);
   font-weight: 500;
+}
+
+/* 登录用户区：贴在侧边栏最底部，与功能入口用分割线隔开 */
+.user-bar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+.user-avatar {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 50%;
+  background: var(--primary-light);
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.user-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+.user-name {
+  font-size: 13px;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-hint {
+  font-size: 11px;
+  color: var(--danger);
+}
+.logout-btn {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 6px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+}
+.logout-btn:hover {
+  background: var(--danger-light);
+  color: var(--danger);
 }
 </style>

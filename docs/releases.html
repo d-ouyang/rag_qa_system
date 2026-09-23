@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>版本日志 · rag-qa-system</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --surface: #12151c;
+    --surface-2: #171b24;
+    --surface-3: #1c212c;
+    --border: #232833;
+    --border-strong: #2f3646;
+    --text: #e8eaed;
+    --text-2: #9aa3b2;
+    --text-3: #6b7484;
+    --added: #3fb950;
+    --fixed: #f0883e;
+    --improved: #58a6ff;
+    --verified: #a371f7;
+    --boundary: #7d8797;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--improved); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  header.nav {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(11,13,18,.88);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner {
+    display: flex; align-items: center; gap: 16px;
+    height: 56px; flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: baseline; gap: 8px; margin-right: auto; }
+  .brand b { font-size: 14px; font-weight: 500; letter-spacing: .2px; }
+  .brand span { font-size: 12px; color: var(--text-3); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    font-family: var(--mono); font-size: 11.5px;
+    padding: 4px 10px; border-radius: 20px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface-2); color: var(--text-2);
+    cursor: pointer; transition: all .15s;
+  }
+  .chip:hover { border-color: var(--accent, var(--improved)); color: var(--text); }
+  .chip.on { background: var(--surface-3); color: var(--text); border-color: var(--accent, var(--improved)); }
+  .toggle {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--text-2); cursor: pointer;
+    padding: 5px 11px; border-radius: 20px;
+    border: 1px solid var(--border-strong); background: var(--surface-2);
+    user-select: none; transition: all .15s;
+  }
+  .toggle:hover { color: var(--text); }
+  .toggle.on { border-color: var(--fixed); color: var(--fixed); background: rgba(240,136,62,.1); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fixed); flex: none; }
+
+  section { padding: 40px 0; }
+  .hero { padding: 56px 0 32px; border-bottom: 1px solid var(--border); }
+  h1 { font-size: 27px; font-weight: 500; margin: 0 0 12px; letter-spacing: -.3px; line-height: 1.35; }
+  .lede { color: var(--text-2); font-size: 14.5px; max-width: 720px; margin: 0 0 26px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 12px;
+    padding: 5px 12px; border-radius: 20px;
+    background: rgba(88,166,255,.1); border: 1px solid rgba(88,166,255,.3);
+    color: var(--improved); margin-bottom: 18px;
+  }
+  .badge .live { width: 6px; height: 6px; border-radius: 50%; background: var(--added); }
+
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .stat {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 15px 16px;
+  }
+  .stat .k { font-size: 11.5px; color: var(--text-3); margin-bottom: 7px; }
+  .stat .v { font-family: var(--mono); font-size: 19px; font-weight: 500; }
+  .stat .v .u { font-size: 12px; color: var(--text-3); font-weight: 400; margin-left: 3px; }
+
+  .prog-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+  h2 { font-size: 17px; font-weight: 500; margin: 0; }
+  .sub { color: var(--text-3); font-size: 12.5px; }
+  .bars { display: grid; gap: 11px; margin-top: 20px; }
+  .bar-row { display: grid; grid-template-columns: 218px 1fr 62px; align-items: center; gap: 14px; }
+  .bar-row .lbl { font-size: 12.5px; color: var(--text-2); }
+  .bar-row .lbl em { font-style: normal; color: var(--text-3); font-size: 11.5px; }
+  .track { height: 7px; border-radius: 4px; background: var(--surface-3); overflow: hidden; display: flex; gap: 2px; }
+  .seg { flex: 1; border-radius: 4px; background: var(--surface-3); }
+  .seg.done { background: var(--seg, var(--added)); }
+  .bar-row .num { font-family: var(--mono); font-size: 12px; color: var(--text-2); text-align: right; }
+
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); }
+
+  .timeline { display: grid; gap: 34px; }
+  article.rel {
+    display: grid; grid-template-columns: 188px 1fr; gap: 26px;
+    scroll-margin-top: 84px;
+  }
+  .rel-side { position: relative; }
+  .rel-side::before {
+    content: ""; position: absolute; left: 3px; top: 26px; bottom: -34px;
+    width: 1px; background: var(--border);
+  }
+  article.rel:last-child .rel-side::before { display: none; }
+  .rel-side .pin {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 0 4px var(--bg), 0 0 0 5px var(--border);
+    margin: 9px 0 12px 0;
+  }
+  .rel-side .ver { font-family: var(--mono); font-size: 14.5px; font-weight: 500; color: var(--accent); }
+  .rel-side .date { font-size: 12px; color: var(--text-3); margin-top: 3px; }
+  .rel-side .tagline { font-size: 12.5px; color: var(--text-2); margin-top: 7px; line-height: 1.5; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden;
+  }
+  .problem {
+    padding: 17px 20px; background: var(--surface-2);
+    border-bottom: 1px solid var(--border); border-left: 2px solid var(--accent);
+  }
+  .problem .k {
+    font-size: 11px; color: var(--text-3); letter-spacing: .4px;
+    margin-bottom: 6px; text-transform: uppercase;
+  }
+  .problem p { margin: 0; color: var(--text); font-size: 13.5px; }
+
+  .grp { padding: 17px 20px; border-top: 1px solid var(--border); }
+  .grp:first-of-type { border-top: none; }
+  .grp-head { display: flex; align-items: center; gap: 9px; margin-bottom: 11px; }
+  .grp-head .sq { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+  .grp-head h3 { font-size: 13px; font-weight: 500; margin: 0; }
+  .grp-head .n {
+    font-family: var(--mono); font-size: 11px; color: var(--text-3);
+    background: var(--surface-3); padding: 1px 7px; border-radius: 9px;
+  }
+  ul.items { margin: 0; padding: 0; list-style: none; display: grid; gap: 9px; }
+  ul.items li { position: relative; padding-left: 15px; color: var(--text-2); font-size: 13px; }
+  ul.items li::before {
+    content: ""; position: absolute; left: 0; top: 8px;
+    width: 4px; height: 4px; border-radius: 50%; background: var(--border-strong);
+  }
+  ul.items li b { color: var(--text); font-weight: 500; }
+  ul.items li.star {
+    padding: 11px 13px 11px 26px; border-radius: 9px;
+    background: rgba(240,136,62,.07); border: 1px solid rgba(240,136,62,.25);
+    color: var(--text-2);
+  }
+  ul.items li.star::before { left: 11px; top: 18px; background: var(--fixed); }
+  ul.items li code {
+    font-family: var(--mono); font-size: 12px;
+    background: var(--surface-3); padding: 1.5px 5px; border-radius: 4px;
+    color: var(--text); border: 1px solid var(--border);
+  }
+
+  .postmortem {
+    margin: 13px 0 0; border-radius: 11px; overflow: hidden;
+    border: 1px solid rgba(240,136,62,.3); background: rgba(240,136,62,.05);
+  }
+  .postmortem .pm-head {
+    padding: 10px 15px; font-size: 11px; letter-spacing: .4px; color: var(--fixed);
+    background: rgba(240,136,62,.1); border-bottom: 1px solid rgba(240,136,62,.2);
+    text-transform: uppercase;
+  }
+  .postmortem dl { margin: 0; padding: 13px 15px; display: grid; gap: 10px; }
+  .postmortem dt { font-size: 12px; color: var(--fixed); margin-bottom: 2px; }
+  .postmortem dd { margin: 0; font-size: 13px; color: var(--text-2); }
+  .postmortem dd b { color: var(--text); font-weight: 500; }
+
+  footer { border-top: 1px solid var(--border); padding: 30px 0 54px; margin-top: 22px; }
+  footer .note { color: var(--text-3); font-size: 12.5px; max-width: 780px; }
+  footer dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 20px 0 0; }
+  footer dt { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
+  footer dd { margin: 3px 0 0; font-size: 12.5px; color: var(--text-3); }
+
+  body.only-fixed .grp:not([data-type="fixed"]) { display: none; }
+  body.only-fixed .problem { display: none; }
+  body.only-fixed .grp[data-type="fixed"] { border-top: none; }
+  body.only-fixed article.rel[data-hasfixed="0"] { display: none; }
+  body.only-fixed .rel-side::before { display: none; }
+  body.only-fixed .legend,
+  body.only-fixed .prog-head,
+  body.only-fixed .bars { opacity: .35; }
+  .filter-hint {
+    display: none; align-items: center; gap: 9px;
+    margin: 0 0 20px; padding: 10px 14px; border-radius: 10px;
+    background: rgba(240,136,62,.07); border: 1px solid rgba(240,136,62,.25);
+    font-size: 12.5px; color: var(--text-2);
+  }
+  body.only-fixed .filter-hint { display: flex; }
+
+  @media (max-width: 820px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    article.rel { grid-template-columns: 1fr; gap: 12px; }
+    .rel-side::before { display: none; }
+    .rel-side .pin { display: none; }
+    .bar-row { grid-template-columns: 1fr; gap: 5px; }
+    .bar-row .num { text-align: left; }
+    footer dl { grid-template-columns: 1fr; }
+    h1 { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <div class="brand"><b>rag-qa-system</b><span>版本日志</span></div>
+    <nav class="chips" id="chips"></nav>
+    <div class="toggle" id="onlyFixed" role="button" tabindex="0">
+      <span class="dot"></span>仅看修复
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero">
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p0.2</div>
+    <h1>一个 RAG 问答系统，如何一步步长起来</h1>
+    <p class="lede">
+      从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
+      这份日志按版本记录每一步解决了什么问题、修掉了哪些 bug。
+    </p>
+    <div class="stats">
+      <div class="stat"><div class="k">后端自动化测试</div><div class="v">497<span class="u">项</span></div></div>
+      <div class="stat"><div class="k">网关端到端冒烟</div><div class="v">25<span class="u">项</span></div></div>
+      <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">2<span class="u">/ 8</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">3<span class="u">个</span></div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="prog-head">
+      <h2>2.0.0 迭代进度</h2>
+      <span class="sub">P0 上线硬前提已全部完成，P1 / P2 尚未开工</span>
+    </div>
+    <div class="bars">
+      <div class="bar-row">
+        <div class="lbl">P0 上线硬前提 <em>持久化 · 鉴权</em></div>
+        <div class="track" style="--seg:#3fb950">
+          <div class="seg done"></div><div class="seg done"></div>
+        </div>
+        <div class="num">2 / 2</div>
+      </div>
+      <div class="bar-row">
+        <div class="lbl">P1 部署与运维 <em>容器 · TLS</em></div>
+        <div class="track" style="--seg:#58a6ff">
+          <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+        </div>
+        <div class="num">0 / 3</div>
+      </div>
+      <div class="bar-row">
+        <div class="lbl">P2 生产化打磨 <em>配置 · 观测 · 备份</em></div>
+        <div class="track" style="--seg:#a371f7">
+          <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+        </div>
+        <div class="num">0 / 3</div>
+      </div>
+    </div>
+    <div class="legend">
+      <span><i class="sq" style="width:7px;height:7px;border-radius:2px;background:#3fb950;display:inline-block"></i>新增能力</span>
+      <span><i class="sq" style="width:7px;height:7px;border-radius:2px;background:#f0883e;display:inline-block"></i>修复缺陷</span>
+      <span><i class="sq" style="width:7px;height:7px;border-radius:2px;background:#58a6ff;display:inline-block"></i>优化改进</span>
+      <span><i class="sq" style="width:7px;height:7px;border-radius:2px;background:#a371f7;display:inline-block"></i>验证证据</span>
+    </div>
+  </section>
+
+  <section>
+    <div class="filter-hint"><span class="dot"></span>已过滤：只显示各版本修掉的缺陷</div>
+    <div class="timeline" id="timeline"></div>
+  </section>
+
+  <footer>
+    <p class="note">
+      本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
+      2.0.0 是进行中的大版本——P0 完成后仍必须经过 P1 的容器化与 TLS 才能公开访问，
+      所以「当前版本 2.0.0-p0.2」不等于「可以上线」。
+    </p>
+    <dl>
+      <div><dt>docs/RELEASES.md</dt><dd>对外变更叙事（本页内容来源）</dd></div>
+      <div><dt>docs/CHANGELOG.md</dt><dd>版本号规则与版本流水（工程对账）</dd></div>
+      <div><dt>docs/PLAN-v2.0.0.md</dt><dd>迭代计划与进度总览</dd></div>
+    </dl>
+  </footer>
+</div>
+
+<script>
+const C = {
+  added:    { label: "新增能力", color: "#3fb950" },
+  fixed:    { label: "修复缺陷", color: "#f0883e" },
+  improved: { label: "优化改进", color: "#58a6ff" },
+  verified: { label: "验证证据", color: "#a371f7" },
+  boundary: { label: "已知边界", color: "#7d8797" }
+};
+
+const RELEASES = [
+  {
+    version: "v2.0.0-p0.2",
+    date: "2026-09-23",
+    accent: "#a371f7",
+    tagline: "给系统装上一道门",
+    problem: "v1.0.0 上线即裸奔——任何人都能上传文档、提问，直接消耗大模型额度。这一版在业务后端前面加了一个独立的鉴权网关，所有请求必须先登录才放行。",
+    sections: [
+      { type: "added", items: [
+        { h: "独立鉴权网关", t: "（NestJS，:3000）JWT 登录、全局默认拒绝的守卫、按用户限流（防止别人白嫖大模型额度）、请求白名单机制。" },
+        { h: "请求转发，且不破坏流式输出", t: "问答接口是逐字返回的，中间多一层缓冲就会把「打字机效果」变成「等 30 秒一次性吐出来」——这是转发实现的首要约束。" },
+        { h: "统一错误格式", t: "无论鉴权失败、请求过频、参数不合法还是后端不可达，前端拿到的错误结构都一致，不必写四套解析。" },
+        { h: "身份透传", t: "网关验完 token 后把用户身份放进请求头传给后端，后端一行代码没改，不用自己解析 JWT。" },
+        { h: "前端登录页与登录态联动", t: "token 失效自动回登录页；主动 / 被动登出都会清空本地会话数据——不清的话下一个登录的人会看到上一个人的聊天记录。" },
+        { h: "网关自身探活接口", t: "（免登录）有意识地和「后端是否活着」分开，否则后端挂掉会把网关一起判死。" }
+      ]},
+      { type: "fixed", items: [
+        { star: true, h: "一个 POST 请求就能把整个网关进程打挂", t: "最严重的一个缺陷，日志看起来毫无杀伤力。完整复盘见下方。" },
+        { h: "参数校验提示答非所问", t: "漏填密码时提示的是「密码不能超过 128 个字符」——框架遍历校验规则的顺序不确定，取到了最后一条。已改为优先取「不能为空」这类更贴切的提示。" },
+        { h: "限流提示透出英文类名", t: "只显示 ThrottlerException: Too Many Requests，用户看不懂，已换成中文文案。" },
+        { h: "前端登出提示语病", t: "出现过「登录状态已失效（登录状态无效，请重新登录），请重新登录」这种同义反复嵌套，已收口成两种固定文案。" },
+        { h: "（修订）漏放行两个上游健康检查", t: "计划书明确要求放行，首轮实现只放了登录与网关自身探活。功能上不影响前端，但上线后监控探活会一直是红的。意外收获是暴露了测试盲区——原来的断言只检查「无 token 要被拒绝」，从没反过来问「该放行的放行了吗」；而一旦引入白名单，就同时引入了「白名单被放得太大」的反向风险，两者必须成对断言。" }
+      ]},
+      { type: "improved", items: [
+        { h: "防止用户名枚举", t: "即使账号不存在也照样做一次密码哈希比对，耗时一致，攻击者无法通过响应快慢判断某个用户名是否真实存在。" },
+        { h: "生产环境不静默降级", t: "缺少 JWT 密钥或账号配置时直接启动失败，而不是悄悄用默认值把服务跑起来。" },
+        { h: "不让监控失效变成拒绝服务", t: "Redis 内存信息读不到时只告警、不阻断写入，业务按「没有历史」降级继续。" }
+      ]},
+      { type: "verified", items: [
+        { h: "", t: "网关端到端冒烟 25 项全绿（含伪造 token、无 token 打流式接口、限流触发、白名单双向断言）。" },
+        { h: "", t: "浏览器实测全流程：登录 → 提问 → 退出 → 失效 token 自动登出 → 错误密码提示。" },
+        { h: "", t: "后端全量回归 497 项全绿。" }
+      ]}
+    ],
+    postmortem: {
+      title: "缺陷复盘 · 一个 POST 打挂整个进程",
+      rows: [
+        ["现象", "只要有人提交一次表单，网关就凭空消失。日志里只有一行看不出严重性的提示，没有任何堆栈。"],
+        ["根因", "为了让被框架提前消费掉的请求体能重新转发，用了官方的 fixRequestBody。但它内部会「结束掉请求」——此后任何往请求上加一个头的操作都会抛异常。真正致命的是：这个异常发生在一个事件回调里，没有任何地方捕获它，于是整个 Node 进程直接退出。"],
+        ["修法", "两层。先调整语句顺序，把所有「加头」的操作提到「结束请求」之前；再给回调整体加上异常捕获；最后在进程级再兜一道底。"],
+        ["教训", "异常发生在回调里时，「有没有人捕获」比「异常本身」更要命。这个 bug 的迷惑性在于日志看起来毫无杀伤力。"]
+      ]
+    }
+  },
+  {
+    version: "v2.0.0-p0.1",
+    date: "2026-09-23",
+    accent: "#14b8a6",
+    tagline: "会话不再「重启即丢」",
+    problem: "v1.0.0 的会话历史、置顶、标题、用量全都存在进程内存里，后端一重启就全没了；将来部署成多副本时，每个副本各存各的，用户会感觉「聊着聊着模型失忆」。这一版把存储抽出来，可切换到 Redis。",
+    sections: [
+      { type: "added", items: [
+        { h: "可插拔的存储抽象层", t: "把「会话怎么存」从业务逻辑里切出来，一行配置就能在「内存」和「Redis」之间切换——本地开发不必为了跑测试先装 Redis。" },
+        { h: "Redis 存储实现", t: "会话用一个 Hash 存、另用一个有序集合维护索引，配一把分布式锁；锁的释放用 Lua 脚本保证「只释放自己加的锁」。" },
+        { h: "Redis 内存预警（这一版的重点）", t: "背景是数据量和访问量上来之后 Redis 会满。做法是三级水位 + 自动止损：达到警戒时提示确认驱逐策略、缩短过期时间；达到严重时自动清理索引残留；达到致命时把写入降级为只读保护——宁可这一轮记不住对话，也不让整个问答返回 502——水位回落自动解除。每条预警都给可直接执行的处置建议，而不是只报一个百分比。" },
+        { h: "新接口 GET /api/v1/system/memory", t: "对外暴露存储后端、会话数、内存水位与建议，供监控抓取。" },
+        { h: "20 项新配置", t: "Redis 连接、锁参数、预警阈值全部可配。" }
+      ]},
+      { type: "fixed", items: [
+        { h: "过期会话被「复活」", t: "会话过期时间在两处各存了一份，两处不一致，导致已经过期的会话被读回来时又被当成新的存了一遍。已改为单一下传。" },
+        { h: "元数据与消息错位", t: "元数据是按轮记录的，但「没有元数据的那一轮」不占位，于是裁剪历史之后意图标注就整体错位了。已改为空占位保证一一对应。" }
+      ]},
+      { type: "improved", items: [
+        { h: "读操作不再隐式创建会话", t: "以前读取一个不存在的会话会凭空造出一条空会话，查询会话列表时越查越多。已改为「不存在就是不存在」。" },
+        { h: "翻会话列表不会让冷会话永生", t: "只有真正「续聊」才刷新过期时间，浏览列表不刷新。" },
+        { h: "业务侧零改动", t: "rag_chain.py 与问答接口一行都没改——这是抽象层设计到位的直接证据。" },
+        { h: "顺手解决「换后端 = 换了个 bug」的风险", t: "两个存储后端跑同一套语义断言，保证行为完全一致。" }
+      ]},
+      { type: "verified", items: [
+        { h: "新增 module6（107 项）", t: "两个后端同套语义断言 + Redis 专有行为 + 内存预警分级与降级。" },
+        { h: "新增 module7（43 项）", t: "走真实 socket 的联调。之所以单独做这个：module6 用的假 Redis 数据活在测试进程里，永远验不出「进程重启后数据还在不在」——而这恰恰是本次改造的全部目的。它起一个真实监听端口的服务、用真实客户端连上去，于是能硬断言「换一个客户端（等价换一个进程）后，历史对话、置顶、标题、用量全都还在」。" },
+        { h: "既有测试回归 347 项全绿", t: "含直接受影响的问答接口。" }
+      ]}
+    ]
+  },
+  {
+    version: "v1.0.0",
+    date: "2026-09-22",
+    accent: "#7d8797",
+    tagline: "从零到能跑",
+    problem: "把一个 RAG 问答系统从零搭到可以本地完整跑通——能上传文档、能检索、能流式回答、有能用的前端界面。还没有做任何上线加固。",
+    sections: [
+      { type: "added", items: [
+        { h: "后端 FastAPI（:8000）三组接口", t: "问答（逐字流式返回）、知识库文档管理、系统配置。" },
+        { h: "核心链路八个模块", t: "文档加载与切分（多格式）、向量化、向量库（Chroma / FAISS 双实现，默认 Chroma 落盘）、大模型客户端（支持 ollama / siliconflow / openai）、检索、重排、意图路由、会话记忆。" },
+        { h: "前端工作台", t: "Vue 3 + TypeScript + Pinia + Vite。左侧边栏（项目信息 / 会话列表）+ 右侧对话 / 知识库 / 设置三个视图。" },
+        { h: "统一配置层", t: "所有开关与参数由 .env 驱动，一处集中管理。" }
+      ]},
+      { type: "boundary", items: [
+        { h: "会话全在内存", t: "重启即丢，也无法多副本部署 —— 直接催生了 p0.1。" },
+        { h: "没有任何鉴权", t: "谁能访问谁就能用，直接消耗大模型额度 —— 直接催生了 p0.2。" },
+        { h: "只有本地联调形态", t: "没有容器化、没有 TLS、没有备份 —— 属于 2.0.0 的 P1 / P2。" }
+      ]},
+      { type: "verified", items: [
+        { h: "", t: "module1 ~ module5 测试全绿（配置 / 文档加载 / 向量库 / 检索与大模型 / 记忆与问答链路）。" }
+      ]}
+    ]
+  }
+];
+
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderRelease(r) {
+  var pm = "";
+  if (r.postmortem) {
+    pm = '<div class="postmortem"><div class="pm-head">' + esc(r.postmortem.title) + "</div><dl>" +
+      r.postmortem.rows.map(function (row) {
+        return "<div><dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd></div>";
+      }).join("") +
+      "</dl></div>";
+  }
+
+  const groups = r.sections.map(function (sec) {
+    const meta = C[sec.type];
+    const lis = sec.items.map(function (it) {
+      const star = it.star ? " star" : "";
+      const head = it.h ? "<b>" + esc(it.h) + "</b>" + (it.t ? " — " : "") : "";
+      return '<li class="' + star.trim() + '">' + head + esc(it.t || "") + "</li>";
+    }).join("");
+    return '<div class="grp" data-type="' + sec.type + '">' +
+      '<div class="grp-head">' +
+        '<span class="sq" style="background:' + meta.color + '"></span>' +
+        "<h3>" + meta.label + "</h3>" +
+        '<span class="n">' + sec.items.length + "</span>" +
+      "</div>" +
+      '<ul class="items">' + lis + "</ul>" +
+      (sec.type === "fixed" ? pm : "") +
+    "</div>";
+  }).join("");
+
+  return '<article class="rel" id="' + r.version + '" data-hasfixed="' +
+    (r.sections.some(function (s) { return s.type === "fixed"; }) ? "1" : "0") +
+    '" style="--accent:' + r.accent + '">' +
+    '<div class="rel-side">' +
+      '<div class="pin"></div>' +
+      '<div class="ver">' + esc(r.version) + "</div>" +
+      '<div class="date">' + esc(r.date) + "</div>" +
+      '<div class="tagline">' + esc(r.tagline) + "</div>" +
+    "</div>" +
+    '<div class="card">' +
+      '<div class="problem"><div class="k">这一版解决了什么问题</div><p>' + esc(r.problem) + "</p></div>" +
+      groups +
+    "</div>" +
+  "</article>";
+}
+
+document.getElementById("timeline").innerHTML = RELEASES.map(renderRelease).join("");
+
+document.getElementById("chips").innerHTML = RELEASES.map(function (r) {
+  return '<span class="chip" data-target="' + r.version + '" style="--accent:' + r.accent + '">' + esc(r.version) + "</span>";
+}).join("");
+
+const chips = Array.prototype.slice.call(document.querySelectorAll(".chip"));
+chips.forEach(function (c) {
+  c.addEventListener("click", function () {
+    const el = document.getElementById(c.dataset.target);
+    if (el) el.scrollIntoView({ block: "start" });
+  });
+});
+
+const obs = new IntersectionObserver(function (entries) {
+  entries.forEach(function (e) {
+    if (e.isIntersecting) {
+      chips.forEach(function (c) { c.classList.toggle("on", c.dataset.target === e.target.id); });
+    }
+  });
+}, { rootMargin: "-84px 0px -60% 0px" });
+document.querySelectorAll("article.rel").forEach(function (a) { obs.observe(a); });
+
+const tog = document.getElementById("onlyFixed");
+function flip() {
+  const on = document.body.classList.toggle("only-fixed");
+  tog.classList.toggle("on", on);
+}
+tog.addEventListener("click", flip);
+tog.addEventListener("keydown", function (e) {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(); }
+});
+</script>
+</body>
+</html>

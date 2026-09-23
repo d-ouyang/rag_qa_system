@@ -260,7 +260,7 @@ def ask_stream(request: AskRequest) -> StreamingResponse:
     summary="列出全部会话",
 )
 def list_sessions() -> list[dict[str, Any]]:
-    """列出当前内存中的全部会话（运维/调试用）。"""
+    """列出当前全部会话（运维/调试用；存储后端见 MEMORY_BACKEND 配置）。"""
     return get_memory_manager().list_sessions()
 
 
@@ -358,5 +358,14 @@ def delete_session(session_id: str) -> dict[str, Any]:
     description="返回 LLM / 检索器 / 记忆 / 意图分类器的当前状态（不含密钥）。",
 )
 def health() -> dict[str, Any]:
-    """健康检查：只读状态，不触发真实 LLM 调用。"""
-    return {"status": "ok", **get_rag_chain().get_chain_info()}
+    """
+    健康检查：只读状态，不触发真实 LLM 调用。
+
+    记忆段额外补上存储后端名：排查「重启后会话还在不在」这类问题时，
+    第一眼要确认的就是现在到底挂的是 memory 还是 redis。
+    """
+    info = get_rag_chain().get_chain_info()
+    memory = info.setdefault("memory", {})
+    if isinstance(memory, dict):
+        memory["backend"] = get_memory_manager().store.name
+    return {"status": "ok", **info}

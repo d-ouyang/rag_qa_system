@@ -76,6 +76,45 @@ class Settings(BaseSettings):
     MEMORY_MAX_TURNS : int = 10
     # 会话闲置多少秒后视为过期，被清理线程/惰性检查回收（防内存无限增长）
     MEMORY_SESSION_TTL_SECONDS : int = 6 * 3600
+    # 会话存储后端：memory（进程内 dict，本地开发/测试用）| redis（生产，重启不丢会话）
+    # 见 core/session_store.py 的 build_session_store()
+    MEMORY_BACKEND : Literal["memory", "redis"] = "memory"
+    # 单个会话序列化后的体积上限（字节）。超过则在写入前强制多裁几轮，
+    # 防止「用户贴超长文本」把单会话撑到几 MB，拖慢每次读改写。
+    MEMORY_MAX_SESSION_BYTES : int = 256 * 1024
+    # Redis 不可用/写失败时是否降级为「不写记忆但问答照常返回」。
+    # True：可用性优先（问答不因记忆失败而 502）；False：严格模式，直接抛错。
+    MEMORY_DEGRADE_ON_ERROR : bool = True
+
+    # Redis 配置（MEMORY_BACKEND=redis 时生效）
+    REDIS_URL : str = "redis://localhost:6379/0"
+    # 所有本应用 key 统一前缀，便于 SCAN / 统计 / 避免与其他业务撞 key
+    REDIS_KEY_PREFIX : str = "rag"
+    # 连接池上限。按「每请求最多占用 1 条连接、瞬时并发 QPS」估算，
+    # 20 条足够支撑单机数百 QPS；设太大反而会把 Redis 的 maxclients 吃满。
+    REDIS_MAX_CONNECTIONS : int = 20
+    # 单次命令超时（秒）。必须设：Redis 挂起时不设超时会把请求线程永久挂死。
+    REDIS_SOCKET_TIMEOUT : float = 2.0
+    # 建连超时（秒），比 socket 超时更短，避免启动期长时间卡住
+    REDIS_CONNECT_TIMEOUT : float = 2.0
+    # 会话级分布式锁：多 worker（uvicorn --workers / 多容器）下保证同一会话串行
+    REDIS_LOCK_ENABLED : bool = True
+    REDIS_LOCK_TTL_MS : int = 5000      # 锁自动过期（防持锁进程崩了死锁）
+    REDIS_LOCK_WAIT_MS : int = 2000     # 拿不到锁的最长等待（超时降级为无锁执行 + WARN）
+
+    # Redis 内存预警（core/redis_monitor.py 消费）
+    # 目的：Redis 是共享资源，本应用写爆它会连带把同机其他服务一起拖垮。
+    # 因此按 maxmemory 水位分三级告警，并对 fatal 级做「只读保护」。
+    REDIS_MEMORY_MONITOR_ENABLED : bool = True
+    REDIS_MEMORY_CHECK_INTERVAL_SECONDS : int = 60   # 后台巡检间隔
+    REDIS_MEMORY_WARN_RATIO : float = 0.70           # ≥70% 水位 → WARN 日志
+    REDIS_MEMORY_CRITICAL_RATIO : float = 0.85       # ≥85% → ERROR + 主动清理过期会话
+    REDIS_MEMORY_FATAL_RATIO : float = 0.95          # ≥95% → CRITICAL + 只读保护
+    # Redis 未设置 maxmemory（=0，无上限）时，用这个假定容量估算水位比例
+    REDIS_MEMORY_ASSUMED_MAX_MB : int = 128
+    # fatal 水位下是否开启只读保护：新会话不再写记忆，但问答本身照常返回。
+    # 宁可丢「多轮上下文」也不让服务整体 503 —— 可用性优先。
+    REDIS_MEMORY_FATAL_READONLY : bool = True
 
     # 意图识别配置（core/intent_router.py 消费）
     # 分类任务只需输出一个词，用本地小模型足够且零成本；

@@ -1,0 +1,41 @@
+{
+  "name": "rag-qa-gateway",
+  "version": "2.0.0-p0.2",
+  "description": "RAG 问答系统的鉴权网关：JWT 登录 + 全局鉴权 + 限流 + 反向代理（NDJSON 流式透传）",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/main",
+    "hash": "node scripts/hash-password.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.4.15",
+    "@nestjs/config": "^3.3.0",
+    "@nestjs/core": "^10.4.15",
+    "@nestjs/jwt": "^10.2.0",
+    "@nestjs/passport": "^10.0.3",
+    "@nestjs/platform-express": "^10.4.15",
+    "@nestjs/throttler": "^6.4.0",
+    "bcryptjs": "^2.4.3",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "http-proxy-middleware": "^3.0.3",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.4.9",
+    "@nestjs/schematics": "^10.2.3",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.2",
+    "@types/passport-jwt": "^4.0.1",
+    "typescript": "^5.7.2"
+  }
+}
