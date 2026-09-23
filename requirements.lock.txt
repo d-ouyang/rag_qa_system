@@ -10,6 +10,8 @@ aiohttp==3.14.3
     #   langchain-community
 aiosignal==1.4.0
     # via aiohttp
+alembic==1.20.0
+    # via -r requirements.in
 altair==6.3.0
     # via streamlit
 annotated-doc==0.0.5
@@ -27,6 +29,8 @@ anyio==4.15.1
     #   watchfiles
 asgiref==3.12.1
     # via opentelemetry-instrumentation-asgi
+async-timeout==5.0.1
+    # via redis
 attrs==26.1.0
     # via
     #   aiohttp
@@ -69,7 +73,9 @@ click==8.5.0
 cloudpickle==3.1.2
     # via joblib
 cryptography==50.0.1
-    # via unstructured-client
+    # via
+    #   -r requirements.in
+    #   unstructured-client
 dataclasses-json==0.6.7
     # via
     #   langchain-community
@@ -90,6 +96,8 @@ emoji==2.15.0
 et-xmlfile==2.0.0
     # via openpyxl
 faiss-cpu==1.12.0
+    # via -r requirements.in
+fakeredis==2.38.0
     # via -r requirements.in
 fastapi==0.116.2
     # via
@@ -217,16 +225,22 @@ langsmith==0.12.5
     #   langchain
     #   langchain-community
     #   langchain-core
+lupa==2.8
+    # via fakeredis
 lxml==6.1.3
     # via
     #   python-pptx
     #   unstructured
+mako==1.4.3
+    # via alembic
 markdown==3.10.3
     # via -r requirements.in
 markdown-it-py==4.2.0
     # via rich
 markupsafe==3.0.3
-    # via jinja2
+    # via
+    #   jinja2
+    #   mako
 marshmallow==3.26.2
     # via dataclasses-json
 mdurl==0.1.2
@@ -385,6 +399,8 @@ pygments==2.21.0
     # via rich
 pymupdf==1.28.2
     # via -r requirements.in
+pymysql==1.2.3
+    # via -r requirements.in
 pypdf==6.18.1
     # via unstructured-client
 pypdfium2==5.13.0
@@ -428,6 +444,10 @@ pyyaml==6.0.3
     #   uvicorn
 rapidfuzz==3.14.6
     # via unstructured
+redis==8.1.0
+    # via
+    #   -r requirements.in
+    #   fakeredis
 referencing==0.37.0
     # via
     #   jsonschema
@@ -491,10 +511,14 @@ sniffio==1.3.1
     # via
     #   langsmith
     #   openai
+sortedcontainers==2.4.0
+    # via fakeredis
 soupsieve==2.9.2
     # via beautifulsoup4
 sqlalchemy==2.0.53
     # via
+    #   -r requirements.in
+    #   alembic
     #   langchain
     #   langchain-community
 starlette==0.48.0
@@ -549,6 +573,7 @@ typing-extensions==4.16.0
     # via
     #   aiohttp
     #   aiosignal
+    #   alembic
     #   altair
     #   anyio
     #   beautifulsoup4
@@ -627,19 +652,3 @@ yarl==1.24.5
     # via aiohttp
 zstandard==0.25.0
     # via langsmith
-
-# ---------- 会话存储（v2.0.0 新增）----------
-# 手工追加而非重跑 make lock：redis 无强制依赖（python>=3.11.3 不需要 async-timeout），
-# 重跑 `uv pip compile` 会顺带把 emoji/filelock/langsmith/protobuf 等一批包升小版本，
-# 那属于与本次迭代无关的依赖漂移，不该混在功能提交里。
-# 下次因其他原因重新 lock 时这几行会被自动收敛，届时删掉本注释即可。
-redis==8.1.0
-    # via -r requirements.in
-
-# ---------- 测试用（fakeredis 模拟 Redis，CI 无需真实 Redis）----------
-fakeredis==2.38.0
-    # via -r requirements.in
-lupa==2.8
-    # via fakeredis
-sortedcontainers==2.4.0
-    # via fakeredis

@@ -49,7 +49,21 @@ tqdm>=4.66.5
 # ---------- Streamlit（仅教学阶段用，Vue 前端上线后可移除）----------
 streamlit>=1.39,<2
 
-# ---------- 会话存储（Redis 后端）----------
+# ---------- 关系数据库（业务数据真相源，v2.0.0 P0-1 新增）----------
+# 五张表：user / folder / session / chat_message / document。
+# 选**同步** SQLAlchemy 而非 async：MemoryManager 本身就是同步的，
+# 为了 ORM 把整条会话链路改成 async 是纯粹的复杂度倒挂。
+sqlalchemy>=2.0.36,<2.1
+alembic>=1.14,<2
+# PyMySQL 是纯 Python 驱动（免编译，跨平台装得上）。
+# cryptography 在这里**不是可选项**：MySQL 8 默认认证插件是 caching_sha2_password，
+# 完整认证路径要用它算 RSA，缺了会直接报 "cryptography package is required for sha256_password"。
+pymysql>=1.1.1,<2
+cryptography>=43.0
+
+# ---------- Redis（解析任务队列 broker + 短期缓存）----------
+# ⚠️ 2026-09-23 修订：不再承载会话真相源（会话/消息落 MySQL）。
+#    生产路径上 Redis 只剩两件事：P0-3 的解析任务队列（db1）、P3 的问答字符串缓存（db0）。
 redis>=5.0,<9
 
 # ---------- 测试用（fakeredis 模拟 Redis，免装真实服务；[lua] 提供锁释放脚本支持）----------

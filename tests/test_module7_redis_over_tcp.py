@@ -126,7 +126,7 @@ def new_client() -> "redis.Redis":
 
 
 from core.redis_store import RedisSessionStore  # noqa: E402
-from core.session_store import SessionSnapshot, build_session_store  # noqa: E402
+from core.session_store import SessionSnapshot  # noqa: E402
 
 client_a = new_client()
 check("真实 redis-py 客户端能 PING 通（真网络往返）", client_a.ping() is True)
@@ -217,12 +217,20 @@ manager_1.add_usage("mm-1", input_tokens=12, output_tokens=34)
 
 check("第一个 Manager 写入后能读到 4 条消息", len(manager_1.get_messages("mm-1")) == 4)
 
-# ② 模拟「后端重启」：全新 Manager、全新 Store、全新客户端，且**走工厂**
-#    把 settings 指到这个 TCP 服务，验证 build_session_store 的装配路径也是对的
-settings.MEMORY_BACKEND = "redis"
-settings.REDIS_URL = f"redis://{HOST}:{PORT}/0"
-
-manager_2 = MemoryManager(max_turns=10, ttl_seconds=TTL)
+# ② 模拟「后端重启」：全新 Manager、全新 Store、全新客户端
+#
+#    ⚠️ 这里**不再走工厂**。原来这段会设 `settings.MEMORY_BACKEND = "redis"`
+#    让 build_session_store 装配一个 Redis Store，顺带验证工厂路径。
+#    2026-09-23 架构调整后 Redis 已退出会话真相源：
+#      · `MEMORY_BACKEND` 只剩 memory | mysql；
+#      · 工厂遇到 "redis" 会**直接抛 ValueError**，而不是静默回退到内存版
+#        （静默回退在生产上等于「重启即丢全部会话」，日志里只有一行 WARNING，
+#          比启动失败坏得多 —— 详见 core/session_store.py 的 build_session_store）。
+#    工厂对退役取值的报错行为由 tests/test_module8 断言；本模块只测 Redis 自身语义，
+#    所以改成显式注入。
+manager_2 = MemoryManager(
+    max_turns=10, ttl_seconds=TTL, store=RedisSessionStore(client=new_client(), ttl_seconds=TTL)
+)
 
 check("重启后新的 Manager 报出 redis 后端", manager_2.store.name == "redis", f"实际 {manager_2.store.name}")
 msgs = manager_2.get_messages("mm-1")

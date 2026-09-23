@@ -10,26 +10,39 @@ v1.0.0 的 MemoryManager 把两件事揉在一个类里：
 这导致「换 Redis」必须动逻辑代码，而逻辑代码是经过测试、语义微妙的部分
 （比如截断点必须向下取偶），改动风险高。
 
-拆开之后：
-    · 逻辑层（memory_manager.MemoryManager）只管算，不懂 Redis；
-    · 存储层（本模块 / redis_store.py）只管存取，不懂对话语义。
-换后端 = 换一个 Store 实现 + 一行配置，逻辑层与调用方零改动。
+v2.0.0 拆开之后（分层见 docs/PLAN-v2.0.0.md §4）：
+    · core/session_store.py  MemorySessionStore  —— 进程内，开发 / 测试用
+    · core/mysql_store.py    MySQLSessionStore   —— **生产真相源**，重启不丢
+    · core/redis_store.py    RedisSessionStore   —— ⚠️ **已退役**，仅 module6/7 的
+                                                     Redis 语义验证还在用它，MySQL 版
+                                                     稳定后删除。生产路径不再构建它
+                                                     （`MEMORY_BACKEND` 取值只有 memory|mysql）
+    · core/memory_manager.py MemoryManager       —— 会话语义，与存储后端无关
+换后端只改一行配置（MEMORY_BACKEND=mysql），本模块与所有调用方零改动。
+
+> 2026-09-23 修订：原来 `MEMORY_BACKEND` 的第二个取值是 `redis`，已作废。
+> 原因是「会话是永久业务资产，不该存在随时会被驱逐的内存库里」，详见 mysql_store.py 头部。
 
 --------------------------------------------------------------------------
 为什么接口是「整条会话快照」而不是「单条消息 CRUD」
 --------------------------------------------------------------------------
 会话的读写模式是「一轮问答 = 读一次全部历史 + 写一次全部历史」：
     · 逻辑上天然以 session 为单位，没有「单独改第 3 条消息」的场景；
-    · 存整条快照 → 一次 HSET 写完，天然原子，不会出现「消息写进去了、
+    · 存整条快照 → 一次写完，天然原子，不会出现「消息写进去了、
       元数据没写进去」的半截状态；
-    · 反而避免了「每条消息一个 key」带来的一堆小 key（Redis 里小 key 多了
+    · 反而避免了「每条消息一条记录」带来的一堆小 key（Redis 里小 key 多了
       内存碎片和 RTT 都很难看：10 轮对话 = 21 次往返 vs 1 次）。
+
+> 这段理由最初是为 Redis 写的，换成 MySQL 后依然成立 ——
+> 只是「一次写完」的载体从 `HSET` 变成了**一个事务**：
+> 存储层在事务里把快照 diff 成行级 INSERT/UPDATE/DELETE，
+> 要么全成，要么全滚（见 core/mysql_store.py 的 save()）。
 
 代价是每次写要序列化整条会话。控制手段是 MEMORY_MAX_TURNS（限制轮数）
 和 MEMORY_MAX_SESSION_BYTES（限制单会话字节数），见 config/settings.py。
 
 --------------------------------------------------------------------------
-快照的数据结构（也是落 Redis 的 JSON 结构）
+快照的数据结构（也是存储层序列化用的结构）
 --------------------------------------------------------------------------
     messages      [{"role": "user"|"assistant", "content": "..."}]  按时间正序
     exchange_meta [{"sources": [...], "intent": "...", ...}]        与 messages 按轮对齐
@@ -149,7 +162,7 @@ class SessionStore(ABC):
     5. list_ids 按最后活跃时间倒序（前端会话列表直接用这个顺序）。
     """
 
-    #: 后端名字，用于日志和健康检查展示（memory / redis）
+    #: 后端名字，用于日志和健康检查展示（memory / mysql / redis，redis 已退役）
     name: str = "unknown"
 
     @abstractmethod
@@ -224,8 +237,8 @@ class MemorySessionStore(SessionStore):
     进程内 dict 存储 —— 保留 v1.0.0 的行为，用于本地开发与单元测试。
 
     特点：零依赖、零网络、重启即丢。之所以保留而不是删掉：
-    · 本地不装 Redis 也能跑测试（CI 友好）；
-    · 是 Redis 版的「行为基准」——两边跑同一套断言，能第一时间发现 Redis 版
+    · 本地不装 MySQL 也能跑测试（CI 友好）；
+    · 是 MySQL 版的「行为基准」——两边跑同一套断言，能第一时间发现 MySQL 版
       语义漂移。
     """
 
@@ -340,20 +353,35 @@ def build_session_store(ttl_seconds: int | None = None) -> SessionStore:
     按 settings.MEMORY_BACKEND 构建存储实例。
 
     为什么需要工厂而不是模块级单例：
-    MemoryManager 的构造需要能注入不同 Store（测试里传内存版、生产传 Redis 版），
+    MemoryManager 的构造需要能注入不同 Store（测试里传内存版、生产传 MySQL 版），
     单例会让「换后端」变成改全局状态，测试之间互相污染。
 
     :param ttl_seconds: 会话闲置过期秒数；缺省由各 Store 自行读 settings。
                         显式传入是为了让 `MemoryManager(ttl_seconds=0)` 这类
                         测试用法真的生效（否则 Manager 的 TTL 与 Store 的 TTL
                         会各说各话，过期行为对不上）。
+
+    取值非法时**抛 ValueError，不回退**（理由见函数体里的注释）。
     """
     backend = (settings.MEMORY_BACKEND or "memory").strip().lower()
-    if backend == "redis":
-        # 延迟 import：没装 redis 包或没配 Redis 时，memory 模式不应受任何影响
-        from core.redis_store import RedisSessionStore
+    if backend == "mysql":
+        # 延迟 import 不是洁癖：本地跑测试 / CI 不需要 MySQL，
+        # 若在 import 期就依赖 pymysql，等于把「不装数据库也能跑单测」这个能力删掉了。
+        from core.mysql_store import MySQLSessionStore
 
-        return RedisSessionStore(ttl_seconds=ttl_seconds)
-    if backend != "memory":
-        logger.warning("未知的 MEMORY_BACKEND=%s，回退为 memory", backend)
-    return MemorySessionStore(ttl_seconds=ttl_seconds)
+        return MySQLSessionStore(ttl_seconds=ttl_seconds)
+    if backend == "memory":
+        return MemorySessionStore(ttl_seconds=ttl_seconds)
+
+    # ⚠️ 走到这里**故意抛错，不静默回退**。
+    # 「未知取值就回退成内存版」看着友好，实际后果是：生产上把持久化悄悄关掉，
+    # 重启即丢全部会话，而日志里只有一行 WARNING。静默的数据丢失比启动失败坏得多 ——
+    # 启动失败五分钟内就会被发现；静默丢数据往往要等到用户投诉，那时已经找不回来了。
+    if backend == "redis":
+        raise ValueError(
+            "MEMORY_BACKEND=redis 已废弃：会话真相源已改为 MySQL。"
+            "RedisSessionStore 仅保留给 tests/test_module6、test_module7 的语义验证，"
+            "不再参与生产装配。请改为 MEMORY_BACKEND=mysql；"
+            "本地开发 / 测试用 MEMORY_BACKEND=memory。"
+        )
+    raise ValueError(f"未知的 MEMORY_BACKEND={backend!r}，只支持 memory | mysql")

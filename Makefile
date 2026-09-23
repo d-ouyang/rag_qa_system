@@ -10,7 +10,8 @@ PY := $(VENV)/bin/python
 DOCKER ?= docker
 
 .PHONY: help setup venv sync lock api web frontend gateway dev stop test memory releases clean ollama \
-        infra infra-check infra-logs infra-stop infra-down
+        infra infra-check infra-logs infra-stop infra-down \
+        db-upgrade db-current db-downgrade db-revision db-sql
 
 help:
 	@echo "—— 一次性 ——"
@@ -24,6 +25,13 @@ help:
 	@echo "make infra-logs    跟踪容器日志"
 	@echo "make infra-stop    停容器（保留数据）"
 	@echo "make infra-down    移除容器与网络（保留 volume，数据不丢）"
+	@echo ""
+	@echo "—— 数据库迁移（Alembic，P0-1）——"
+	@echo "make db-upgrade    把库升到最新结构（alembic upgrade head）"
+	@echo "make db-current    当前库到哪个迁移版本了"
+	@echo "make db-downgrade  回退一个版本（少用；本地重建用 infra-down -v 更快）"
+	@echo "make db-revision   新建一个空迁移（要传 M=\"说明\"，如 make db-revision M=\"add xxx\"）"
+	@echo "make db-sql        只打印 DDL 不执行（给 DBA 审批用）"
 	@echo ""
 	@echo "—— 单独启动（想在各自终端看日志时用）——"
 	@echo "make api       启动 FastAPI (8000)"
@@ -97,6 +105,7 @@ test:
 	$(PY) tests/test_module5_rag_chain_api.py
 	$(PY) tests/test_module6_session_store.py
 	$(PY) tests/test_module7_redis_over_tcp.py
+	$(PY) tests/test_module8_mysql_session_store.py
 
 ollama:
 	@curl -s http://localhost:11434/api/tags | head -c 200; echo
@@ -125,6 +134,30 @@ infra-down:
 	@echo ""
 	@echo "容器已移除，volume（mysql_data / redis_data）保留，业务数据未丢。"
 	@echo "如需彻底清空：$(DOCKER) compose down -v   ⚠️ 会删除全部业务数据"
+
+# ---------- 数据库迁移（Alembic，P0-1）----------
+# 连接串不在这里传 —— alembic/env.py 从 config/settings.py（即 .env）读取，
+# 避免密码在 alembic.ini 里出现第二份。
+ALEMBIC := $(VENV)/bin/alembic
+
+db-upgrade:
+	$(ALEMBIC) upgrade head
+
+db-current:
+	@$(ALEMBIC) current 2>&1 | grep -v "^INFO" | tail -3
+
+db-downgrade:
+	$(ALEMBIC) downgrade -1
+
+# 用法：make db-revision M="add xxx column"
+db-revision:
+	@if [ -z "$(M)" ]; then echo "❌ 必须传说明：make db-revision M=\"add xxx\""; exit 1; fi
+	$(ALEMBIC) revision -m "$(M)"
+
+# 离线模式：只把 DDL 打到 stdout，不连库。生产库账号通常没有 DDL 权限，
+# 走这条路可以把变更交给 DBA 审。
+db-sql:
+	$(ALEMBIC) upgrade head --sql
 
 clean:
 	rm -rf $(VENV) __pycache__ */__pycache__

@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import ClassVar, Literal
+from urllib.parse import quote_plus
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -76,9 +77,12 @@ class Settings(BaseSettings):
     MEMORY_MAX_TURNS : int = 10
     # 会话闲置多少秒后视为过期，被清理线程/惰性检查回收（防内存无限增长）
     MEMORY_SESSION_TTL_SECONDS : int = 6 * 3600
-    # 会话存储后端：memory（进程内 dict，本地开发/测试用）| redis（生产，重启不丢会话）
+    # 会话存储后端：memory（进程内 dict，本地开发/测试用）| mysql（生产真相源）
     # 见 core/session_store.py 的 build_session_store()
-    MEMORY_BACKEND : Literal["memory", "redis"] = "memory"
+    # ⚠️ 2026-09-23 修订：原取值 memory|redis **作废**。会话/消息是永久业务资产，
+    #    不该存在「重启 / 驱逐 / 容量保护就丢」的内存库里。Redis 退为「队列 broker + 短期缓存」，
+    #    不再承载任何真相源数据。分层依据见 docs/PLAN-v2.0.0.md §4，变更过程见 p0.1 文档 §7.1。
+    MEMORY_BACKEND : Literal["memory", "mysql"] = "memory"
     # 单个会话序列化后的体积上限（字节）。超过则在写入前强制多裁几轮，
     # 防止「用户贴超长文本」把单会话撑到几 MB，拖慢每次读改写。
     MEMORY_MAX_SESSION_BYTES : int = 256 * 1024
@@ -86,8 +90,56 @@ class Settings(BaseSettings):
     # True：可用性优先（问答不因记忆失败而 502）；False：严格模式，直接抛错。
     MEMORY_DEGRADE_ON_ERROR : bool = True
 
-    # Redis 配置（MEMORY_BACKEND=redis 时生效）
+    # ---------- MySQL（业务数据真相源，v2.0.0 P0-1 新增）----------
+    # 定位：user / folder / session / chat_message / document 五张表的**唯一真相源**。
+    # 与 Redis 严格分工：Redis 只做「解析任务队列 + 短期缓存」，存不住的东西一律不放它。
+    #
+    # ⚠️ HOST 必须是环境变量，不许在代码里写死：
+    #    本地开发（D1 决策）= 中间件容器化 + 应用裸跑 → 连 localhost（容器端口绑在 127.0.0.1）
+    #    全栈容器化（P1-5b）    = 服务间走容器网络   → HOST 改成 mysql
+    #    写死任一侧的代价是「切模式必漏改一处」，而症状是「连不上数据库」这种零信息量报错。
+    MYSQL_HOST : str = "localhost"
+    MYSQL_PORT : int = 3306
+    MYSQL_DATABASE : str = "rag_qa"
+    MYSQL_USER : str = "rag"
+    MYSQL_PASSWORD : str = ""
+    MYSQL_CHARSET : str = "utf8mb4"
+
+    # 连接池（SQLAlchemy QueuePool）。估算口径与 REDIS_MAX_CONNECTIONS 相同：
+    # 「每请求最多占 1 条连接 × 瞬时并发」。设太大反而会打满服务端 max_connections（本项目设 100）。
+    MYSQL_POOL_SIZE : int = 5
+    MYSQL_MAX_OVERFLOW : int = 10
+    # 借出连接前先 ping。必须开：MySQL 8 默认 wait_timeout=8h，空闲连接会被服务端单方面掐掉，
+    # 应用侧连接池却以为它还活着 —— 下一次查询直接 Lost connection（且只在低谷后突发流量时出现，极难定位）。
+    MYSQL_POOL_PRE_PING : bool = True
+    # 主动回收连接的时长，取得比 wait_timeout 短，把「服务端先掐」变成「客户端先换」。
+    MYSQL_POOL_RECYCLE_SECONDS : int = 3600
+    # 建连超时（秒）。不设的话 MySQL 不可达时请求线程会长时间挂住。
+    MYSQL_CONNECT_TIMEOUT : int = 5
+    # 调试用：把每条 SQL 打到日志。生产必须关，否则单次问答能刷出上百行日志。
+    MYSQL_ECHO_SQL : bool = False
+    # Alembic 迁移脚本目录（alembic/env.py 消费）
+    ALEMBIC_DIR : Path = BASE_DIR / "alembic"
+
+    @property
+    def MYSQL_URL(self) -> str:
+        """
+        组装 SQLAlchemy 连接串。
+
+        为什么用 quote_plus 而不是 f-string 直拼：密码里一旦出现 @ : / ? # 这类 URL
+        保留字符，手拼出来的串会被解析器切错（`p@ss` 会被当成 user=p / host=ss），
+        报错信息还完全指不到密码上 —— 排查方向会跑偏几十分钟。
+        """
+        return (
+            f"mysql+pymysql://{quote_plus(self.MYSQL_USER)}:{quote_plus(self.MYSQL_PASSWORD)}"
+            f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
+            f"?charset={self.MYSQL_CHARSET}"
+        )
+
+    # Redis 配置（队列 broker + 短期缓存；**不承载会话真相**）
     REDIS_URL : str = "redis://localhost:6379/0"
+    # 文档解析任务队列所在库（P0-3 启用）。与缓存分库，便于单独看积压 / 单独清理。
+    REDIS_QUEUE_URL : str = "redis://localhost:6379/1"
     # 所有本应用 key 统一前缀，便于 SCAN / 统计 / 避免与其他业务撞 key
     REDIS_KEY_PREFIX : str = "rag"
     # 连接池上限。按「每请求最多占用 1 条连接、瞬时并发 QPS」估算，
@@ -98,6 +150,9 @@ class Settings(BaseSettings):
     # 建连超时（秒），比 socket 超时更短，避免启动期长时间卡住
     REDIS_CONNECT_TIMEOUT : float = 2.0
     # 会话级分布式锁：多 worker（uvicorn --workers / 多容器）下保证同一会话串行
+    # ⚠️ **deprecated**：仅 RedisSessionStore（已退出生产路径）还读这三项。
+    #    生产路径的会话级锁改由 MySQL `SELECT ... FOR UPDATE` 承担 ——
+    #    锁与被保护的数据落在同一个事务边界内，比跨进程分布式锁更简单也更可靠（见 P0-1）。
     REDIS_LOCK_ENABLED : bool = True
     REDIS_LOCK_TTL_MS : int = 5000      # 锁自动过期（防持锁进程崩了死锁）
     REDIS_LOCK_WAIT_MS : int = 2000     # 拿不到锁的最长等待（超时降级为无锁执行 + WARN）

@@ -68,80 +68,17 @@ print("\n== 第 1 组：存储层语义一致性（memory / redis 双跑） ==")
 
 from core.session_store import MemorySessionStore, SessionSnapshot
 from core.redis_store import RedisSessionStore
-
-
-def exercise_store(store, label: str) -> None:
-    """
-    对任意 Store 实现跑同一套语义断言。
-
-    这是本测试文件最重要的部分：把「两个后端行为一致」变成可执行的断言，
-    而不是靠人肉 review。将来加第三个后端（比如 Postgres）直接复用这个函数。
-    """
-    # 不存在 → None
-    check(f"[{label}] 读不存在的会话返回 None", store.load("nope") is None)
-    check(f"[{label}] exists 对不存在返回 False", store.exists("nope") is False)
-
-    # 写入 + 读回（含中文与元数据，验证序列化往返）
-    snap = SessionSnapshot(
-        messages=[
-            {"role": "user", "content": "公司的报销流程是什么？"},
-            {"role": "assistant", "content": "先提交申请单，再由主管审批。"},
-        ],
-        exchange_meta=[{"intent": "policy_consult", "elapsed_ms": 123.4}],
-        session_meta={"pinned": True, "title": "报销"},
-        usage={"input_tokens": 10, "output_tokens": 20, "cache_read_tokens": 0, "requests": 1},
-    )
-    store.save("s1", snap)
-
-    loaded = store.load("s1")
-    check(f"[{label}] 写入后能读回", loaded is not None)
-    check(f"[{label}] 消息条数与内容一致", loaded is not None and len(loaded.messages) == 2)
-    check(
-        f"[{label}] 中文内容无乱码",
-        loaded is not None and loaded.messages[0]["content"] == "公司的报销流程是什么？",
-        f"实际 {loaded.messages[0]['content'] if loaded else None}",
-    )
-    check(
-        f"[{label}] 元数据往返一致",
-        loaded is not None and loaded.exchange_meta[0]["intent"] == "policy_consult",
-    )
-    check(f"[{label}] 置顶标记往返一致", loaded is not None and loaded.session_meta["pinned"] is True)
-    check(f"[{label}] 用量往返一致", loaded is not None and loaded.usage["requests"] == 1)
-    check(f"[{label}] exists 对存在返回 True", store.exists("s1") is True)
-
-    # 会话列表按活跃倒序（s2 后写，应排在前面）
-    store.save("s2", SessionSnapshot(messages=[{"role": "user", "content": "hi"}]))
-    check(f"[{label}] list_ids 按活跃倒序", store.list_ids()[:2] == ["s2", "s1"], f"实际 {store.list_ids()}")
-
-    # 删除幂等
-    check(f"[{label}] 删除存在的会话返回 True", store.delete("s1") is True)
-    check(f"[{label}] 删除不存在的会话返回 False", store.delete("s1") is False)
-    check(f"[{label}] 删除后读回 None", store.load("s1") is None)
-    check(f"[{label}] 删除后列表只剩一个", store.list_ids() == ["s2"], f"实际 {store.list_ids()}")
-
-    # 覆盖写：同一 session 再存一次，应以最后一次为准（不是追加）
-    store.save("s2", SessionSnapshot(messages=[{"role": "user", "content": "第二次"}]))
-    again = store.load("s2")
-    check(
-        f"[{label}] save 是整条覆盖（不是追加）",
-        again is not None and len(again.messages) == 1 and again.messages[0]["content"] == "第二次",
-        f"实际 {again.messages if again else None}",
-    )
-
-    # 统计与健康
-    stats = store.stats()
-    check(f"[{label}] stats 报出后端名", stats.get("backend") == store.name, f"实际 {stats.get('backend')}")
-    check(f"[{label}] stats 报出会话数", stats.get("session_count") == 1, f"实际 {stats.get('session_count')}")
-    health = store.health()
-    check(f"[{label}] health 连通正常", health.get("ok") is True, f"实际 {health}")
+# 存储契约抽到 tests/store_contract.py —— module8 的 MySQL 后端跑的是**同一个函数**，
+# 这样「换后端行为一致」由代码保证，而不是靠两份手写断言凑巧写得像。
+from store_contract import exercise_store
 
 
 memory_store = MemorySessionStore(ttl_seconds=TEST_TTL)
-exercise_store(memory_store, "memory")
+exercise_store(memory_store, "memory", check)
 
 fake_client = make_fake_redis()
 redis_store = RedisSessionStore(client=fake_client, ttl_seconds=TEST_TTL)
-exercise_store(redis_store, "redis")
+exercise_store(redis_store, "redis", check)
 
 # TTL 过期：两个后端都应「过期即读不到」（内存版惰性、Redis 版由 TTL 自动清）
 memory_store.save("exp", SessionSnapshot(messages=[{"role": "user", "content": "x"}]))
