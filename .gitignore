@@ -24,4 +24,7 @@ models
 # 前端
 web/node_modules/
 web/dist/
+# 实际 Vue 应用（frontend/）的构建产物与依赖
+frontend/node_modules/
+frontend/dist/
 .DS_Store
