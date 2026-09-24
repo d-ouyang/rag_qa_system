@@ -14,6 +14,8 @@ export interface SourceItem {
    */
   chunk_id?: string | null
   source: string
+  /** 原始文件名。没有时前端退回 source 的最后一段（多半是 uuid 落盘名） */
+  file_name?: string | null
   snippet: string
   rerank_score?: number | null
   vector_similarity?: number | null

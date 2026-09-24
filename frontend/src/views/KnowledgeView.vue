@@ -30,7 +30,6 @@ import type { DocStatus, DocumentChunk, KnowledgeDoc } from '@/types'
 const docs = useDocumentStore()
 const ui = useUiStore()
 const fileInput = ref<HTMLInputElement | null>(null)
-const dirInput = ref<HTMLInputElement | null>(null)
 const dragOver = ref(false)
 
 // ---------- 片段详情抽屉 ----------
@@ -125,15 +124,9 @@ function pickFile() {
   fileInput.value?.click()
 }
 
-function pickDir() {
-  dirInput.value?.click()
-}
-
 /**
- * 文件选择与文件夹选择共用这一个入口：
- * 浏览器选文件夹（webkitdirectory）返回的 FileList 本身就已递归展开
- * （每个 File 带 webkitRelativePath），与多选文件的形态完全一致，
- * 后端逐份独立受理，不需要前端再做目录遍历。
+ * 多选文件的 FileList 直接交给上传。
+ * 拖入文件夹不会展开子目录，需要的话请在系统里选中文件夹内的文件再拖进来。
  */
 function onFileChosen(e: Event) {
   const input = e.target as HTMLInputElement
@@ -143,8 +136,7 @@ function onFileChosen(e: Event) {
 
 function onDrop(e: DragEvent) {
   dragOver.value = false
-  // 多文件拖拽直接拿 files 列表；「拖入文件夹」的递归展开（webkitGetAsEntry）
-  // 不在本版范围 —— 需要递归文件夹时请用「选择文件夹」按钮
+  // 多文件拖拽直接拿 files 列表。拖入文件夹时浏览器不会展开子目录。
   const files = e.dataTransfer?.files
   if (files?.length) void docs.upload(Array.from(files))
 }
@@ -275,12 +267,9 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
         <p class="drop-title">点击选择文件（可多选），或将文件拖拽到此处</p>
         <p class="drop-hint">
           单份 ≤ 50MB、一次最多 50 份，同名文件重复上传会覆盖旧版本。提交后立即返回，解析由后台进程完成，可以离开本页。
-          <button class="dir-pick" @click.stop="pickDir">或选择整个文件夹上传</button>
         </p>
       </template>
       <input ref="fileInput" type="file" hidden multiple :accept="ACCEPT" @change="onFileChosen" />
-      <!-- 选文件夹：浏览器会把文件夹递归展开成 File 列表（含子目录） -->
-      <input ref="dirInput" type="file" hidden webkitdirectory @change="onFileChosen" />
     </div>
 
     <!-- 文档列表 -->
@@ -295,7 +284,8 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
       </div>
       <div v-if="docs.loading && docs.documents.length === 0" class="empty-state">加载中…</div>
       <div v-else-if="docs.documents.length === 0" class="empty-state">知识库为空，上传第一份文档开始使用</div>
-      <template v-for="d in pagedDocs" :key="d.doc_id">
+      <div v-else class="table-body">
+        <template v-for="d in pagedDocs" :key="d.doc_id">
         <div class="table-row">
           <span class="col-name" :title="d.file_name">
             <span class="file-dot" :data-type="fileExt(d.file_name)" />{{ d.file_name }}
@@ -319,8 +309,9 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
           <span class="fail-reason" :title="d.fail_reason">{{ d.fail_reason }}</span>
           <span v-if="d.attempt_count > 1" class="fail-attempt">已尝试 {{ d.attempt_count }} 次</span>
         </div>
-      </template>
-      <div v-if="docs.documents.length > PAGE_SIZE" class="pager">
+        </template>
+      </div>
+      <div v-if="docs.documents.length > 0" class="pager">
         <span>共 {{ docs.documents.length }} 份 · 第 {{ page }} / {{ pageCount }} 页</span>
         <button class="op-btn" :disabled="page <= 1" @click="page -= 1">上一页</button>
         <button class="op-btn" :disabled="page >= pageCount" @click="page += 1">下一页</button>
@@ -372,7 +363,7 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
 .knowledge-view {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 20px 28px 32px;
   display: flex;
   flex-direction: column;
@@ -555,17 +546,6 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
   max-width: 620px;
   line-height: 1.7;
 }
-/* 「选择文件夹」入口：做成链接式小按钮，不抢主操作（点区域 = 选文件）的视觉权重 */
-.dir-pick {
-  color: var(--primary);
-  font-size: 12px;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  padding: 0 2px;
-}
-.dir-pick:hover {
-  color: var(--primary-hover);
-}
 .spinner {
   width: 26px;
   height: 26px;
@@ -583,9 +563,19 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
 
 /* ---------- 文档表格 ---------- */
 .doc-table {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
+.table-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
 .pager {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -604,6 +594,7 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
   padding: 10px 18px;
 }
 .table-head {
+  flex-shrink: 0;
   font-size: 12px;
   color: var(--text-3);
   border-bottom: 1px solid var(--border);

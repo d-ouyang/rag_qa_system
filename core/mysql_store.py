@@ -35,15 +35,15 @@ session_lock/write_allowed 这一组方法，把「快照 ↔ 数据行」的翻
    只要发生一次真实写入，就说明这个会话是活跃的。两个后端必须一致，
    否则「换后端」就等于换了个 bug。
 2. **`load(touch=True)` 续期，`touch=False` 不续期**。会话列表这种「扫一眼」的读
-   必须传 False —— 否则有人反复刷新列表就等于给所有会话无限续命，
-   「闲置过期」这条设计直接失效。
+   必须传 False —— 刷新列表不算「打开了这条会话」，否则「多久没打开」
+   会被刷列表这个动作冲掉。
 
 --------------------------------------------------------------------------
 刻意的取舍
 --------------------------------------------------------------------------
-· **TTL 是软过期**：`load` 读到超期返回 None，但**不删行**。
-  永久业务资产不该被 TTL 抹掉；`purge_expired()` 也只打 `is_archived=1`，
-  物理删除留到 P2-10 定保留策略。
+· **闲置不再隐藏会话**：`load` / `list_ids` 无视 TTL 和 `is_archived`。
+  `last_active_at` 仍在写入和打开时更新，用来回答「多久没再问」。
+  `purge_expired()` 不再打归档标记。用户点删除才删行。
 · **「现在」一律取应用侧时钟**（`time.time()`），不用 MySQL 的 `NOW()`。
   两套时钟混用会出现「写进去的时间比读的那一刻还晚」这类幽灵问题。
 · **时间戳用无时区 `DATETIME(6)` 而非 float**：为了能在 SQL 客户端里直接看懂、
@@ -330,10 +330,6 @@ class MySQLSessionStore(SessionStore):
             ).mappings().first()
             if row is None:
                 return None
-            if bool(row["is_archived"]) or (now - _to_ts(row["last_active_at"])) > self.ttl_seconds:
-                # 软过期：对外表现等同「开新会话」，但**不动数据**。
-                # 归档标记交给 purge_expired() 统一处理，读路径保持零副作用。
-                return None
 
             if touch:
                 session.execute(
@@ -447,44 +443,22 @@ class MySQLSessionStore(SessionStore):
         return existed
 
     def exists(self, session_id: str) -> bool:
-        cutoff = _to_db_time(time.time() - self.ttl_seconds)
         with self._tx(session_id) as session:
             found = session.execute(
-                select(SESS.c.id).where(
-                    SESS.c.id == session_id,
-                    SESS.c.is_archived.is_(False),
-                    SESS.c.last_active_at > cutoff,
-                )
+                select(SESS.c.id).where(SESS.c.id == session_id)
             ).first()
         return found is not None
 
     def list_ids(self) -> list[str]:
-        cutoff = _to_db_time(time.time() - self.ttl_seconds)
         with self._tx() as session:
             rows = session.execute(
-                select(SESS.c.id)
-                .where(SESS.c.is_archived.is_(False), SESS.c.last_active_at > cutoff)
-                .order_by(SESS.c.last_active_at.desc())
+                select(SESS.c.id).order_by(SESS.c.last_active_at.desc())
             ).scalars().all()
         return [str(r) for r in rows]
 
     def purge_expired(self) -> int:
-        """
-        把过期会话标记为归档。
-
-        **只打标记、不删行** —— 会话是永久业务资产，TTL 只负责「不再出现在列表里」，
-        不负责销毁。物理清理的保留策略是 P2-10 的活。
-        """
-        cutoff = _to_db_time(time.time() - self.ttl_seconds)
-        with self._tx() as session:
-            affected = session.execute(
-                update(SESS)
-                .where(SESS.c.is_archived.is_(False), SESS.c.last_active_at <= cutoff)
-                .values(is_archived=True)
-            ).rowcount or 0
-        if affected:
-            logger.info("过期会话已归档 | 数量=%d", affected)
-        return int(affected)
+        """不再按闲置时间归档。会话留在列表里，直到用户删除。"""
+        return 0
 
     def stats(self) -> dict[str, Any]:
         """
@@ -493,20 +467,15 @@ class MySQLSessionStore(SessionStore):
         ⚠️ 与 Memory / Redis 版**有意不同**：不提供 `avg_session_bytes` / `bytes_estimate`。
         那两个字段是为回答「Redis 会不会被写爆」而生的容量估算；
         MySQL 的容量瓶颈是磁盘，暴露一个基于采样的字节数只会误导人。
-        取而代之给真实值：存活会话数、消息行数、以及表的实际占用（information_schema，代价 O(1)）。
+        取而代之给真实值：会话数、消息行数、以及表的实际占用（information_schema，代价 O(1)）。
+        闲置不再把会话排除在计数之外。
         """
-        cutoff = _to_db_time(time.time() - self.ttl_seconds)
-        alive = select(SESS.c.id).where(
-            SESS.c.is_archived.is_(False), SESS.c.last_active_at > cutoff
-        )
         with self._tx() as session:
             session_count = session.execute(
-                select(func.count()).select_from(SESS).where(
-                    SESS.c.is_archived.is_(False), SESS.c.last_active_at > cutoff
-                )
+                select(func.count()).select_from(SESS)
             ).scalar() or 0
             message_count = session.execute(
-                select(func.count()).select_from(MSG).where(MSG.c.session_id.in_(alive))
+                select(func.count()).select_from(MSG)
             ).scalar() or 0
             db_size = session.execute(
                 text(

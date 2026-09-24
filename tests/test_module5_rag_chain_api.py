@@ -64,12 +64,15 @@ check("会话隔离：s1 只有自己消息", len(mm.get_messages("s1")) == 2)
 check("会话隔离：s2 只有自己消息", len(mm.get_messages("s2")) == 2)
 check("会话计数正确", mm.session_count() == 2)
 
-# 窗口裁剪：max_turns=3 → 最多 6 条，写第 4 轮后最早的应被裁掉
+# 窗口：库里保留全部轮次，送进模型的只有最近 max_turns 轮
 for i in range(2, 5):
     mm.add_exchange("s1", f"问题A{i}", f"回答A{i}")
 messages = mm.get_messages("s1")
-check("窗口裁剪：只保留最近 3 轮（6 条）", len(messages) == 6, f"实际 {len(messages)} 条")
-check("裁剪后最早的一轮是 A2", messages[0].content == "问题A2", f"实际 {messages[0].content}")
+check("历史全部保留（4 轮 8 条）", len(messages) == 8, f"实际 {len(messages)} 条")
+check("最早一轮仍是 A1", messages[0].content == "问题A1", f"实际 {messages[0].content}")
+recent = mm.get_recent_messages("s1")
+check("模型窗口只取最近 3 轮（6 条）", len(recent) == 6, f"实际 {len(recent)} 条")
+check("窗口里最早的一轮是 A2", recent[0].content == "问题A2", f"实际 {recent[0].content}")
 
 # 角色顺序：human/ai 交替
 types = [m.type for m in mm.get_messages("s2")]
@@ -80,13 +83,13 @@ check("清空存在的会话返回 True", mm.clear_session("s2") is True)
 check("清空不存在的会话返回 False", mm.clear_session("s2") is False)
 check("清空后计数减少", mm.session_count() == 1)
 
-# TTL：构造一个 ttl=0 的管理器，会话立刻过期
+# 闲置超过 TTL 仍能读到历史，清理也不会把它删掉
 mm_ttl = MemoryManager(max_turns=3, ttl_seconds=0, store=MemorySessionStore(ttl_seconds=0))
 mm_ttl.add_exchange("old", "q", "a")
 time.sleep(0.01)
-# 过期后再访问：历史应被重置（返回空），而不是报错
-check("TTL 过期会话被惰性重置", mm_ttl.get_messages("old") == [])
-check("主动清理返回数量>=0", mm_ttl.cleanup_expired() >= 0)
+check("闲置超 TTL 仍保留历史", mm_ttl.get_messages("old") != [])
+check("清理不再删除会话", mm_ttl.cleanup_expired() == 0)
+check("清理后历史还在", len(mm_ttl.get_messages("old")) == 2)
 
 
 # --------------------------------------------------------------------------- #

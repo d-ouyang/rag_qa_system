@@ -256,6 +256,7 @@ class MemorySessionStore(SessionStore):
 
     # -------- 内部 -------- #
     def _is_expired(self, snapshot: SessionSnapshot) -> bool:
+        """last_active 超过 TTL。只给统计用，不再据此删会话或把它从列表拿掉。"""
         return (time.time() - snapshot.last_active) > self.ttl_seconds
 
     # -------- 接口实现 -------- #
@@ -264,14 +265,8 @@ class MemorySessionStore(SessionStore):
             snapshot = self._data.get(session_id)
             if snapshot is None:
                 return None
-            if self._is_expired(snapshot):
-                # 惰性回收：不依赖后台线程，读到过期就顺手删掉
-                del self._data[session_id]
-                self._session_locks.pop(session_id, None)
-                logger.info("会话已过期，惰性回收 | session_id=%s", session_id)
-                return None
             if touch:
-                # 读也算活跃（与 v1.0.0 语义一致：用户打开旧会话查看历史即续命）
+                # 打开会话或接着问，记一次活跃。刷新左侧列表走 touch=False，不算打开。
                 snapshot.last_active = time.time()
             return snapshot
 
@@ -291,24 +286,17 @@ class MemorySessionStore(SessionStore):
 
     def exists(self, session_id: str) -> bool:
         with self._meta_lock:
-            snapshot = self._data.get(session_id)
-        return snapshot is not None and not self._is_expired(snapshot)
+            return session_id in self._data
 
     def list_ids(self) -> list[str]:
         with self._meta_lock:
-            alive = [(sid, s) for sid, s in self._data.items() if not self._is_expired(s)]
+            alive = list(self._data.items())
         alive.sort(key=lambda item: item[1].last_active, reverse=True)
         return [sid for sid, _ in alive]
 
     def purge_expired(self) -> int:
-        with self._meta_lock:
-            expired = [sid for sid, s in self._data.items() if self._is_expired(s)]
-            for sid in expired:
-                del self._data[sid]
-                self._session_locks.pop(sid, None)
-        if expired:
-            logger.info("主动清理过期会话 | 数量=%d", len(expired))
-        return len(expired)
+        """不再按闲置时间删除会话。保留方法是因为监控回调还在调它。"""
+        return 0
 
     def stats(self) -> dict[str, Any]:
         """

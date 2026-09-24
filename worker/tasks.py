@@ -51,6 +51,8 @@ def parse_document_task(doc_id: int) -> dict[str, Any]:
     result = run_parse_task(int(doc_id))
     if result.get("ok"):
         logger.info("任务完成 | doc_id=%s | 切片=%s", doc_id, result.get("chunk_count"))
+        from core.qa_cache import bump_kb_version
+        bump_kb_version()
     else:
         # 不打 ERROR：解析失败是**业务结果**（文件坏），不是系统故障。
         # 用 ERROR 会让真正的系统故障淹没在噪音里。

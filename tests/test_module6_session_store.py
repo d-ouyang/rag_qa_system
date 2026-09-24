@@ -80,13 +80,14 @@ fake_client = make_fake_redis()
 redis_store = RedisSessionStore(client=fake_client, ttl_seconds=TEST_TTL)
 exercise_store(redis_store, "redis", check)
 
-# TTL 过期：两个后端都应「过期即读不到」（内存版惰性、Redis 版由 TTL 自动清）
+# 闲置不再把会话藏起来。Redis 会话库仍靠 key TTL 回收（该后端已退出生产路径）。
 memory_store.save("exp", SessionSnapshot(messages=[{"role": "user", "content": "x"}]))
 redis_store.save("exp", SessionSnapshot(messages=[{"role": "user", "content": "x"}]))
 time.sleep(TEST_TTL + 0.2)
-check("[memory] TTL 过期后读不到", memory_store.load("exp") is None)
+check("[memory] 闲置超 TTL 仍能读到", memory_store.load("exp") is not None)
 check("[redis] TTL 过期后读不到（由 Redis 自动回收）", redis_store.load("exp") is None)
-check("[memory] purge_expired 能清过期会话", memory_store.purge_expired() >= 0)
+check("[memory] purge_expired 不再删除会话", memory_store.purge_expired() == 0)
+check("[memory] 清理后会话还在", memory_store.load("exp") is not None)
 
 
 # --------------------------------------------------------------------------- #
@@ -243,13 +244,16 @@ check("会话计数正确", mm.session_count() == 2)
 check("消息角色交替", [m.type for m in mm.get_messages("s1")] == ["human", "ai"])
 check("历史消息是 LangChain Message 对象", mm.get_messages("s1")[0].content == "问题A1")
 
-# 窗口裁剪：max_turns=3 → 最多 6 条消息
+# 窗口：库里保留全部，模型窗口另取
 for i in range(2, 5):
     mm.add_exchange("s1", f"问题A{i}", f"回答A{i}")
 messages = mm.get_messages("s1")
-check("窗口裁剪：只保留最近 3 轮（6 条）", len(messages) == 6, f"实际 {len(messages)} 条")
-check("裁剪后最早的一轮是 A2", messages[0].content == "问题A2", f"实际 {messages[0].content}")
-check("元数据随消息同步裁剪", len(mm.get_exchange_meta("s1")) == 3, f"实际 {len(mm.get_exchange_meta('s1'))}")
+check("历史全部保留（4 轮 8 条）", len(messages) == 8, f"实际 {len(messages)} 条")
+check("最早一轮仍是 A1", messages[0].content == "问题A1", f"实际 {messages[0].content}")
+recent = mm.get_recent_messages("s1")
+check("模型窗口只取最近 3 轮（6 条）", len(recent) == 6, f"实际 {len(recent)} 条")
+check("窗口里最早的一轮是 A2", recent[0].content == "问题A2", f"实际 {recent[0].content}")
+check("元数据与全部轮次对齐", len(mm.get_exchange_meta("s1")) == 4, f"实际 {len(mm.get_exchange_meta('s1'))}")
 
 # 读不存在的会话不再隐式创建（v2.0.0 修正：避免幽灵会话）
 before_count = mm.session_count()

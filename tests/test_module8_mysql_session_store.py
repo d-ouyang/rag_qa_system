@@ -25,7 +25,7 @@
 4. **重启不丢**：销毁连接池、换全新 Engine/Store/Manager 实例（≈ 换进程）后，
    会话列表 / 历史 / 置顶 / 标题 / 用量 / 每轮元数据全在。
 5. **FOR UPDATE**：多线程对同一会话 load-modify-save，一轮都不丢。
-6. **TTL 软过期**：load 返回 None，但**行仍在库里**；purge_expired 只打归档标记。
+6. **闲置不隐藏**：超 TTL 后 load / exists / 列表仍可见，purge_expired 不再归档。
 7. **无孤儿行**：删会话时消息一并清掉（没有 FK 级联，靠应用层保证）。
 8. **与 memory 后端 parity**：同一串操作跑两遍，结果逐字段相等。
 9. **MySQL 不可达时整模块 SKIP**，不把「没起容器」误报成失败。
@@ -269,21 +269,21 @@ check("并发下标无重复（没有两次写入互相覆盖）",
 # --------------------------------------------------------------------------- #
 # 第 6 组：TTL 软过期 + 归档
 # --------------------------------------------------------------------------- #
-print("\n== 第 6 组：TTL 软过期 ==")
+print("\n== 第 6 组：闲置后会话仍在 ==")
 wipe()
 ttl_store = MySQLSessionStore(ttl_seconds=1)
 ttl_store.save("exp", SessionSnapshot(messages=[{"role": "user", "content": "x"}]))
 time.sleep(1.3)
-check("过期后 load 返回 None", ttl_store.load("exp") is None)
-check("过期后 exists 为 False", ttl_store.exists("exp") is False)
-check("过期后不在会话列表里", "exp" not in ttl_store.list_ids())
-check("⚠️ 过期后行仍在库里（没被物理删）", session_row("exp") is not None)
-archived = ttl_store.purge_expired()
-check("purge_expired 报出归档数", archived >= 1, f"实际 {archived}")
+loaded = ttl_store.load("exp", touch=False)
+check("闲置超 TTL 后 load 仍返回历史", loaded is not None and loaded.messages[0]["content"] == "x")
+check("闲置超 TTL 后 exists 仍为 True", ttl_store.exists("exp") is True)
+check("闲置超 TTL 后仍在列表里", "exp" in ttl_store.list_ids())
+check("行仍在库里", session_row("exp") is not None)
+check("purge_expired 不再归档", ttl_store.purge_expired() == 0)
 row = session_row("exp")
-check("purge_expired 只打归档标记 is_archived=1", row is not None and bool(row["is_archived"]),
+check("未被打上归档标记", row is not None and not bool(row["is_archived"]),
       f"实际 {dict(row) if row else None}")
-check("归档后消息行仍在（会话是永久资产）", count_messages("exp") == 1)
+check("消息行仍在", count_messages("exp") == 1)
 
 # --------------------------------------------------------------------------- #
 # 第 7 组：删除不留孤儿行

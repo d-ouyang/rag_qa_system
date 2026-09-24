@@ -123,9 +123,10 @@ function closeDetail() {
   window.removeEventListener('scroll', closeDetail, true)
 }
 
-function fileName(source: string): string {
-  const parts = source.split('/')
-  return parts[parts.length - 1] || source
+function displayName(s: SourceItem): string {
+  if (s.file_name) return s.file_name
+  const parts = s.source.split('/')
+  return parts[parts.length - 1] || s.source
 }
 
 // ----- 引用反查（P0-4b）：点引用取切片全文 -----
@@ -226,17 +227,17 @@ async function loadChunk(id: string): Promise<void> {
                   <button
                     v-if="isValidChunkId(s.chunk_id)"
                     class="source-name is-link"
-                    :title="`查看切片全文（${s.chunk_id}）`"
+                    :title="s.source"
                     @click="toggleChunk(s)"
                   >
-                    {{ fileName(s.source) }}
+                    {{ displayName(s) }}
                     <span class="source-chev">{{ openChunkId === s.chunk_id ? '▲' : '▼' }}</span>
                   </button>
                   <span
                     v-else
                     class="source-name"
-                    :title="`${fileName(s.source)}：这条引用没有可反查的编号，无法展开全文`"
-                  >{{ fileName(s.source) }}</span>
+                    :title="s.source"
+                  >{{ displayName(s) }}</span>
                   <span v-if="s.rerank_score != null" class="source-score">重排 {{ s.rerank_score.toFixed(3) }}</span>
                 </div>
                 <div class="source-snippet">{{ s.snippet }}</div>

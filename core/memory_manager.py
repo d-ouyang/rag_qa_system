@@ -29,11 +29,11 @@ v2.0.0 拆成两层：
    多用户/多标签页共用一个服务时，全局历史会把 A 的对话串给 B —— 既泄露隐私
    又污染上下文。按 session_id 隔离，是最小可用、也最常见的方案。
 
-2. 为什么要限制窗口（MEMORY_MAX_TURNS），而不是全量塞历史
+2. 为什么模型只看最近 N 轮，库里却要留全部
    · token 成本：历史越长，每次请求的 prompt 越大，越慢越贵；
-   · 上下文窗口：超出模型 max context 会直接报错或被静默截断；
-   · 相关性：很久之前的对话多数对当前问题没帮助，反而稀释注意力。
-   所以只保留最近 N 轮（默认 10 轮 = 20 条消息），更早的从头部裁掉。
+   · 相关性：很久之前的对话多数对当前问题没帮助，代词指代靠最近几轮就够。
+   MEMORY_MAX_TURNS（默认 5）只决定送进模型和问题重写的窗口。
+   会话记录是持久化的：闲置多久都不从列表消失，轮数上限也不删消息行。
 
 3. 为什么每个会话一把锁，而不是全局一把大锁
    全局锁会让「用户 A 写历史」阻塞「用户 B 读历史」，并发度直接归零。
@@ -213,39 +213,11 @@ class MemoryManager:
 
     def _trim(self, snapshot: SessionSnapshot) -> None:
         """
-        把快照裁剪到合规体积：① 轮数上限 ② 字节上限。
+        对齐元数据长度。不再按轮数或字节删消息。
 
-        ① 轮数：只保留最近 max_turns 轮（从头部删，越旧价值越低）。
-        ② 字节：即使轮数没超，单轮内容也可能极大（用户粘 5 万字文档来问），
-           必须再按字节兜一刀，否则单会话被撑成大 key，每次读写都要搬整块，
-           延迟毛刺和内存占用会一起上来。字节超限时从最早的轮继续删，
-           直到落入限制或只剩最后一轮（保底留 1 轮，否则等于没记忆）。
+        会话记录要一直留在列表里，模型窗口在读取时另切（见 get_recent_messages）。
+        用户编辑重发仍走 truncate_session，那是显式截断，不是这里的自动清理。
         """
-        max_messages = self.max_turns * 2
-        dropped = 0
-        if len(snapshot.messages) > max_messages:
-            overflow = len(snapshot.messages) - max_messages
-            # 头部裁掉奇数条会让 user/assistant 配对错位，向下取偶
-            overflow -= overflow % 2
-            del snapshot.messages[:overflow]
-            dropped = overflow
-            logger.debug("历史已裁剪到最近 %d 轮", self.max_turns)
-
-        limit = int(settings.MEMORY_MAX_SESSION_BYTES)
-        while len(snapshot.messages) > 2 and snapshot.size_bytes() > limit:
-            # 一轮一轮地删（2 条消息 = 1 轮），保证轮边界完整
-            del snapshot.messages[:2]
-            dropped += 2
-            logger.warning(
-                "单会话体积超过上限，强制裁剪 | 上限=%d bytes 当前=%d bytes",
-                limit,
-                snapshot.size_bytes(),
-            )
-
-        # 元数据与消息按轮同构，同步裁掉对应轮数
-        if dropped:
-            del snapshot.exchange_meta[: dropped // 2]
-        # 防御：元数据条数不应多于轮数（理论上不会发生）
         turns = len(snapshot.messages) // 2
         if len(snapshot.exchange_meta) > turns:
             del snapshot.exchange_meta[: len(snapshot.exchange_meta) - turns]
@@ -267,11 +239,24 @@ class MemoryManager:
         return InMemoryChatMessageHistory(messages=_payload_to_messages(payload))
 
     def get_messages(self, session_id: str) -> list[BaseMessage]:
-        """取某个会话的历史消息（新列表：外部改动不会写回存储）。"""
+        """取某个会话的全部历史（新列表：外部改动不会写回存储）。"""
         snapshot = self._load(session_id)
         if snapshot is None:
             return []
         return _payload_to_messages(snapshot.messages)
+
+    def get_recent_messages(self, session_id: str, turns: int | None = None) -> list[BaseMessage]:
+        """
+        取送进模型和问题重写的最近若干轮。
+
+        库里的全文不动。默认轮数是 MEMORY_MAX_TURNS。
+        """
+        messages = self.get_messages(session_id)
+        keep_turns = self.max_turns if turns is None else int(turns)
+        keep = max(0, keep_turns) * 2
+        if keep == 0 or len(messages) <= keep:
+            return messages
+        return messages[-keep:]
 
     def add_exchange(
         self,

@@ -73,7 +73,11 @@ class SourceItem(BaseModel):
         description="切片引用键（格式 `<doc_id>:<chunk_index>`）；P0-3 之前的遗留切片为 null，"
                     "前端应渲染成不可点击的纯文本",
     )
-    source: str = Field(description="来源文件路径")
+    source: str = Field(description="来源文件路径（落盘路径；悬停展示）")
+    file_name: str | None = Field(
+        default=None,
+        description="原始文件名（展示用）。老会话里没有这个字段时，由历史接口按 doc_id 补上",
+    )
     snippet: str = Field(description="片段摘要（前 200 字）")
     rerank_score: float | None = Field(default=None, description="重排分数 0~1，越大越相关")
     vector_similarity: float | None = Field(default=None, description="向量余弦相似度 -1~1")
@@ -103,6 +107,7 @@ class AskResponse(BaseModel):
         default_factory=dict,
         description="本次问答 token 用量：input_tokens / output_tokens / cache_read_tokens",
     )
+    cache_hit: bool = Field(default=False, description="本次回答来自相同问题缓存，未调用大模型")
 
 
 class MessageItem(BaseModel):
@@ -274,6 +279,35 @@ def list_sessions() -> list[dict[str, Any]]:
     return get_memory_manager().list_sessions()
 
 
+def _fill_source_file_names(sources: list[Any]) -> list[Any]:
+    """
+    老会话的 sources 只存了落盘路径（uuid 文件名）。
+    按 chunk_id 里的 doc_id 回表补原始文件名，让刷新后的历史也能显示文件名。
+    """
+    if not sources:
+        return []
+    from core.document_repo import get as get_document
+
+    names: dict[int, str] = {}
+    filled: list[Any] = []
+    for item in sources:
+        if not isinstance(item, dict):
+            filled.append(item)
+            continue
+        row = dict(item)
+        if not row.get("file_name"):
+            doc_part = str(row.get("chunk_id") or "").split(":", 1)[0]
+            if doc_part.isdigit():
+                doc_id = int(doc_part)
+                if doc_id not in names:
+                    record = get_document(doc_id)
+                    names[doc_id] = record.file_name if record else ""
+                if names[doc_id]:
+                    row["file_name"] = names[doc_id]
+        filled.append(row)
+    return filled
+
+
 @router.get(
     "/sessions/{session_id}",
     response_model=SessionHistoryResponse,
@@ -301,7 +335,7 @@ def get_session_history(session_id: str) -> dict[str, Any]:
         }
         if item["role"] == "assistant":
             item.update({
-                "sources": meta.get("sources") or [],
+                "sources": _fill_source_file_names(meta.get("sources") or []),
                 "intent": meta.get("intent"),
                 "usage": meta.get("usage"),
                 "elapsed_ms": meta.get("elapsed_ms"),

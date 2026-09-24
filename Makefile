@@ -143,6 +143,7 @@ test:
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module4_llm_and_retriever.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module5_rag_chain_api.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module6_session_store.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_qa_cache.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module7_redis_over_tcp.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module8_mysql_session_store.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module9_async_pipeline.py

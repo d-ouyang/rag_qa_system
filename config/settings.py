@@ -89,10 +89,11 @@ class Settings(BaseSettings):
     SILICONFLOW_ENABLE_THINKING : bool = False
 
     # 会话记忆配置（core/memory_manager.py 消费）
-    # 单个会话保留的最大对话轮数：超出后从最早的开始裁剪。
-    # 1 轮 = 1 条用户消息 + 1 条 AI 消息（即 2 条 message）。
-    MEMORY_MAX_TURNS : int = 10
-    # 会话闲置多少秒后视为过期，被清理线程/惰性检查回收（防内存无限增长）
+    # 送进模型和问题重写的最近轮数。1 轮 = 1 问 + 1 答。
+    # 只限制模型看见的窗口，不删库里的历史。左侧列表始终能打开全部会话。
+    MEMORY_MAX_TURNS : int = 5
+    # 仍记录 last_active，供「多久没打开 / 没再问」使用。
+    # 不再用来把会话从列表里藏掉，也不再用来清空记忆。
     MEMORY_SESSION_TTL_SECONDS : int = 6 * 3600
     # 会话存储后端：memory（进程内 dict，本地开发/测试用）| mysql（生产真相源）
     # 见 core/session_store.py 的 build_session_store()
@@ -154,6 +155,12 @@ class Settings(BaseSettings):
         )
 
     # Redis 配置（队列 broker + 短期缓存；**不承载会话真相**）
+    # 相同问题缓存（core/qa_cache.py）。只缓存规范化后逐字相同的问题，
+    # 不缓存「办理居住证」这类改写过的近义句。Redis 丢了只是多调一次模型。
+    QA_CACHE_ENABLED : bool = True
+    # 池子上限。按最近使用淘汰：命中或新写入把这条放到最前，超限删最久没被用到的。
+    QA_CACHE_MAX_ENTRIES : int = 100
+
     REDIS_URL : str = "redis://localhost:6379/0"
     # 文档解析任务队列所在库（P0-3 启用）。与缓存分库，便于单独看积压 / 单独清理。
     REDIS_QUEUE_URL : str = "redis://localhost:6379/1"

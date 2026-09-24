@@ -458,6 +458,9 @@ def _purge_document(record: repo.DocumentRecord) -> dict[str, Any]:
         "文档已删除 | doc_id=%s | 文件=%s | 切片=%s | 磁盘=%s | 记录=%s",
         record.doc_id, record.file_name, deleted_chunks, file_removed, record_removed,
     )
+    if record_removed or deleted_chunks:
+        from core.qa_cache import bump_kb_version
+        bump_kb_version()
     return {
         "deleted_chunks": deleted_chunks,
         "file_removed": file_removed,

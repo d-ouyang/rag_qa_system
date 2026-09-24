@@ -423,6 +423,9 @@ def main() -> int:
             print("     重建是在另一个进程里改写 vector_db/ 的，仍在运行的后端进程")
             print("     持有的是**陈旧句柄**，它的查询会拿到 None 正文并直接 500")
             print("     （根因见本文件头）。重启之后才是干净句柄。")
+        from core.qa_cache import bump_kb_version
+        bumped = bump_kb_version()
+        print(f"  问答缓存已按知识库版本清空（version={bumped}）。")
     else:
         print("  干跑结束。确认无误后加 --apply 执行。")
         print("          提醒：执行前请先停掉 worker 与后端服务（本脚本会自动拦下）。")

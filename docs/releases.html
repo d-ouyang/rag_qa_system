@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.6</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.6b</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -258,7 +258,7 @@
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
       <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">7<span class="u">/ 10</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">13<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">14<span class="u">个</span></div></div>
     </div>
   </section>
 
@@ -307,7 +307,7 @@
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
       2.0.0 是进行中的大版本——TLS、配置治理、观测备份都还没有做完，
-      所以「当前版本 2.0.0-p1.6」不等于「可以上线」。
+      所以「当前版本 2.0.0-p1.6b」不等于「可以上线」。
     </p>
     <dl>
       <div><dt>docs/RELEASES.md</dt><dd>对外变更叙事（本页内容来源）</dd></div>
@@ -327,6 +327,30 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p1.6b",
+    date: "2026-09-24",
+    accent: "#58a6ff",
+    tagline: "会话留得住，相同问题不用再问一遍模型",
+    problem: "闲置 6 小时后左侧就找不到那条会话，接着问还可能把上面的记录盖掉。同一句问题每次都重新检索、重新生成。",
+    sections: [
+      { type: "improved", items: [
+        { star: true, h: "会话一直留在左侧列表", t: "多久没打开仍会记着，但不再因此消失。只有手动删除才会去掉。" },
+        { star: true, h: "模型只看最近 5 轮，记录全部保留", t: "更早的问答刷新后还在，只是不再送进模型。代词仍靠问题重写。" },
+        { star: true, h: "相同问题直接复用上一次回答", t: "最多存 100 条。刚被问到的排到最前，最久没被问到的会被挤掉。文档有增删或重新灌入时，缓存清空。" },
+        { h: "引用显示文件名", t: "悬停可以看到文件在知识库里的存放路径。" },
+        { h: "知识库列表底栏固定翻页", t: "列表在表格内部滚动。上传说明里不再出现「选择整个文件夹」。" }
+      ]},
+      { type: "verified", items: [
+        { h: "缓存与会话测试", t: "问答缓存 14 项、会话存储 130 项，均 0 失败。" }
+      ]},
+      { type: "boundary", items: [
+        { h: "第一次仍会走模型", t: "同一句要先生成一次，下一次才用缓存。" },
+        { h: "相近问法不会命中", t: "「如何办理居住证」和「居住证的流程是什么」各走一次模型。这种优化先停。" },
+        { h: "界面上的缓存命中率不是这一份缓存", t: "Token 明细里的命中率来自模型服务商的提示词缓存。" }
+      ]}
+    ]
+  },
   {
     version: "v2.0.0-p1.6",
     date: "2026-09-24",

@@ -44,6 +44,7 @@ import logging
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from operator import itemgetter
 from typing import Any
@@ -63,6 +64,7 @@ from config.settings import settings
 from core.intent_router import Intent, IntentResult, get_intent_classifier
 from core.llm_client import LLMClient, get_llm_client
 from core.memory_manager import MemoryManager, get_memory_manager
+from core.qa_cache import is_standalone_question, lookup_answer, store_answer
 from core.retriever import RAGRetriever, get_rag_retriever
 from core.vector_store import build_chunk_id
 
@@ -565,16 +567,116 @@ class RAGChain:
         sources: list[dict[str, Any]] = []
         for index, doc in enumerate(docs, start=1):
             metadata = doc.metadata
+            source = metadata.get("source", "未知来源")
+            # source 是落盘路径，文件名是 uuid。展示用入库时写入的原始文件名。
+            raw_name = metadata.get("file_name")
+            file_name = str(raw_name) if raw_name else Path(str(source)).name
             sources.append({
                 "index": index,
                 "chunk_id": _resolve_chunk_id(metadata),
-                "source": metadata.get("source", "未知来源"),
+                "source": source,
+                "file_name": file_name,
                 # 片段摘要：接口不把全文吐出去，前端需要全文可以按 chunk_id 反查
                 "snippet": doc.page_content[:200],
                 "rerank_score": metadata.get("rerank_score"),
                 "vector_similarity": metadata.get("vector_similarity"),
             })
         return sources
+
+    # ------------------------------------------------------------------ #
+    # 相同问题缓存
+    # ------------------------------------------------------------------ #
+    def _replay_cache(self, question: str, session_id: str, start: float) -> dict[str, Any] | None:
+        """命中则写进当前会话并返回完整结果。未命中返回 None。"""
+        hit = lookup_answer(question)
+        if hit is None:
+            return None
+        return self._finish_cached(question, session_id, start, hit)
+
+    def _finish_cached(
+        self, question: str, session_id: str, start: float, hit: dict[str, Any]
+    ) -> dict[str, Any]:
+        elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+        usage = _usage_zero()
+        answer = str(hit.get("answer") or "")
+        sources = list(hit.get("sources") or [])
+        intent = str(hit.get("intent") or "knowledge_query")
+        route = str(hit.get("route") or "rag_qa")
+        standalone = hit.get("standalone_question") or question
+        self.memory.add_exchange(session_id, question, answer, meta={
+            "sources": sources,
+            "intent": intent,
+            "route": route,
+            "standalone_question": standalone,
+            "usage": dict(usage),
+            "elapsed_ms": elapsed_ms,
+            "ts": time.time(),
+            "cache_hit": True,
+        })
+        logger.info(
+            "问答缓存复用 | session_id=%s 耗时=%.0fms | query=%.24s",
+            session_id, elapsed_ms, question,
+        )
+        return {
+            "answer": answer,
+            "intent": intent,
+            "route": route,
+            "intent_source": "cache",
+            "standalone_question": standalone,
+            "sources": sources,
+            "session_id": session_id,
+            "elapsed_ms": elapsed_ms,
+            "usage": usage,
+            "cache_hit": True,
+        }
+
+    def _stream_cached(
+        self, question: str, session_id: str, start: float, hit: dict[str, Any]
+    ) -> Iterator[dict[str, Any]]:
+        result = self._finish_cached(question, session_id, start, hit)
+        yield {
+            "type": "meta",
+            "intent": result["intent"],
+            "route": result["route"],
+            "intent_source": "cache",
+            "standalone_question": result["standalone_question"],
+            "sources": result["sources"],
+            "cache_hit": True,
+        }
+        yield {"type": "chunk", "content": result["answer"]}
+        yield {
+            "type": "done",
+            "elapsed_ms": result["elapsed_ms"],
+            "usage": result["usage"],
+            "session_usage": self.memory.get_usage(session_id),
+            "cache_hit": True,
+        }
+
+    def _maybe_store_cache(self, question: str, result: dict[str, Any], history_used: bool) -> None:
+        """
+        把用户打出来的原问题写入公共缓存。
+
+        有上文时，重写经常会把完整问句再扩写一遍，不能因此拒绝缓存。
+        只拒绝短句和指代句（「它呢」「继续」）。重写结果和原问题不同时，
+        仍按原问题存储：下次任何人打出同一句，直接复用这次回答。
+        """
+        if result.get("route") != "rag_qa" or not result.get("sources"):
+            return
+        if not is_standalone_question(question):
+            logger.info(
+                "跳过问答缓存 | 问题依赖上文或过短 | history=%s | q=%.24s",
+                history_used, question,
+            )
+            return
+        standalone = str(result.get("standalone_question") or question)
+        store_answer(
+            question,
+            str(result.get("answer") or ""),
+            list(result.get("sources") or []),
+            str(result.get("intent") or ""),
+            str(result.get("route") or ""),
+            standalone,
+        )
 
     # ------------------------------------------------------------------ #
     # 对外：同步问答
@@ -597,8 +699,12 @@ class RAGChain:
 
         start = time.perf_counter()
 
+        cached = self._replay_cache(question, session_id, start)
+        if cached is not None:
+            return cached
+
         # ①②③④ 并行前段：意图识别 ∥ 投机检索 ∥ 问题重写（有历史时），见 _prepare_parallel
-        chat_history = self.memory.get_messages(session_id)
+        chat_history = self.memory.get_recent_messages(session_id)
         intent_result, prepared = self._prepare_parallel(question, chat_history)
         llm = self.llm_client.get_llm()
         usage = _usage_zero()
@@ -657,8 +763,10 @@ class RAGChain:
             "usage": dict(usage),
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
+            "cache_hit": False,
         }
         self.memory.add_exchange(session_id, question, answer, meta=exchange_meta)
+        self._maybe_store_cache(question, result, bool(chat_history))
         # token 用量：本次问答（重写 + 主回答）累加进会话
         self.memory.add_usage(
             session_id, usage["input_tokens"], usage["output_tokens"], usage["cache_read_tokens"]
@@ -667,6 +775,7 @@ class RAGChain:
         result["session_id"] = session_id
         result["elapsed_ms"] = elapsed_ms
         result["usage"] = usage
+        result["cache_hit"] = False
         logger.info(
             "问答完成 | session_id=%s 意图=%s(%s) 引用=%d条 耗时=%.0fms tokens=%d+%d | query=%.24s",
             session_id,
@@ -699,7 +808,12 @@ class RAGChain:
             raise ValueError("问题不能为空")
 
         start = time.perf_counter()
-        chat_history = self.memory.get_messages(session_id)
+        cached = lookup_answer(question)
+        if cached is not None:
+            yield from self._stream_cached(question, session_id, start, cached)
+            return
+
+        chat_history = self.memory.get_recent_messages(session_id)
         # 并行前段：意图识别 ∥ 投机检索 ∥ 问题重写（有历史时）
         intent_result, prepared = self._prepare_parallel(question, chat_history)
         llm = self.llm_client.get_llm()
@@ -770,7 +884,19 @@ class RAGChain:
             "usage": dict(usage),
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
+            "cache_hit": False,
         })
+        self._maybe_store_cache(
+            question,
+            {
+                "answer": answer,
+                "intent": intent_result.intent.value,
+                "route": intent_result.route,
+                "standalone_question": None if prepared is None else prepared["standalone_question"],
+                "sources": [] if prepared is None else self._extract_sources(prepared["docs"]),
+            },
+            bool(chat_history),
+        )
         self.memory.add_usage(
             session_id, usage["input_tokens"], usage["output_tokens"], usage["cache_read_tokens"]
         )
