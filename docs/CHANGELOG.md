@@ -79,7 +79,7 @@
 
 | **v2.0.0-p0.4c** | 2026-09-24 | **修 `p0.1` 期潜伏至今的轮元数据错位**（用户真实使用中暴露）：`add_exchange()` 里 `_normalize_meta()` 从「append 消息**之后**」移到**之前** —— 原位置让每轮凭空多补一个空占位，再被 `_trim()` 防御分支从头部砍掉，净效果是**每写一轮就挤掉最老一轮的 meta**（连写 5 轮实测 `[i3, {}, i4, {}, i5]`，前两轮蒸发）。表现为「只有第一次提问有引用，刷新后后面几轮全空」。新增 module6 第 3B 组（14 条，memory/redis 各 7 条，**写死轮号**并复刻线上 `metas[i//2]` 回填逻辑）+ **反向验证**（还原 bug → 8 条红，证明断言有效）+ `scripts/e2e_p0_4c_meta.py`（连问 3 轮 → 刷新 → 每轮引用都在）。顺带修 `tests/test_module5_rag_chain_api.py` 第 1 组**不传 store 导致连真实业务库**（`.env` 切 mysql 后 2 条假失败，且 `cleanup_expired()` 会归档真实会话），改为显式注入 `MemorySessionStore`。**不写存量数据迁移脚本**（会话可重建，用户已确认） | `iterations/v2.0.0-p0.4c-meta-alignment.md` |
 
-| **v2.0.0-p1.5b** | 2026-09-24 | **P1-5b 应用容器化（⚠️ 未联调）**：新增 `Dockerfile`（python:3.11-slim + `requirements.lock.txt`）、`frontend/Dockerfile`（node:20-alpine → nginx:alpine）、`frontend/nginx.conf`（`/api` 反代 + **`proxy_buffering off`** + SPA 回落）、`gateway/Dockerfile`、三个 `.dockerignore`；compose 追加 `backend`/`worker`/`gateway`/`frontend` **全部挂 `profiles: [full]`**（否则 `make infra` 会与裸跑的 8000/3000/5173 撞端口）；靠 compose `environment` **覆盖** `env_file` 实现「同一份 .env 两种模式共存」（`MYSQL_HOST=mysql`、两个 Redis URL、`GATEWAY_BACKEND_URL=http://backend:8000`、`GATEWAY_TRUST_PROXY=true`）；worker **复用后端镜像** + `USE_RERANKER=false`（省 1.1G，解析不用重排）；`vector_db`/`upload`/`models` 用 **bind mount**（复用宿主机已有数据，命名卷会让容器里知识库是空的）；backend **不映射 8000**（网关要求内网可达）；worker **不配 healthcheck**（`celery inspect ping` 会误判健康 worker）；`extra_hosts: host.docker.internal:host-gateway`（容器连宿主机服务）；新增 `make stack-up/ps/logs/down/rebuild`。**应用代码一行未改** | `iterations/v2.0.0-p1.5b-app-containers.md` |
+| **v2.0.0-p1.5b** | 2026-09-24 | **P1-5b 应用容器化（✅ 已联调通过）**：新增 `Dockerfile`（python:3.11-slim + `requirements.lock.txt`）、`frontend/Dockerfile`（node:20-alpine → nginx:alpine）、`frontend/nginx.conf`（`/api` 反代 + **`proxy_buffering off`** + SPA 回落）、`gateway/Dockerfile`、三个 `.dockerignore`；compose 追加 `backend`/`worker`/`gateway`/`frontend` **全部挂 `profiles: [full]`**（否则 `make infra` 会与裸跑的 8000/3000/5173 撞端口）；靠 compose `environment` **覆盖** `env_file` 实现「同一份 .env 两种模式共存」（`MYSQL_HOST=mysql`、两个 Redis URL、`GATEWAY_BACKEND_URL=http://backend:8000`、`GATEWAY_TRUST_PROXY=true`）；worker **复用后端镜像** + `USE_RERANKER=false`（省 1.1G，解析不用重排）；`vector_db`/`upload`/`models` 用 **bind mount**（复用宿主机已有数据，命名卷会让容器里知识库是空的）；backend **不映射 8000**（网关要求内网可达）；worker **不配 healthcheck**（`celery inspect ping` 会误判健康 worker）；`extra_hosts: host.docker.internal:host-gateway`（容器连宿主机服务）；新增 `make stack-up/ps/logs/down/rebuild`。**应用代码一行未改**。2026-09-24 全栈联调通过（六容器/登录/同步+流式问答/上传解析/引用反查/删除闭环实测），联调修复三处见下方「修订」表 | `iterations/v2.0.0-p1.5b-app-containers.md` |
 
 > 当前应用版本：`2.0.0-p1.5b`
 >
@@ -114,22 +114,22 @@
 | 分组 | 任务 | 状态 |
 |------|------|------|
 | P0 上线硬前提 | P0-1 业务数据落 MySQL ✅、P0-2 鉴权网关 ✅、P0-3 异步解析 ✅、P0-4 向量元数据对齐 ✅（`p0.4a` 后端 + `p0.4b` 前端 + `p0.4c` 修错位） | ✅ **4 / 4** |
-| P1 容器化与部署 | P1-5 Docker 化（5a ✅ + **5b ⚠️ 交付未联调**）、P1-6 模型目录、P1-7 TLS | 🔄 1.5 / 3 |
+| P1 容器化与部署 | P1-5 Docker 化 ✅（5a + 5b，已联调）、P1-6 模型目录、P1-7 TLS | 🔄 1 / 3 |
 | P2 生产化打磨 | P2-8 配置治理、P2-9 生产构建+备案号、P2-10 观测备份 | ⬜ 0 / 3 |
 
 > **2.0.0 大版本合计：P0-1 ✅、P0-2 ✅、P0-3 ✅（3a 后端 + 3b 前端）、P0-4 ✅（`p0.4a` 后端 + `p0.4b` 前端 + `p0.4c` 修复）、
-> P1-5a ✅、P1-5b ⚠️（已交付、**未联调**），其余未开始。完成 5 / 10（P1-5b 计半项）。**
+> P1-5 ✅（5a + 5b，已联调），其余未开始。完成 6 / 10。**
 >
 > 🎉 **P0 阶段已全部完成，阶段 tag `v2.0.0-p0.4` 已打**（与本次交付 tag `v2.0.0-p0.4b` 指向同一个 commit）。
 > 至此「上线硬前提」四项全部就位：数据落库、鉴权、异步解析、引用可反查可点击。
 >
-> **下一步：联调 P1-5b**（`make stack-up` 构建 + 六容器起来 + 流式与上传链路），
-> 之后 P1-6 模型目录 → P1-7 TLS。
-> 执行顺序：P1-5a ✅ → P0-1 ✅ → P0-3a ✅ → P0-3b ✅ → P0-4a ✅ → P0-4b ✅ → P0-4c ✅ → **P1-5b（待联调）** → P1-6 → P1-7。
+> **下一步：P1-6 模型目录**（本机 `models` 是软链，联调中已验证容器内可正常跟随；
+> 上服务器前换真实目录），之后 P1-7 TLS。
+> 执行顺序：P1-5a ✅ → P0-1 ✅ → P0-3a ✅ → P0-3b ✅ → P0-4a ✅ → P0-4b ✅ → P0-4c ✅ → P1-5b ✅（已联调）→ **P1-6** → P1-7。
 >
-> ⚠️ **`v2.0.0-p1.5b` 是「写得对」不是「跑得通」**：按用户指示，本版只做实现与静态校验，
-> 完整验证等 P0 与 P1-5 全部就位后统一做。**阶段 tag `v2.0.0-p1.5` 留到联调通过后补打** ——
-> 阶段 tag 的语义是「这个阶段可用了」，没验收就打等于给自己一个假的完成标记。
+> ✅ **`v2.0.0-p1.5b` 已于 2026-09-24 全栈联调通过**，阶段 tag `v2.0.0-p1.5` 已补打。
+> 联调抓到并修复 3 个真问题（网关生产配置缺口、compose 插值吃掉 bcrypt 哈希、
+> lock 文件在 Linux 下补拉整套 CUDA），详见下方「修订」表与 p1.5b 迭代文档 §7。
 
 ### 修订（同版本内的返工，不新开子版本号）
 
@@ -155,6 +155,7 @@
 | 2026-09-23 | `2.0.0-p0.3b` | **交付前自查**：`syncNow()` 开头调 `stopPolling()` 会把 `polling` 置 `false`，下一句 `ensurePolling()` 又置回 `true` → 界面「正在自动刷新」小圆点以轮询周期闪烁。拆出 `clearTimer()`（只清定时器句柄），`stopPolling()` = `clearTimer()` + 灭灯 | p0.3b 文档 §3.3 / §7 |
 | 2026-09-24 | `2.0.0-p0.4c` | **单元测试会连真实业务库（本轮连带修复）**：`tests/test_module5_rag_chain_api.py` 第 1 组的 `MemoryManager(...)` **不传 store** → 按 `.env` 的 `MEMORY_BACKEND` 建。本次排障把 `.env` 从 `memory` 改成 `mysql` 后，这组单元测试就連上真实业务库：`session_count() == 2` 被库里既有会话顶翻（2 条假失败），且 `cleanup_expired()` 会把真实会话一并**归档**。判据：`MEMORY_BACKEND=memory` 重跑 → 44/0 全绿，据此确认与本次代码改动无关。修法：显式注入 `MemorySessionStore` 并同步下传 TTL。**单元测试既不该碰业务库，也不该随 `.env` 漂移** | p0.4c 文档 §3.5 |
 | 2026-09-23 | `2.0.0-p0.3b` | **验收脚本自己会骗人（两处）**：① 首轮按**文案**去重记 toast，而同一文档重复失败的两次文案**一模一样**，第二次被吞 → 「重试真的又跑了一遍」假失败；改为按 DOM 元素记账（`WeakSet`）。② 第二轮点开抽屉后立刻 `count('.chunk-card')`，而抽屉正在异步取片段 → 数到 0（首轮是**假通过**）；改为 `tryWait(n >= chunkN)`。教训：**一次通过不算通过**，本轮验收连跑两遍才算数 | p0.3b 文档 §3.13 / §3.14 / §7；仅验收脚本，`frontend/src` 无改动 |
+| 2026-09-24 | `2.0.0-p1.5b` | **全栈联调抓到并修复 3 个真问题**：① **网关生产配置缺口** —— compose 里网关 `NODE_ENV=production` + `env_file: .env`（根目录），但根 `.env` 缺 `GATEWAY_JWT_SECRET`/`GATEWAY_USERS`（`gateway/.env` 不进运行镜像）→ 启动即崩，已补根 `.env` 与 `.env.example`；② **compose 对 `env_file` 的 `$` 插值吃掉 bcrypt 哈希**（`$2a$10$V7V4...` 的 `$V7V4...` 被当变量替换成空 —— 静默损坏，登录永远 401 且日志无配置错误）→ 根 `.env` 改 `$$` 双写转义；③ **macOS 编译的 `requirements.lock.txt` 在 Linux 构建时补解析整套 CUDA**（pip 补拉 `nvidia-*` 数 GB）→ `Dockerfile` 先显式装 CPU 版 torch 再装 lock（后端镜像 3.07GB）。修复后六容器/登录/同步+流式问答/上传解析/引用反查/删除闭环全部实测通过 | p1.5b 文档 §5.2 / §7 |
 
 ---
 
