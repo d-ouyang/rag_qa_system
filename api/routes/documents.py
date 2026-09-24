@@ -5,6 +5,7 @@
 接口一览（统一前缀 /api/v1/documents）
 --------------------------------------------------------------------------
     POST   /upload                  上传文档（落盘 → 建 pending 记录 → 入队 → **立即返回**）
+    POST   /upload/batch            批量上传（p1.5c；逐份独立受理，单份失败不拖垮整批）
     GET    /                        列出知识库文档（**读 MySQL**，支持 ?status= &project_id=）
     GET    /stats                   向量库状态统计（后端类型/嵌入模型/总量）
     GET    /download?doc_id=        下载原始文件（不允许直接暴露磁盘路径）
@@ -86,23 +87,90 @@ async def upload_document(
     file: UploadFile = File(..., description="待入库的文档文件"),
     project_id: str = Query("default", description="归属项目，多租户隔离用"),
 ) -> dict[str, Any]:
+    content = await file.read()
+    outcome = _accept_one_upload(file.filename or "unnamed", content, project_id)
+    if not outcome["ok"]:
+        # 单文件入口保持原有对外语义：失败 = 4xx + detail 文案
+        raise HTTPException(status_code=outcome["status_code"], detail=outcome["error"])
+    return outcome["result"]
+
+
+# --------------------------------------------------------------------------- #
+# 批量上传（p1.5c）
+# --------------------------------------------------------------------------- #
+# 单批文件数上限：前端「选文件夹」可能一下选出几百个文件，必须有个闸。
+# 串行逐份处理（read → 落盘 → 释放），内存峰值 = 单份大小，不随批量数增长。
+BATCH_UPLOAD_MAX_FILES = 50
+
+
+@router.post(
+    "/upload/batch",
+    status_code=http_status.HTTP_202_ACCEPTED,
+    summary="批量上传文档（异步解析）",
+    description=(
+        "一次请求提交多份文件（前端多选 / 选文件夹）。\n\n"
+        "**逐份独立受理**：单份失败（类型不支持 / 超限 / 空文件）不拖垮整批，\n"
+        "每份的结果在 `results` 里单独给出（`ok=false` 时带 `error`）。\n"
+        f"单批最多 {BATCH_UPLOAD_MAX_FILES} 份；单份大小上限与单文件接口一致。"
+    ),
+)
+async def upload_documents_batch(
+    files: list[UploadFile] = File(..., description="待入库的文档文件列表"),
+    project_id: str = Query("default", description="归属项目，多租户隔离用"),
+) -> dict[str, Any]:
+    if not files:
+        raise HTTPException(status_code=400, detail="没有收到文件")
+    if len(files) > BATCH_UPLOAD_MAX_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"单批最多 {BATCH_UPLOAD_MAX_FILES} 份文件（收到 {len(files)} 份），请分批提交",
+        )
+
+    results: list[dict[str, Any]] = []
+    for f in files:
+        raw_name = f.filename or "unnamed"
+        # 串行 read：逐份读进内存、落盘后释放，内存峰值与批量数无关
+        content = await f.read()
+        outcome = _accept_one_upload(raw_name, content, project_id)
+        if outcome["ok"]:
+            results.append({"ok": True, **outcome["result"]})
+        else:
+            results.append({"ok": False, "file_name": raw_name, "error": outcome["error"]})
+
+    accepted = sum(1 for r in results if r["ok"])
+    logger.info("批量上传受理 | 总数=%d | 受理=%d | 跳过=%d", len(files), accepted, len(files) - accepted)
+    return {
+        "total": len(files),
+        "accepted": accepted,
+        "skipped": len(files) - accepted,
+        "results": results,
+    }
+
+
+def _accept_one_upload(raw_name: str, content: bytes, project_id: str) -> dict[str, Any]:
+    """
+    单份文件的受理逻辑：后缀校验 → 大小校验 → uuid 落盘 → 同名替换 → 建 pending → 入队。
+
+    单文件与批量两个入口共用这一套。失败**不抛异常**，返回 `{"ok": False, ...}`，
+    由调用方决定怎么呈现：单文件接口映射回 4xx（保持原有对外语义），
+    批量接口记进该项结果继续处理下一份（单份失败不拖垮整批）。
+    """
     # ---- 1. 后缀白名单（拦在最前面，避免把注定失败的文件落盘）----
-    raw_name = file.filename or "unnamed"
     ext = Path(raw_name).suffix.lower()
     loader = _get_loader()
     if ext not in loader.SUPPORTED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持的文件类型 '{ext}'，当前支持：{'/'.join(sorted(e.lstrip('.') for e in loader.SUPPORTED_EXTENSIONS))}",
-        )
+        return {
+            "ok": False,
+            "status_code": 400,
+            "error": f"不支持的文件类型 '{ext}'，当前支持：{'/'.join(sorted(e.lstrip('.') for e in loader.SUPPORTED_EXTENSIONS))}",
+        }
 
     # ---- 2. 大小校验（读进内存而不是直接写盘：要先知道大小，避免超大文件把磁盘占满）----
-    content = await file.read()
     max_bytes = int(settings.DOC_UPLOAD_MAX_BYTES)
     if len(content) > max_bytes:
-        raise HTTPException(status_code=413, detail=f"文件超过大小上限（{max_bytes // 1024 // 1024}MB）")
+        return {"ok": False, "status_code": 413, "error": f"文件超过大小上限（{max_bytes // 1024 // 1024}MB）"}
     if not content:
-        raise HTTPException(status_code=400, detail="上传的文件内容为空")
+        return {"ok": False, "status_code": 400, "error": "上传的文件内容为空"}
 
     # ---- 3. 用 uuid 落盘 ----
     # 磁盘名与原始名解耦的理由：原始名不可信（路径穿越、重复、超长、含 emoji），
@@ -151,7 +219,7 @@ async def upload_document(
     if not queued:
         result["detail"] = "文件已保存，但解析任务入队失败（消息队列不可用）。可稍后用 reparse 接口补投。"
     logger.info("文档已受理 | doc_id=%s | 文件=%s | 大小=%s | 排队=%s", doc_id, safe_name, len(content), queued)
-    return result
+    return {"ok": True, "result": result}
 
 
 def _sanitize_display_name(raw_name: str) -> str:

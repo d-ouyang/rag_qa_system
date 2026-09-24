@@ -46,6 +46,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import chromadb
 from langchain_community.vectorstores import FAISS, Chroma
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
@@ -141,16 +142,29 @@ class VectorStoreManager:
         store_type: str | None = None,
         persist_dir: str | Path | None = None,
         collection_name: str | None = None,
+        chroma_host: str | None = None,
+        chroma_port: int | None = None,
     ) -> None:
         """
         :param store_type: 向量库类型，chroma / faiss；缺省读 settings.VECTOR_STORE_TYPE
         :param persist_dir: 持久化目录；缺省读 settings.VECTOR_DB_DIR
         :param collection_name: Chroma 的 collection 名；缺省用 DEFAULT_COLLECTION_NAME
+        :param chroma_host: Chroma server 地址；**显式传了 persist_dir 时缺省为嵌入式**，
+                            两个都没传才读 settings.CHROMA_HOST（见下）
+        :param chroma_port: Chroma server 端口；缺省读 settings.CHROMA_PORT
 
         为什么把这三个参数开放出来：
             1) 可测试——单测要同时验证 chroma 与 faiss，且必须写到临时目录，不能污染真实 vector_db/；
             2) 多知识库——将来要做「多个隔离的知识库」时，换个 persist_dir 就是一个新库。
         生产代码统一走模块底部的 get_vector_store_manager() 单例入口。
+
+        chroma_host 的三态约定（p1.5c 新增，防「单测随 .env 漂移」）：
+            · 显式传 chroma_host        → server 模式（连指定地址）；
+            · 没传 chroma_host 但显式传了 persist_dir → **嵌入式**。
+              单测全都显式传临时目录；若此时默认去读 settings.CHROMA_HOST，
+              「单元测试连上真实服务」的事故就会重演（p0.4c 已经踩过一次：
+              单元测试不该碰业务服务，也不该随 .env 漂移）；
+            · 两个都没传（生产无参单例）→ 读 settings.CHROMA_HOST（空 = 嵌入式）。
         """
         # 后端类型固化在实例上：避免每个方法都去读全局 settings，
         # 否则运行中改配置会让同一个管理器前后使用不同后端（行为不可预测）
@@ -159,6 +173,13 @@ class VectorStoreManager:
             Path(persist_dir) if persist_dir is not None else settings.VECTOR_DB_DIR
         )
         self.collection_name: str = collection_name or self.DEFAULT_COLLECTION_NAME
+        if chroma_host is not None:
+            self.chroma_host: str = chroma_host
+        elif persist_dir is not None:
+            self.chroma_host = ""
+        else:
+            self.chroma_host = settings.CHROMA_HOST
+        self.chroma_port: int = chroma_port if chroma_port is not None else settings.CHROMA_PORT
 
         # 嵌入模型是单例，这里拿到的是同一个对象，不会重复加载
         self.embedding_model: HuggingFaceEmbeddings = get_embedding_model()
@@ -190,7 +211,27 @@ class VectorStoreManager:
             )
 
     def _init_chroma(self) -> None:
-        """初始化 Chroma：指定持久化目录即自动落盘。"""
+        """
+        初始化 Chroma：server 模式连远端容器；嵌入式写本地目录。
+
+        server 模式（p1.5c）解决的是「worker 写入后 backend 检索不到」：
+        嵌入式时每个进程各自加载一份 HNSW 索引到内存，worker 落盘后
+        backend 内存里的索引还是启动时那份；server 模式下索引由服务端
+        单点持有，所有进程经 HTTP 共享，写入即刻可见（无需重启）。
+        """
+        if self.chroma_host:
+            client = chromadb.HttpClient(host=self.chroma_host, port=self.chroma_port)
+            self._store = Chroma(
+                collection_name=self.collection_name,
+                embedding_function=self.embedding_model,
+                client=client,
+            )
+            # 初始化即探活：server 不可达时在这里就报错（count 会发一次真实请求），
+            # 比「服务起来了、第一次检索才失败」好定位得多
+            logger.info("Chroma(server) 已就绪 | %s:%d | collection=%s | 现有片段=%d",
+                        self.chroma_host, self.chroma_port, self.collection_name, self.count())
+            return
+
         self.persist_dir.mkdir(parents=True, exist_ok=True)
 
         self._store = Chroma(
@@ -855,8 +896,12 @@ class VectorStoreManager:
         embedding_info = get_embedding_model_info()
 
         stats: dict[str, Any] = {
-            "vector_store_type": self.store_type,
-            "persist_directory": str(self.persist_dir),
+            # server 模式要在状态里看得见——「连的是容器还是本地目录」是排查
+            # 「写进去却查不到」这类问题时第一个要确认的事
+            "vector_store_type": self.store_type + ("(server)" if self.store_type == "chroma" and self.chroma_host else ""),
+            "persist_directory": (
+                f"server://{self.chroma_host}:{self.chroma_port}" if self.chroma_host else str(self.persist_dir)
+            ),
             "collection_name": self.collection_name if self.store_type == "chroma" else None,
             "total_vectors": self.count(),
             "source_count": len(sources),

@@ -112,6 +112,9 @@ onMounted(scrollToBottom)
 .message-scroll {
   flex: 1;
   overflow-y: auto;
+  /* 滚动条槽位恒定预留：滚动条「时有时无」会反复挤占内容宽度，
+     消息文本随之换行抖动（hover 弹窗、流式追加都会触发）。 */
+  scrollbar-gutter: stable;
   padding: 20px 24px;
   display: flex;
   flex-direction: column;

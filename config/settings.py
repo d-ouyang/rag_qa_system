@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     # 向量数据库的类型
     # 向量库配置
     VECTOR_STORE_TYPE : Literal["faiss", "chroma"] = "chroma"
+    # Chroma 连接模式（v2.0.0-p1.5c 新增）：
+    #   CHROMA_HOST 为空  → 嵌入式（写入 VECTOR_DB_DIR 本地目录，单进程索引，测试/兜底用）
+    #   CHROMA_HOST 非空  → server 模式（HttpClient 连 chroma 容器，backend 与 worker
+    #                       共享服务端索引，worker 写入后后端**无需重启**即可检索到）
+    # 裸跑连宿主机的端口映射（127.0.0.1:8001），容器内连服务名（chroma:8000）。
+    CHROMA_HOST : str = ""
+    CHROMA_PORT : int = 8001
     EMBEDDING_MODEL_NAME : str = "bge_small_zh"
     EMBEDDING_DEVICE : str = "cpu"      # 可以配置cuda
     CHUNK_SIZE : int = 500

@@ -506,6 +506,32 @@ try:
     r = client.post("/api/v1/documents/upload", files={"file": ("empty.txt", b"", "text/plain")})
     check("空文件 → 400", r.status_code == 400, f"{r.status_code} {r.text[:120]}")
 
+    print("\n  -- 批量上传 --")
+    # 放在单文件断言之后、列表断言之前：逐份独立受理，失败项不入库。
+    # 批量多出来的记录马上删掉，后面「列表只有 1 条」的口径不受影响。
+    batch_ok_name = f"m9_{U}_batch_ok.txt"
+    r = client.post(
+        "/api/v1/documents/upload/batch",
+        files=[
+            ("files", (batch_ok_name, UP_BODY, "text/plain")),
+            ("files", ("skip.bin", b"xx", "application/octet-stream")),
+        ],
+    )
+    check("batch 返回 202", r.status_code == 202, f"{r.status_code} {r.text[:200]}")
+    bb = r.json()
+    check("batch total=2", bb.get("total") == 2, str(bb.get("total")))
+    check("batch accepted=1（skip.bin 被跳过）", bb.get("accepted") == 1, str(bb.get("accepted")))
+    check("batch skipped=1", bb.get("skipped") == 1, str(bb.get("skipped")))
+    ok_item = next((x for x in bb.get("results", []) if x.get("ok")), None)
+    skip_item = next((x for x in bb.get("results", []) if not x.get("ok")), None)
+    check("成功项带 doc_id", isinstance((ok_item or {}).get("doc_id"), int), str(ok_item))
+    check("跳过项带 error 且不入库", bool(skip_item and skip_item.get("error") and "skip.bin" in skip_item.get("file_name", "")))
+    batch_id = (ok_item or {}).get("doc_id")
+    if isinstance(batch_id, int):
+        client.delete(f"/api/v1/documents/{batch_id}")
+    r = client.post("/api/v1/documents/upload/batch", files=[])
+    check("空批量 → 400 或 422", r.status_code in (400, 422), f"{r.status_code} {r.text[:120]}")
+
     print("\n  -- 列表（读 MySQL）--")
     r = client.get("/api/v1/documents/")
     check("列表 200", r.status_code == 200, str(r.status_code))

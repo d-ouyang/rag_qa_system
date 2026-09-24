@@ -171,6 +171,29 @@ export interface UploadAccepted {
   detail?: string
 }
 
+/** 批量上传里单份文件的结果（`POST /api/v1/documents/upload/batch`） */
+export interface BatchUploadItem {
+  ok: boolean
+  file_name: string
+  /** ok=true 时带受理信息（同 UploadAccepted 的字段） */
+  doc_id?: number
+  status?: DocStatus
+  file_size?: number
+  file_type?: string
+  queued?: boolean
+  detail?: string
+  /** ok=false 时带失败原因（类型不支持 / 超限 / 空文件） */
+  error?: string
+}
+
+/** 批量上传的汇总响应 */
+export interface BatchUploadResult {
+  total: number
+  accepted: number
+  skipped: number
+  results: BatchUploadItem[]
+}
+
 /** 手动重解析（`POST /api/v1/documents/{doc_id}/reparse` → 202） */
 export interface ReparseAccepted {
   doc_id: number

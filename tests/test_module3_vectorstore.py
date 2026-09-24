@@ -307,24 +307,54 @@ def test_empty_store_and_errors() -> None:
 # --------------------------------------------------------------------------- #
 # 6. 管理器单例
 # --------------------------------------------------------------------------- #
+def test_chroma_host_isolation() -> None:
+    """
+    显式 persist_dir 必须走嵌入式，即使 settings.CHROMA_HOST 指向一个假地址。
+    否则 .env 一切到 server 模式，单测就会去连真实/不存在的服务（p0.4c 同类事故）。
+    """
+    print("\n==== 5b. chroma_host 三态（防单测连真实服务）====")
+    old = settings.CHROMA_HOST
+    settings.CHROMA_HOST = "should-not-connect.invalid"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = VectorStoreManager(store_type="chroma", persist_dir=Path(tmp))
+            check("显式 persist_dir 时 chroma_host 为空（嵌入式）", manager.chroma_host == "")
+            manager.add_documents(TEST_DOCS[:1])
+            check("嵌入式写入成功（没去连假地址）", manager.count() == 1, str(manager.count()))
+    finally:
+        settings.CHROMA_HOST = old
+
+
 def test_manager_singleton() -> None:
     print("\n==== 6. 向量库管理器单例 ====")
-    reset_vector_store_manager()
+    # 单例测试只验「是不是同一个对象」。
+    # 必须把 host 和目录都切到隔离值：.env 开了 server 时不能连真实 chroma；
+    # 更不能用嵌入式打开正在被 chroma 容器 bind mount 的 vector_db/
+    # （多进程同目录会损坏 HNSW，表现为检索 502：ef or M is too small）。
+    old_host = settings.CHROMA_HOST
+    old_dir = settings.VECTOR_DB_DIR
+    with tempfile.TemporaryDirectory() as tmp:
+        settings.CHROMA_HOST = ""
+        settings.VECTOR_DB_DIR = Path(tmp)
+        reset_vector_store_manager()
+        try:
+            first = get_vector_store_manager()
+            second = get_vector_store_manager()
+            check("两次获取是同一对象", first is second)
+            check(
+                "单例使用 settings 里的后端类型",
+                first.store_type == settings.VECTOR_STORE_TYPE,
+                f"{first.store_type} vs {settings.VECTOR_STORE_TYPE}",
+            )
+            check("单例使用本次注入的持久化目录", first.persist_dir == Path(tmp), str(first.persist_dir))
 
-    first = get_vector_store_manager()
-    second = get_vector_store_manager()
-    check("两次获取是同一对象", first is second)
-    check(
-        "单例使用 settings 里的后端类型",
-        first.store_type == settings.VECTOR_STORE_TYPE,
-        f"{first.store_type} vs {settings.VECTOR_STORE_TYPE}",
-    )
-    check("单例使用 settings 里的持久化目录", first.persist_dir == settings.VECTOR_DB_DIR, str(first.persist_dir))
-
-    reset_vector_store_manager()
-    third = get_vector_store_manager()
-    check("重置后会按配置重建新对象", third is not first)
-    reset_vector_store_manager()
+            reset_vector_store_manager()
+            third = get_vector_store_manager()
+            check("重置后会按配置重建新对象", third is not first)
+        finally:
+            settings.CHROMA_HOST = old_host
+            settings.VECTOR_DB_DIR = old_dir
+            reset_vector_store_manager()
 
 
 def main() -> int:
@@ -350,6 +380,7 @@ def main() -> int:
             _run_persistence_suite(store_type, Path(tmp))
 
     test_empty_store_and_errors()
+    test_chroma_host_isolation()
     test_manager_singleton()
 
     print(f"\n==== 汇总：通过 {len(PASSED)} 项，失败 {len(FAILED)} 项 ====")

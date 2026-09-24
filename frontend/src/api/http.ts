@@ -177,6 +177,16 @@ export async function uploadFile<T>(path: string, file: File): Promise<T> {
   return (await res.json()) as T
 }
 
+/** 批量上传：多份文件挂同一个字段名（与后端 `files: list[UploadFile]` 对应） */
+export async function uploadFiles<T>(path: string, files: File[]): Promise<T> {
+  const form = new FormData()
+  for (const f of files) form.append('files', f)
+  const res = await ensureOk(
+    await fetch(`${API_BASE}${path}`, { method: 'POST', headers: buildHeaders(false), body: form }),
+  )
+  return (await res.json()) as T
+}
+
 /** 一次文件下载的结果：二进制本体 + 服务端建议的文件名。 */
 export interface DownloadedFile {
   blob: Blob

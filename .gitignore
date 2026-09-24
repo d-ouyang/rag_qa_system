@@ -10,6 +10,7 @@ __pycache__/
 
 # 运行时产物
 vector_db/
+chroma_data/
 upload/
 data/
 app.log

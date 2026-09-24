@@ -221,6 +221,11 @@ def _check_backend(apply_changes: bool, force: bool) -> bool:
         print(f"  后端服务未在 {settings.API_PORT} 上响应 —— 可以安全重建")
 
     if online and apply_changes and not force:
+        if settings.CHROMA_HOST:
+            # server 模式：索引由 chroma 服务端单点持有，重灌经 HTTP 写入，
+            # 在线后端立刻看见新索引，不必停。
+            print("  Chroma server 模式：在线后端无需停，重灌结果即刻可见。")
+            return True
         print(
             "\n  拒绝执行：后端进程正持有 vector_db/ 的 Chroma 句柄。\n"
             "  重建会在另一个进程里改写同一个目录，后端那个句柄会变陈旧，\n"
@@ -409,10 +414,15 @@ def main() -> int:
     if apply_changes:
         print(f"  执行结束：重灌成功 {ok_count} / 失败 {fail_count}" + ("（有失败，请查看上方日志）" if fail_count else ""))
         print("")
-        print("  ⚠️  下一步：把后端服务重启一遍再对外提供服务。")
-        print("     重建是在另一个进程里改写 vector_db/ 的，仍在运行的后端进程")
-        print("     持有的是**陈旧句柄**，它的查询会拿到 None 正文并直接 500")
-        print("     （根因见本文件头）。重启之后才是干净句柄。")
+        if settings.CHROMA_HOST:
+            # server 模式（p1.5c 起）：索引由 chroma 服务端单点持有，
+            # 重灌结果对所有在线进程即刻可见，**不需要重启后端**
+            print("  ✅ Chroma server 模式：重灌结果即刻生效，在线后端无需重启。")
+        else:
+            print("  ⚠️  下一步：把后端服务重启一遍再对外提供服务。")
+            print("     重建是在另一个进程里改写 vector_db/ 的，仍在运行的后端进程")
+            print("     持有的是**陈旧句柄**，它的查询会拿到 None 正文并直接 500")
+            print("     （根因见本文件头）。重启之后才是干净句柄。")
     else:
         print("  干跑结束。确认无误后加 --apply 执行。")
         print("          提醒：执行前请先停掉 worker 与后端服务（本脚本会自动拦下）。")

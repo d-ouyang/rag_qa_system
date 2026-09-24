@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# 中间件连通性自检（P1-5a）
+# 中间件连通性自检（P1-5a；p1.5c 起含 Chroma）
 #
 # 检查什么：容器是否健康、MySQL 账号/字符集/时区是否正确、Redis 容量策略是否生效、
-#          以及宿主机能否从 127.0.0.1 连上这两个端口（应用裸跑时走的就是这条路径）。
+#          Chroma server 的 heartbeat 是否可连，
+#          以及宿主机能否从 127.0.0.1 连上这三个端口（应用裸跑时走的就是这条路径）。
 #
 # 用法：
 #   bash scripts/infra-check.sh                      # docker 已在 PATH 时
@@ -42,6 +43,8 @@ DB_USER=$(env_val MYSQL_USER); DB_USER="${DB_USER:-rag}"
 DB_PASS=$(env_val MYSQL_PASSWORD)
 RHOST=$(env_val REDIS_HOST); RHOST="${RHOST:-localhost}"
 RPORT=$(env_val REDIS_PORT); RPORT="${RPORT:-6379}"
+CHOST=$(env_val CHROMA_HOST); CHOST="${CHOST:-127.0.0.1}"
+CPORT=$(env_val CHROMA_PORT); CPORT="${CPORT:-8001}"
 
 # --------------------------------------------------------------------------- #
 title "1. 容器状态"
@@ -51,7 +54,7 @@ if [ -z "${PS_OUT}" ]; then
   bad "compose 没有返回任何服务，先跑 make infra"
 else
   echo "${PS_OUT}" | sed 's/^/  /'
-  for svc in mysql redis; do
+  for svc in mysql redis chroma; do
     line=$(echo "${PS_OUT}" | grep "^${svc}|" || true)
     case "${line}" in
       *"|running|"*"healthy"*) ok "${svc} 运行中且健康检查通过" ;;
@@ -126,7 +129,27 @@ case "${DB1}" in
 esac
 
 # --------------------------------------------------------------------------- #
-title "4. 宿主机端口可达性（应用裸跑走这条路径）"
+title "4. Chroma（server 模式，p1.5c 起）"
+# --------------------------------------------------------------------------- #
+# heartbeat 是 chroma 的就绪探针：能应答说明 HTTP API 可用。
+# 宿主机映射端口（默认 8001）就是裸跑的 backend/worker 实际连的地址。
+# 0.5.23 稳定的是 /api/v1/heartbeat（v2 在部分 0.5.x 镜像上没有）
+HB=$(python3 -c "
+import urllib.request, sys
+try:
+    r = urllib.request.urlopen('http://${CHOST}:${CPORT}/api/v1/heartbeat', timeout=3)
+    print(r.status)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null)
+if [ "${HB}" = "200" ]; then
+  ok "heartbeat 可连（http://${CHOST}:${CPORT}/api/v1/heartbeat）"
+else
+  bad "heartbeat 连不上 http://${CHOST}:${CPORT}（先 make infra 起 chroma）"
+fi
+
+# --------------------------------------------------------------------------- #
+title "5. 宿主机端口可达性（应用裸跑走这条路径）"
 # --------------------------------------------------------------------------- #
 check_port() {
   local name="${1}" host="${2}" port="${3}"
@@ -145,6 +168,7 @@ except Exception:
 }
 check_port MySQL "${DB_HOST}" "${DB_PORT}"
 check_port Redis "${RHOST}" "${RPORT}"
+check_port Chroma "${CHOST}" "${CPORT}"
 
 # --------------------------------------------------------------------------- #
 echo

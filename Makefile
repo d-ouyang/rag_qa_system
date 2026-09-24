@@ -211,13 +211,14 @@ reindex-apply:
 ollama:
 	@curl -s http://localhost:11434/api/tags | head -c 200; echo
 
-# ---------- 本地中间件（MySQL + Redis，P1-5a）----------
-# 决策 D1：中间件容器化、应用裸跑。应用通过 127.0.0.1 连这两个端口，
+# ---------- 本地中间件（MySQL + Redis + Chroma，P1-5a / p1.5c）----------
+# 决策 D1：中间件容器化、应用裸跑。应用通过 127.0.0.1 连这些端口，
 # 因此容器端口只绑回环地址（见 docker-compose.yml 的注释）。
+# p1.5c 起 chroma 进默认 profile：backend / worker 经 HttpClient 共享服务端索引。
 infra:
-	$(DOCKER) compose up -d mysql redis
+	$(DOCKER) compose up -d mysql redis chroma
 	@echo ""
-	@echo "中间件已启动。自检：make infra-check"
+	@echo "中间件已启动（mysql + redis + chroma）。自检：make infra-check"
 
 infra-check:
 	@bash scripts/infra-check.sh "$(DOCKER)"
@@ -233,7 +234,7 @@ infra-stop:
 infra-down:
 	$(DOCKER) compose down
 	@echo ""
-	@echo "容器已移除，volume（mysql_data / redis_data）保留，业务数据未丢。"
+	@echo "容器已移除，volume（mysql_data / redis_data）与 bind mount（vector_db）保留，业务数据未丢。"
 	@echo "如需彻底清空：$(DOCKER) compose down -v   ⚠️ 会删除全部业务数据"
 
 # ---------- 全栈容器（P1-5b）----------

@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.5b</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.5c</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -258,7 +258,7 @@
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
       <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">6<span class="u">/ 10</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">11<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">12<span class="u">个</span></div></div>
     </div>
   </section>
 
@@ -307,7 +307,7 @@
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
       2.0.0 是进行中的大版本——模型目录、TLS、配置治理、观测备份都还没有做完，
-      所以「当前版本 2.0.0-p1.5b」不等于「可以上线」。
+      所以「当前版本 2.0.0-p1.5c」不等于「可以上线」。
     </p>
     <dl>
       <div><dt>docs/RELEASES.md</dt><dd>对外变更叙事（本页内容来源）</dd></div>
@@ -327,6 +327,30 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p1.5c",
+    date: "2026-09-24",
+    accent: "#3fb950",
+    tagline: "复制有提示，上传完立刻能搜到",
+    problem: "全栈跑通之后，日常使用还有几处别扭：复制对话没有成功提示；鼠标扫过回答底部整行都会弹出用量明细，最后一条还会被弹窗顶上去；新上传的文档要重启后端才检索得到；知识库一次只能传一个文件。",
+    sections: [
+      { type: "improved", items: [
+        { star: true, h: "复制之后会告诉你成功了", t: "点复制会出现「已复制到剪贴板」。浏览器不允许写剪贴板时，会说明失败原因。" },
+        { star: true, h: "用量明细只在那一枚徽章上出现", t: "耗时旁边不再误弹。下面放得下就朝下展开，最后一条会被挡住就朝上，弹窗不再把整段对话顶高。" },
+        { h: "滚动条不再把文字挤换行", t: "消息区的滚动条槽位一直留着，宽度不再因为滚动条忽隐忽现而变。" },
+        { star: true, h: "上传后不用重启就能搜到", t: "向量库改成独立服务。解析进程写进去，问答进程马上能用，不必再重启后端。" },
+        { h: "可以一次传很多文件，也可以选整个文件夹", t: "一次最多 50 份。其中某一份不合规，不会让整批都失败。" }
+      ]},
+      { type: "verified", items: [
+        { star: true, h: "新文档解析完，不重启也能被引用", t: "上传后立刻提问，回答的引用命中了这份新文档。" },
+        { h: "回归测试与中间件自检", t: "向量库模块 102 项、文档解析模块 173 项，均 0 失败。中间件自检 17 项通过。" }
+      ]},
+      { type: "boundary", items: [
+        { h: "把文件夹拖进页面还不会展开", t: "请用「选择整个文件夹」。选文件夹时，子目录里的文件会一起带上。" },
+        { h: "全量测试仍可能清空文档表", t: "跑完后文档编号可能变化，旧对话里点引用会对不上。正文还在。" }
+      ]}
+    ]
+  },
   {
     version: "v2.0.0-p1.5b",
     date: "2026-09-24",

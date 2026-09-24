@@ -253,25 +253,61 @@ export const useDocumentStore = defineStore('documents', () => {
     await syncNow(false)
   }
 
-  async function upload(file: File): Promise<void> {
+  /** 单批文件数上限（与后端 BATCH_UPLOAD_MAX_FILES 一致；前端先拦一道，省一趟请求） */
+  const BATCH_MAX_FILES = 50
+
+  /**
+   * 上传（p1.5c 起支持批量）：单个 File 或多文件/文件夹选出的 File 列表。
+   *
+   * 单个与批量统一走后端批量接口 —— 一个口径，不出现「单个走 A 接口、
+   * 多个走 B 接口」两套行为漂移。后端逐份独立受理，单份失败不拖垮整批。
+   */
+  async function upload(files: File | File[]): Promise<void> {
     const ui = useUiStore()
+    const list = Array.isArray(files) ? files : [files]
+    if (list.length === 0) return
+    if (list.length > BATCH_MAX_FILES) {
+      ui.toast(`一次最多提交 ${BATCH_MAX_FILES} 份文件（这次选了 ${list.length} 份），请分批`, 'error', 6000)
+      return
+    }
     submitting.value = true
-    submittingName.value = file.name
+    submittingName.value = list.length === 1 ? list[0].name : `${list.length} 份文件`
     try {
-      const res = await docsApi.uploadDocument(file)
-      // 立刻纳入「盯着」的集合：万一后端起得快，第一次轮询就已经是 success，
+      const res = await docsApi.uploadDocumentsBatch(list)
+      // 受理成功的立刻纳入「盯着」的集合：万一后端起得快，第一次轮询就已经是 success，
       // 这时仍然应该给一条完成提示，而不是静默。
-      watched.add(res.doc_id)
-      if (res.queued) {
+      let queueFailed = 0
+      for (const r of res.results) {
+        if (r.ok && r.doc_id != null) {
+          watched.add(r.doc_id)
+          if (!r.queued) queueFailed += 1
+        }
+      }
+      if (res.accepted > 0) {
         // 用 info 而不是 success：**受理 ≠ 完成**，这时候说「成功」是在骗用户
-        ui.toast(`「${res.file_name}」已提交，正在后台解析`, 'info')
-      } else {
-        // 已入库但没排上队：必须显眼，否则这条文档会一直停在 pending 而用户不知道原因
+        const first = res.results.find((r) => r.ok)
         ui.toast(
-          `「${res.file_name}」已保存，但排队失败：${res.detail ?? '消息队列不可用'}`,
+          res.accepted === 1 && first
+            ? `「${first.file_name}」已提交，正在后台解析`
+            : `已提交 ${res.accepted} 份文档，正在后台解析`,
+          'info',
+        )
+      }
+      // 已入库但没排上队：必须显眼，否则这些文档会一直停在 pending 而用户不知道原因
+      if (queueFailed > 0) {
+        ui.toast(
+          `${queueFailed} 份已保存但排队失败（消息队列不可用），可稍后在列表里点「重试」补投`,
           'error',
           8000,
         )
+      }
+      // 被跳过的（类型不支持/超限/空文件）没进列表，toast 是唯一的告知途径：
+      // 列出前几份的名字与原因，剩下的给个数
+      if (res.skipped > 0) {
+        const failed = res.results.filter((r) => !r.ok)
+        const head = failed.slice(0, 3).map((r) => `${r.file_name}（${r.error}）`).join('；')
+        const more = failed.length > 3 ? ` 等 ${failed.length} 份` : ''
+        ui.toast(`${res.skipped} 份被跳过：${head}${more}`, 'error', 9000)
       }
       await refresh()
     } catch (e) {

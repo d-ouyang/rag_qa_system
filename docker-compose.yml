@@ -2,7 +2,8 @@
 #
 # 阶段说明（见 docs/PLAN-v2.0.0.md 的 P1-5）：
 #   P1-5a  mysql + redis 两个中间件；
-#   P1-5b  backend / worker / gateway / frontend 四个应用服务（本次追加）。
+#   P1-5b  backend / worker / gateway / frontend 四个应用服务；
+#   p1.5c  chroma server 进中间件组（默认 profile），应用摘掉 ./vector_db 挂载。
 #
 # ⚠️ 应用服务全部挂在 `profiles: [full]` 下（这是本次最关键的一个决定）：
 #   决策 D1 定的是「日常开发 = 中间件容器 + 应用裸跑」—— 裸跑才有热重载与断点调试。
@@ -11,7 +12,7 @@
 #   挂在 full 下之后，不带 --profile 的命令行为与 P1-5a 时期完全一致，两种模式互不干扰。
 #
 # 常用命令：
-#   make infra            起中间件（= docker compose up -d mysql redis，默认 profile）
+#   make infra            起中间件（mysql + redis + chroma，默认 profile）
 #   make infra-check      看状态与连通性
 #   make infra-logs       跟踪日志
 #   make infra-stop       停（保留 volume，数据不丢）
@@ -89,6 +90,39 @@ services:
       retries: 10
       start_period: 5s
 
+  # Chroma server（p1.5c 新增，默认 profile）：向量索引由服务端单点持有，
+  # backend 与 worker 经 HTTP 共享 —— worker 写入后 backend **无需重启**即可检索到，
+  # 根治嵌入式模式「两个进程各持一份内存索引」的陈旧问题（p1.5b §6 第 2 条）。
+  # 镜像 tag 与 requirements.lock.txt 的 chromadb 客户端版本**必须对齐**（0.5.23），
+  # client/server 跨版本有协议不匹配的风险。
+  chroma:
+    image: chromadb/chroma:0.5.23
+    container_name: rag-chroma
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      # 0.5.23 入口脚本会设 IS_PERSISTENT=1；persist 默认是 WORKDIR 下的 ./chroma
+      # 即 /chroma/chroma。显式写 PERSIST_DIRECTORY，避免镜像默认值漂移。
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /chroma/chroma
+      ANONYMIZED_TELEMETRY: "FALSE"
+    ports:
+      # 宿主机映射 8001（8000 被裸跑的 backend 占用）；容器内仍是 8000，
+      # 全栈模式下 backend/worker 走服务名 chroma:8000，不经过这个映射
+      - "127.0.0.1:${CHROMA_PORT:-8001}:8000"
+    volumes:
+      # 独立目录，不要挂 ./vector_db：应用单测/脚本若再以嵌入式打开
+      # 同一目录，会和 server 抢 HNSW（检索直接 502：ef or M is too small）。
+      # 首次启用后跑一次 `make reindex-apply` 把 upload/ 重灌进这里。
+      - ./chroma_data:/chroma/chroma
+    healthcheck:
+      # 0.5.23 镜像自带 curl；心跳走 v1（v2 在 0.5.16 才出现，v1 更稳）
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
   # ================================================================== #
   # 以下四个是 P1-5b 新增的应用服务，全部在 `full` profile 下           #
   # ================================================================== #
@@ -113,6 +147,9 @@ services:
       MYSQL_HOST: mysql
       REDIS_URL: redis://redis:6379/0
       REDIS_QUEUE_URL: redis://redis:6379/1
+      # Chroma server 模式（p1.5c）：连服务名，不再挂 ./vector_db
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
       # 容器里必须监听 0.0.0.0，默认的 localhost 会让外部（含 nginx / 网关）连不进来
       API_HOST: 0.0.0.0
       TZ: Asia/Shanghai
@@ -120,9 +157,9 @@ services:
     # 全栈模式下访问入口是 frontend(8080)，API 走 gateway(3000)。
     # 想直接连后端调试：docker compose --profile full exec backend ...
     volumes:
-      # 与 worker 共享同一份向量库和原始文件 —— 共享不是优化，是正确性要求：
-      # worker 解析写入的切片，后端必须能立刻读到，两者必须看到同一套文件。
-      - ./vector_db:/app/vector_db
+      # upload 仍需与 worker 共享（原始文件的交接：后端落盘、worker 读盘）。
+      # ./vector_db 已在 p1.5c 摘掉：向量数据由 chroma 服务的命名卷持有，
+      # 应用容器不再直接碰向量文件 —— 这正是「worker 写入、后端立即可见」的落点。
       - ./upload:/app/upload
       # 模型走 bind mount 而不是 COPY 进镜像（P1-6 定的方案）：
       # 镜像保持小（models 约 2GB），且模型可独立更新而不必重新构建镜像。
@@ -133,6 +170,8 @@ services:
       mysql:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      chroma:
         condition: service_healthy
     # 让容器能访问**宿主机**上的服务（典型场景：本机裸跑的 Ollama）。
     # 容器里的 localhost 是容器自己，写 http://localhost:11434 连不到宿主机的模型服务，
@@ -169,20 +208,25 @@ services:
       MYSQL_HOST: mysql
       REDIS_URL: redis://redis:6379/0
       REDIS_QUEUE_URL: redis://redis:6379/1
+      # Chroma server 模式（p1.5c）：与 backend 连同一个服务端索引
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
       # ⚠️ 解析链路只用到嵌入模型，用不到重排。关掉它约省 1.1GB 常驻内存 ——
       # 这是 4C4G 服务器上「跑不跑得动」的关键一条（PLAN §11.1 对策①）。
       # 语义无损：重排只发生在问答链路（后端），不影响解析结果。
       USE_RERANKER: "false"
       TZ: Asia/Shanghai
     volumes:
-      # 必须与 backend 挂载**同一份**（见 backend 的注释）
-      - ./vector_db:/app/vector_db
+      # upload 必须与 backend 挂载**同一份**（原始文件交接）；
+      # ./vector_db 已摘掉（见 backend 的注释）
       - ./upload:/app/upload
       - ./models:/app/models:ro
     depends_on:
       mysql:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      chroma:
         condition: service_healthy
     # 同 backend：解析链路若要用宿主机上的服务（如本地 Ollama 做兜底），走这条通道
     extra_hosts:
@@ -258,5 +302,5 @@ volumes:
   # 队列 AOF，非强持久
   redis_data:
   # 注：vector_db / upload / models 用 bind mount（./xxx）而不是命名卷，
-  # 原因见 backend 服务 volumes 段的注释 —— 本地要复用宿主机已有的知识库数据，
-  # 且备份可以直接 rsync 目录而不必绕 docker 中转。
+  # 原因见 chroma / backend 服务 volumes 段的注释 —— 本地要复用宿主机已有的
+  # 切片、文件与模型，且备份可以直接 rsync 目录而不必绕 docker 中转。

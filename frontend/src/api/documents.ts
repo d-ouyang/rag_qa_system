@@ -22,8 +22,9 @@
  *   · 路径会暴露服务器目录结构（旧接口把绝对路径吐给了浏览器）。
  */
 
-import { del, get, getFile, postJson, uploadFile, type DownloadedFile } from './http'
+import { del, get, getFile, postJson, uploadFile, uploadFiles, type DownloadedFile } from './http'
 import type {
+  BatchUploadResult,
   DeleteDocumentResponse,
   DocumentChunksResponse,
   DocumentListResponse,
@@ -64,6 +65,13 @@ export const getVectorStats = () => get<VectorStats>('/api/v1/documents/stats')
  */
 export const uploadDocument = (file: File) =>
   uploadFile<UploadAccepted>('/api/v1/documents/upload', file)
+
+/**
+ * 批量上传（p1.5c）→ **202 受理**。逐份独立受理：单份失败不拖垮整批，
+ * 每份的结果在 `results` 里单独给出（`ok=false` 时带 `error`）。
+ */
+export const uploadDocumentsBatch = (files: File[]) =>
+  uploadFiles<BatchUploadResult>('/api/v1/documents/upload/batch', files)
 
 /** 查看某文档的全部切分片段（按 chunk_index 升序） */
 export const getDocumentChunks = (docId: number) =>

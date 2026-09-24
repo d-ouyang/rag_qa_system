@@ -81,7 +81,9 @@
 
 | **v2.0.0-p1.5b** | 2026-09-24 | **P1-5b 应用容器化（✅ 已联调通过）**：新增 `Dockerfile`（python:3.11-slim + `requirements.lock.txt`）、`frontend/Dockerfile`（node:20-alpine → nginx:alpine）、`frontend/nginx.conf`（`/api` 反代 + **`proxy_buffering off`** + SPA 回落）、`gateway/Dockerfile`、三个 `.dockerignore`；compose 追加 `backend`/`worker`/`gateway`/`frontend` **全部挂 `profiles: [full]`**（否则 `make infra` 会与裸跑的 8000/3000/5173 撞端口）；靠 compose `environment` **覆盖** `env_file` 实现「同一份 .env 两种模式共存」（`MYSQL_HOST=mysql`、两个 Redis URL、`GATEWAY_BACKEND_URL=http://backend:8000`、`GATEWAY_TRUST_PROXY=true`）；worker **复用后端镜像** + `USE_RERANKER=false`（省 1.1G，解析不用重排）；`vector_db`/`upload`/`models` 用 **bind mount**（复用宿主机已有数据，命名卷会让容器里知识库是空的）；backend **不映射 8000**（网关要求内网可达）；worker **不配 healthcheck**（`celery inspect ping` 会误判健康 worker）；`extra_hosts: host.docker.internal:host-gateway`（容器连宿主机服务）；新增 `make stack-up/ps/logs/down/rebuild`。**应用代码一行未改**。2026-09-24 全栈联调通过（六容器/登录/同步+流式问答/上传解析/引用反查/删除闭环实测），联调修复三处见下方「修订」表 | `iterations/v2.0.0-p1.5b-app-containers.md` |
 
-> 当前应用版本：`2.0.0-p1.5b`
+| **v2.0.0-p1.5c** | 2026-09-24 | **联调后五项优化**：复制成功 toast；Token 明细只在徽章 hover，浮层改 `position:fixed` 并按视口朝上/朝下；消息区 `scrollbar-gutter: stable`；Chroma 改 server（`HttpClient`，数据在 `./chroma_data`，`make infra` 含 chroma，自检 17 项）；`POST /documents/upload/batch` + 前端多选/选文件夹，nginx `client_max_body_size 120m`。上传后不重启即可检索（实测命中新 doc）。module3 102/0、module9 173/0 | `iterations/v2.0.0-p1.5c-ux-chroma-batch.md` |
+
+> 当前应用版本：`2.0.0-p1.5c`
 >
 > 上表是**工程对账**口径（谁在哪个文件里改了什么）。
 > 如果是要**向人展示「这个项目怎么一步步完善的」**，读 `docs/RELEASES.md`。
@@ -125,7 +127,7 @@
 >
 > **下一步：P1-6 模型目录**（本机 `models` 是软链，联调中已验证容器内可正常跟随；
 > 上服务器前换真实目录），之后 P1-7 TLS。
-> 执行顺序：P1-5a ✅ → P0-1 ✅ → P0-3a ✅ → P0-3b ✅ → P0-4a ✅ → P0-4b ✅ → P0-4c ✅ → P1-5b ✅（已联调）→ **P1-6** → P1-7。
+> 执行顺序：P1-5a ✅ → P0-1 ✅ → P0-3a ✅ → P0-3b ✅ → P0-4a ✅ → P0-4b ✅ → P0-4c ✅ → P1-5b ✅（已联调）→ **P1-5c ✅** → **P1-6** → P1-7。
 >
 > ✅ **`v2.0.0-p1.5b` 已于 2026-09-24 全栈联调通过**，阶段 tag `v2.0.0-p1.5` 已补打。
 > 联调抓到并修复 3 个真问题（网关生产配置缺口、compose 插值吃掉 bcrypt 哈希、

@@ -9,10 +9,12 @@
 import { computed, ref } from 'vue'
 import type { ChatMessage, ChunkDetail, SourceItem } from '@/types'
 import { useSessionStore } from '@/stores/sessions'
+import { useUiStore } from '@/stores/ui'
 import { getChunk, isValidChunkId } from '@/api/chunks'
 
 const props = defineProps<{ message: ChatMessage; index: number }>()
 const sessions = useSessionStore()
+const ui = useUiStore()
 const showSources = ref(false)
 
 /** v-focus：编辑输入框插入即聚焦 */
@@ -46,8 +48,11 @@ async function copyText() {
     await navigator.clipboard.writeText(props.message.content)
     copied.value = true
     setTimeout(() => (copied.value = false), 1500)
+    ui.toast('已复制到剪贴板', 'success')
   } catch {
-    console.error('复制失败')
+    // 剪贴板 API 在非安全上下文（http 裸 IP 访问）或被拒权限时会抛错，
+    // 必须如实告诉用户「没复制上」，而不是只改个按钮 title 了事
+    ui.toast('复制失败：浏览器拒绝了剪贴板访问', 'error')
   }
 }
 const copied = ref(false)
@@ -60,6 +65,13 @@ function fmtTs(ts?: number): string {
 
 // ----- assistant token 明细浮层 -----
 const showDetail = ref(false)
+/**
+ * 弹窗朝向：true = 朝上展开。
+ * 徽章贴近视口底部时（典型：最后一条回答）朝下展开会被视口截断，
+ * 还会把滚动容器的 scrollHeight 撑大 → 滚动条突然出现 → 整窗内容被顶一下。
+ * 所以 hover 时量一次视口余量，下方放不下就朝上。
+ */
+const detailUp = ref(false)
 const detail = computed(() => {
   const u = props.message.usage
   if (!u) return null
@@ -77,6 +89,39 @@ const detail = computed(() => {
     hitPct: input > 0 ? Math.min(100, (hit / input) * 100) : 0,
   }
 })
+
+/** 弹窗实测约 260px 高，下方余量不足这个值就朝上展开（留 20px 呼吸位） */
+const POPOVER_EST_HEIGHT = 280
+const POPOVER_WIDTH = 264
+
+/**
+ * 浮层用 position:fixed + 视口坐标，而不是 absolute。
+ * absolute 相对徽章定位时，仍是滚动容器的子孙：朝下展开会抬高
+ * scrollHeight → 贴底时整窗被顶一下；overflow:auto 还会把弹窗裁掉。
+ * fixed 相对视口，不参与滚动容器的溢出计算。
+ */
+const popoverStyle = ref<Record<string, string>>({})
+
+function openDetail(e: MouseEvent) {
+  if (!detail.value) return // 只有耗时、没有 usage 的消息没有明细可弹
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  detailUp.value = window.innerHeight - rect.bottom < POPOVER_EST_HEIGHT
+  let left = rect.left
+  if (left + POPOVER_WIDTH > window.innerWidth - 12) {
+    left = Math.max(12, window.innerWidth - POPOVER_WIDTH - 12)
+  }
+  popoverStyle.value = detailUp.value
+    ? { left: `${left}px`, bottom: `${window.innerHeight - rect.top + 6}px`, top: 'auto' }
+    : { left: `${left}px`, top: `${rect.bottom + 6}px`, bottom: 'auto' }
+  showDetail.value = true
+  // 滚动时徽章走了、浮层还钉在视口，对不齐 —— 关比错位好
+  window.addEventListener('scroll', closeDetail, true)
+}
+
+function closeDetail() {
+  showDetail.value = false
+  window.removeEventListener('scroll', closeDetail, true)
+}
 
 function fileName(source: string): string {
   const parts = source.split('/')
@@ -217,57 +262,68 @@ async function loadChunk(id: string): Promise<void> {
             </div>
           </template>
 
-          <!-- assistant 每轮详情：tokens + 耗时徽章，hover 明细浮层 -->
+          <!-- assistant 每轮详情：tokens + 耗时徽章。
+               明细浮层只在 hover「Tokens 徽章」时出现（不是整行都触发）：
+               弹窗放在徽章内部，hover 域 = 徽章 + 弹窗（间隙有桥接伪元素），
+               鼠标从徽章滑进弹窗不会中断；「耗时」徽章只是展示，不弹明细。 -->
           <div
             v-if="message.role === 'assistant' && !message.streaming && (message.usage || message.elapsed_ms)"
             class="turn-meta"
-            @mouseenter="showDetail = true"
-            @mouseleave="showDetail = false"
           >
-            <span class="meta-badge" @click="showDetail = !showDetail">
+            <div
+              v-if="message.usage"
+              class="meta-badge token-badge"
+              @mouseenter="openDetail"
+              @mouseleave="closeDetail"
+            >
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" /><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" /></svg>
-              Tokens: {{ (message.usage ? message.usage.input_tokens + message.usage.output_tokens : 0) }}
+              Tokens: {{ message.usage.input_tokens + message.usage.output_tokens }}
               <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
-            </span>
+
+              <!-- CodeBuddy 式明细浮层：默认朝下；视口下方放不下时朝上（.up） -->
+              <div
+                v-if="showDetail && detail"
+                class="usage-popover"
+                :class="{ up: detailUp }"
+                :style="popoverStyle"
+              >
+                <div class="pop-head">
+                  <span>Token 消耗明细</span>
+                  <span class="pop-total">总计 {{ detail.total.toLocaleString() }}</span>
+                </div>
+                <div class="pop-row">
+                  <span class="dot" style="background: #4c8dff" /> 输入
+                  <span class="pop-val">{{ detail.input.toLocaleString() }}</span>
+                </div>
+                <div class="pop-row sub">
+                  <span class="dot" style="background: #34c77b" /> 缓存命中
+                  <span class="pop-val">{{ detail.hit.toLocaleString() }}</span>
+                </div>
+                <div class="pop-row sub">
+                  <span class="dot" style="background: #f0655a" /> 缓存未命中
+                  <span class="pop-val">{{ detail.miss.toLocaleString() }}</span>
+                </div>
+                <div class="pop-row">
+                  <span class="dot" style="background: #9d6bf0" /> 输出
+                  <span class="pop-val">{{ detail.output.toLocaleString() }}</span>
+                </div>
+                <div class="pop-rate">
+                  <div class="rate-head">⚡ 缓存命中率 <b>{{ detail.rate.toFixed(1) }}%</b></div>
+                  <div class="rate-bar">
+                    <i class="seg hit" :style="{ width: detail.hitPct + '%' }" />
+                    <i class="seg miss" :style="{ width: 100 - detail.hitPct + '%' }" />
+                  </div>
+                  <div class="rate-legend">
+                    <span><i class="dot" style="background: #34c77b" />命中</span>
+                    <span><i class="dot" style="background: #f0655a" />未命中</span>
+                  </div>
+                </div>
+              </div>
+            </div>
             <span v-if="message.elapsed_ms" class="meta-badge">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
               耗时: {{ (message.elapsed_ms / 1000).toFixed(1) }}s
             </span>
-
-            <!-- CodeBuddy 式明细浮层 -->
-            <div v-if="showDetail && detail" class="usage-popover">
-              <div class="pop-head">
-                <span>Token 消耗明细</span>
-                <span class="pop-total">总计 {{ detail.total.toLocaleString() }}</span>
-              </div>
-              <div class="pop-row">
-                <span class="dot" style="background: #4c8dff" /> 输入
-                <span class="pop-val">{{ detail.input.toLocaleString() }}</span>
-              </div>
-              <div class="pop-row sub">
-                <span class="dot" style="background: #34c77b" /> 缓存命中
-                <span class="pop-val">{{ detail.hit.toLocaleString() }}</span>
-              </div>
-              <div class="pop-row sub">
-                <span class="dot" style="background: #f0655a" /> 缓存未命中
-                <span class="pop-val">{{ detail.miss.toLocaleString() }}</span>
-              </div>
-              <div class="pop-row">
-                <span class="dot" style="background: #9d6bf0" /> 输出
-                <span class="pop-val">{{ detail.output.toLocaleString() }}</span>
-              </div>
-              <div class="pop-rate">
-                <div class="rate-head">⚡ 缓存命中率 <b>{{ detail.rate.toFixed(1) }}%</b></div>
-                <div class="rate-bar">
-                  <i class="seg hit" :style="{ width: detail.hitPct + '%' }" />
-                  <i class="seg miss" :style="{ width: 100 - detail.hitPct + '%' }" />
-                </div>
-                <div class="rate-legend">
-                  <span><i class="dot" style="background: #34c77b" />命中</span>
-                  <span><i class="dot" style="background: #f0655a" />未命中</span>
-                </div>
-              </div>
-            </div>
           </div>
         </template>
       </div>
@@ -442,10 +498,13 @@ async function loadChunk(id: string): Promise<void> {
   padding: 1px 8px;
   cursor: default;
 }
+/* Tokens 徽章是明细浮层的定位锚点与 hover 宿主 */
+.token-badge {
+  position: relative;
+}
 .usage-popover {
-  position: absolute;
-  left: 0;
-  top: calc(100% + 6px);
+  /* 视口坐标由 JS 写入（top/left 或 bottom/left），不走文档流 */
+  position: fixed;
   z-index: 40;
   width: 264px;
   background: var(--bg-content, #fff);
@@ -456,6 +515,22 @@ async function loadChunk(id: string): Promise<void> {
   font-size: 12.5px;
   color: var(--text-1);
   cursor: default;
+  text-align: left;
+  font-weight: 400;
+}
+/* 桥接徽章与弹窗之间的 6px 间隙：没有它，鼠标穿过间隙的那一下
+   会触发徽章的 mouseleave，弹窗一闪就关，永远滑不进弹窗 */
+.usage-popover::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -8px;
+  height: 8px;
+}
+.usage-popover.up::before {
+  top: auto;
+  bottom: -8px;
 }
 .pop-head {
   display: flex;
