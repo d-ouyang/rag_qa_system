@@ -21,11 +21,32 @@ import logging
 import threading
 from typing import Any
 
+from langchain_core.embeddings import Embeddings
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+class _L2NormalizedEmbeddings:
+    """把任意 Embeddings 的输出收成单位向量。Chroma 的分数换算依赖这一点。"""
+
+    def __init__(self, inner: Embeddings) -> None:
+        self.inner = inner
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [_l2_normalize(v) for v in self.inner.embed_documents(texts)]
+
+    def embed_query(self, text: str) -> list[float]:
+        return _l2_normalize(self.inner.embed_query(text))
+
+
+def _l2_normalize(vector: list[float]) -> list[float]:
+    norm = sum(float(x) * float(x) for x in vector) ** 0.5
+    if norm == 0:
+        return [float(x) for x in vector]
+    return [float(x) / norm for x in vector]
 
 
 class EmbeddingModel:
@@ -50,9 +71,10 @@ class EmbeddingModel:
 
     # ---- 实例属性（真正的赋值发生在 _initialize 中，这里给默认值）----
     # 给默认值有两个好处：① 类型检查器能确认属性已初始化；② 便于判断「是否已加载完成」
-    model: HuggingFaceEmbeddings | None = None   # 真正的嵌入模型对象
-    loaded_from: str = ""                        # 加载来源："local" 或 "remote"
-    model_path: str = ""                         # 实际用于加载的路径 / 仓库名
+    model: Embeddings | None = None   # 真正的嵌入模型对象
+    loaded_from: str = ""             # 加载来源：siliconflow / local / remote
+    model_path: str = ""              # 实际用于加载的路径 / 仓库名
+    _dimension: int | None = None
 
     def __new__(cls) -> "EmbeddingModel":
         """创建（或复用）单例。"""
@@ -70,22 +92,55 @@ class EmbeddingModel:
         return cls._instance
 
     def _initialize(self) -> None:
-        """执行真正的加载流程：先本地，本地不可用再走远程。"""
-
-        # settings.EMBEDDING_MODEL_NAME 既可能是本地目录名，也可能是 HF 仓库名
-        model_name = settings.EMBEDDING_MODEL_NAME
-        # 本地目录名：把仓库名里的 / 换成 _（如 Qwen/Qwen3-8B → Qwen_Qwen3-8B），
-        # 否则 "/" 会被当成两级目录，拼出来的路径就错了
-        local_dir = settings.MODELS_DIR / model_name.replace("/", "_")
-        # 远程仓库名：查表得到；查不到就原样交给 HuggingFace（可能失败，但日志里能看清用了什么名字）
-        remote_name = self.HF_REPO_MAP.get(model_name, model_name)
-
-        # 重置为「未加载」状态：加载成功后再逐项赋值
+        """执行真正的加载流程。运行路径走硅基流动；local 只留给回归测试。"""
         self.model = None
         self.loaded_from = ""
         self.model_path = ""
+        self._dimension = None
 
-        # ---------- 第一级：本地目录 ----------
+        if settings.EMBEDDING_BACKEND == "siliconflow":
+            self._init_siliconflow()
+            return
+
+        self._init_local()
+
+    def _init_siliconflow(self) -> None:
+        """
+        用硅基流动的 OpenAI 兼容嵌入接口，进程内不加载权重。
+
+        外包一层归一化：bge 系列通常已经是单位向量，再除一次范数无害；
+        若接口没归一化，检索分数换算会静默变差（见 vector_store._check_normalization）。
+        tiktoken 只认识 OpenAI 自家模型名，必须关掉，否则会按错误的词表切中文。
+        """
+        if not settings.SILICONFLOW_API_KEY:
+            raise RuntimeError("EMBEDDING_BACKEND=siliconflow 但未配置 SILICONFLOW_API_KEY")
+
+        from langchain_openai import OpenAIEmbeddings
+
+        model_name = settings.SILICONFLOW_EMBEDDING_MODEL
+        inner = OpenAIEmbeddings(
+            model=model_name,
+            openai_api_key=settings.SILICONFLOW_API_KEY,
+            openai_api_base=settings.SILICONFLOW_BASE_URL,
+            tiktoken_enabled=False,
+            check_embedding_ctx_length=False,
+        )
+        self.model = _L2NormalizedEmbeddings(inner)
+        self.loaded_from = "siliconflow"
+        self.model_path = model_name
+        self._dimension = len(self.model.embed_query("维度探测"))
+        logger.info(
+            "嵌入模型就绪 | 来源=siliconflow | 模型=%s | 维度=%s",
+            model_name,
+            self._dimension,
+        )
+
+    def _init_local(self) -> None:
+        """本地 HuggingFace 权重。运行路径不走这里，make test 会把 EMBEDDING_BACKEND 改回 local。"""
+        model_name = settings.EMBEDDING_MODEL_NAME
+        local_dir = settings.MODELS_DIR / model_name.replace("/", "_")
+        remote_name = self.HF_REPO_MAP.get(model_name, model_name)
+
         if local_dir.is_dir():
             try:
                 logger.info("尝试从本地加载嵌入模型：%s", local_dir)
@@ -93,14 +148,11 @@ class EmbeddingModel:
                 self.loaded_from = "local"
                 self.model_path = str(local_dir)
             except Exception as e:
-                # 本地目录可能只有残缺文件（比如下载中断），
-                # 这时不应该直接失败，而要给远程一次机会
                 logger.warning("本地模型加载失败，将回退到远程：%s | 错误：%s", local_dir, e)
                 self.model = None
         else:
             logger.info("本地未找到模型目录（%s），直接走远程加载", local_dir)
 
-        # ---------- 第二级：HuggingFace 远程 ----------
         if self.model is None:
             logger.info("尝试从 HuggingFace 加载嵌入模型：%s（首次会下载并缓存，可能较慢）", remote_name)
             try:
@@ -113,7 +165,6 @@ class EmbeddingModel:
                     f"嵌入模型加载失败：本地目录「{local_dir}」不可用，远程仓库「{remote_name}」也不可用（检查网络或本地模型文件）"
                 ) from e
 
-        # 加载成功后记录一行「事实日志」，后面排查问题（比如怀疑模型没生效）时直接看这行
         logger.info(
             "嵌入模型就绪 | 来源=%s | 路径=%s | 设备=%s | 维度=%s",
             self.loaded_from,
@@ -141,28 +192,24 @@ class EmbeddingModel:
             },
         )
 
-    def get_model(self) -> HuggingFaceEmbeddings:
+    def get_model(self) -> Embeddings:
         """返回 LangChain Embeddings 实例（可直接作为 Chroma / FAISS 的 embedding_function）。"""
         if self.model is None:
-            # 正常路径不会走到这里（_initialize 加载失败会直接抛异常），兜底避免返回 None
             raise RuntimeError("嵌入模型尚未加载完成")
         return self.model
 
     def get_dimension(self) -> int | None:
-        """
-        返回向量维度（bge-small-zh 为 512）。
-
-        取不到时返回 None 而不是抛异常：维度只是展示/校验用的元信息，
-        不应该因为它拿不到就让整个向量化流程失败。
-        """
+        """返回向量维度。硅基流动在初始化时已经探测过；本地模型问 SentenceTransformer。"""
+        if self._dimension is not None:
+            return self._dimension
         if self.model is None:
             return None
-        # langchain_huggingface 把 SentenceTransformer 存在 _client（不同版本可能是 client）
         client = getattr(self.model, "_client", None) or getattr(self.model, "client", None)
         if client is None:
             return None
         try:
-            return int(client.get_sentence_embedding_dimension())
+            self._dimension = int(client.get_sentence_embedding_dimension())
+            return self._dimension
         except Exception:
             logger.debug("无法获取向量维度（不影响主流程）", exc_info=True)
             return None
@@ -171,7 +218,7 @@ class EmbeddingModel:
 # --------------------------------------------------------------------------- #
 # 模块级便捷入口
 # --------------------------------------------------------------------------- #
-def get_embedding_model() -> HuggingFaceEmbeddings:
+def get_embedding_model() -> Embeddings:
     """获取全局唯一的嵌入模型实例（业务代码统一从这里拿）。"""
     return EmbeddingModel().get_model()
 
@@ -180,11 +227,12 @@ def get_embedding_model_info() -> dict[str, Any]:
     """返回嵌入模型的加载信息，供 /system/config、知识库状态页之类的展示接口使用。"""
     instance = EmbeddingModel()
     return {
-        "model_name": settings.EMBEDDING_MODEL_NAME,
-        "loaded_from": instance.loaded_from,       # local / remote
-        "model_path": instance.model_path,         # 实际加载路径
-        "device": settings.EMBEDDING_DEVICE,
+        "model_name": instance.model_path or settings.EMBEDDING_MODEL_NAME,
+        "loaded_from": instance.loaded_from,
+        "model_path": instance.model_path,
+        "device": "api" if settings.EMBEDDING_BACKEND == "siliconflow" else settings.EMBEDDING_DEVICE,
         "dimension": instance.get_dimension(),
         "normalize_embeddings": True,
         "batch_size": EmbeddingModel.ENCODE_BATCH_SIZE,
+        "backend": settings.EMBEDDING_BACKEND,
     }

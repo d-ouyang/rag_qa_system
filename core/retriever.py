@@ -39,9 +39,11 @@
    → 用 id() 建立「对象 → 分数」的映射来反查。
 """
 
+import json
 import logging
 import threading
 import time
+import urllib.request
 from typing import Any, Sequence
 
 from langchain.retrievers import ContextualCompressionRetriever
@@ -242,6 +244,96 @@ class CrossEncoderReranker(BaseDocumentCompressor):
         return results
 
 
+class SiliconFlowReranker(BaseDocumentCompressor):
+    """
+    硅基流动 /v1/rerank。不在本机加载 CrossEncoder。
+
+    返回的 relevance_score 是 0~1、越大越相关，和本地 bge-reranker 的方向一致，
+    所以 RERANK_SCORE_THRESHOLD 不用另写一套。
+    """
+
+    model_path: str = ""
+    top_k: int = 5
+    score_threshold: float | None = None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def rerank(
+        self,
+        query: str,
+        documents: Sequence[Document],
+        top_k: int | None = None,
+    ) -> list[tuple[Document, float]] | None:
+        if not documents:
+            return []
+        if not settings.SILICONFLOW_API_KEY:
+            logger.error("重排走硅基流动但未配置 SILICONFLOW_API_KEY，降级为原顺序")
+            return None
+
+        keep = int(top_k or self.top_k)
+        start = time.perf_counter()
+        try:
+            url = settings.SILICONFLOW_BASE_URL.rstrip("/") + "/rerank"
+            payload = json.dumps({
+                "model": self.model_path or settings.SILICONFLOW_RERANK_MODEL,
+                "query": query,
+                "documents": [doc.page_content for doc in documents],
+                "top_n": len(documents),
+                "return_documents": False,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {settings.SILICONFLOW_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(req, timeout=settings.LLM_TIMEOUT) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+
+            scored: list[tuple[Document, float]] = []
+            for item in body.get("results") or []:
+                index = int(item["index"])
+                score = float(item.get("relevance_score", 0.0))
+                if 0 <= index < len(documents):
+                    scored.append((documents[index], score))
+            scored.sort(key=lambda item: item[1], reverse=True)
+            if self.score_threshold is not None:
+                scored = [item for item in scored if item[1] >= self.score_threshold]
+            selected = scored[:keep]
+            logger.info(
+                "远程重排完成 | 模型=%s 候选=%d 保留=%d 耗时=%.2fs",
+                self.model_path,
+                len(documents),
+                len(selected),
+                time.perf_counter() - start,
+            )
+            return selected
+        except Exception as e:
+            logger.error("远程重排失败，降级为原顺序：%s", e, exc_info=True)
+            return None
+
+    def compress_documents(
+        self,
+        documents: Sequence[Document],
+        query: str,
+        callbacks: Any = None,
+    ) -> Sequence[Document]:
+        if not documents:
+            return []
+        reranked = self.rerank(query, documents, top_k=self.top_k)
+        if reranked is None:
+            return list(documents[: self.top_k])
+        results: list[Document] = []
+        for doc, score in reranked:
+            metadata = dict(doc.metadata)
+            metadata["rerank_score"] = round(score, 6)
+            results.append(Document(page_content=doc.page_content, metadata=metadata))
+        return results
+
+
 class RAGRetriever:
     """
     RAG 检索器 —— 串联「向量召回」与「可选重排」。
@@ -277,7 +369,7 @@ class RAGRetriever:
         )
 
         enable: bool = settings.USE_RERANKER if use_reranker is None else use_reranker
-        self.reranker: CrossEncoderReranker | None = (
+        self.reranker: CrossEncoderReranker | SiliconFlowReranker | None = (
             self._build_reranker(reranker_model) if enable else None
         )
         if not enable:
@@ -294,28 +386,31 @@ class RAGRetriever:
     # ------------------------------------------------------------------ #
     # 初始化
     # ------------------------------------------------------------------ #
-    def _build_reranker(self, reranker_model: str | None) -> CrossEncoderReranker | None:
+    def _build_reranker(
+        self, reranker_model: str | None
+    ) -> CrossEncoderReranker | SiliconFlowReranker | None:
         """
-        构建重排序器。
-
-        这里**故意不在初始化时加载模型**（CrossEncoderReranker 内部延迟加载），
-        所以「配置了某个模型路径」与「模型真能加载」是两件事：
-        路径解析失败在这里记错并返回 None（自动降级为不重排），
-        模型加载失败在首次检索时处理，同样降级。
+        构建重排序器。siliconflow 不加载本地权重；local 仍延迟加载 CrossEncoder。
         """
+        if settings.RERANK_BACKEND == "siliconflow":
+            model_name = settings.SILICONFLOW_RERANK_MODEL
+            logger.info("重排走硅基流动 | 模型=%s", model_name)
+            return SiliconFlowReranker(
+                model_path=model_name,
+                top_k=self.top_k,
+                score_threshold=self.score_threshold,
+            )
         try:
             model_path, source = resolve_reranker_model_path(reranker_model)
         except ValueError as e:
             logger.error("重排序器初始化失败，将降级为纯向量检索：%s", e)
             return None
-
-        reranker = CrossEncoderReranker(
+        logger.info("重排走本地 CrossEncoder | 来源=%s 路径=%s", source, model_path)
+        return CrossEncoderReranker(
             model_path=model_path,
             top_k=self.top_k,
             score_threshold=self.score_threshold,
         )
-        logger.info("重排序器已就绪 | 来源=%s 路径=%s top_k=%d", source, model_path, self.top_k)
-        return reranker
 
     # ------------------------------------------------------------------ #
     # 核心检索

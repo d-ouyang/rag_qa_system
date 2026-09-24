@@ -50,7 +50,7 @@ import chromadb
 from langchain_community.vectorstores import FAISS, Chroma
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.embeddings import Embeddings
 
 from config.settings import settings
 from core.embedding import get_embedding_model, get_embedding_model_info
@@ -182,7 +182,7 @@ class VectorStoreManager:
         self.chroma_port: int = chroma_port if chroma_port is not None else settings.CHROMA_PORT
 
         # 嵌入模型是单例，这里拿到的是同一个对象，不会重复加载
-        self.embedding_model: HuggingFaceEmbeddings = get_embedding_model()
+        self.embedding_model: Embeddings = get_embedding_model()
 
         # 底层向量库对象：Chroma 实例 / FAISS 实例。
         # 注意：FAISS 在「索引文件还不存在」时保持 None，表示「空库」，

@@ -21,7 +21,7 @@
  * · `chunksStatus` 记下「片段是哪一刻取的」：若之后状态变了，抽屉里给一条
  *   「状态已更新，片段可能已变化 / 重新加载」，而不是让用户对着空列表困惑。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { getDocumentChunks } from '@/api/documents'
 import { useDocumentStore } from '@/stores/documents'
 import { useUiStore } from '@/stores/ui'
@@ -187,6 +187,20 @@ const chainWarning = computed(() => {
   return ''
 })
 
+const PAGE_SIZE = 10
+const page = ref(1)
+const pageCount = computed(() => Math.max(1, Math.ceil(docs.documents.length / PAGE_SIZE)))
+const pagedDocs = computed(() => {
+  const start = (page.value - 1) * PAGE_SIZE
+  return docs.documents.slice(start, start + PAGE_SIZE)
+})
+watch(
+  () => docs.documents.length,
+  () => {
+    if (page.value > pageCount.value) page.value = pageCount.value
+  },
+)
+
 const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
 </script>
 
@@ -281,7 +295,7 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
       </div>
       <div v-if="docs.loading && docs.documents.length === 0" class="empty-state">加载中…</div>
       <div v-else-if="docs.documents.length === 0" class="empty-state">知识库为空，上传第一份文档开始使用</div>
-      <template v-for="d in docs.documents" :key="d.doc_id">
+      <template v-for="d in pagedDocs" :key="d.doc_id">
         <div class="table-row">
           <span class="col-name" :title="d.file_name">
             <span class="file-dot" :data-type="fileExt(d.file_name)" />{{ d.file_name }}
@@ -306,6 +320,11 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
           <span v-if="d.attempt_count > 1" class="fail-attempt">已尝试 {{ d.attempt_count }} 次</span>
         </div>
       </template>
+      <div v-if="docs.documents.length > PAGE_SIZE" class="pager">
+        <span>共 {{ docs.documents.length }} 份 · 第 {{ page }} / {{ pageCount }} 页</span>
+        <button class="op-btn" :disabled="page <= 1" @click="page -= 1">上一页</button>
+        <button class="op-btn" :disabled="page >= pageCount" @click="page += 1">下一页</button>
+      </div>
     </div>
 
     <!-- 片段详情抽屉：展示文档被切成的每个片段的全文（模型实际看到的内容） -->
@@ -352,6 +371,7 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
 <style scoped>
 .knowledge-view {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 20px 28px 32px;
   display: flex;
@@ -564,6 +584,16 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
 /* ---------- 文档表格 ---------- */
 .doc-table {
   overflow: hidden;
+}
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-3);
 }
 .table-head,
 .table-row {

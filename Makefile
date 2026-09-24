@@ -137,16 +137,16 @@ memory:
 	@$(PY) -c "import json;from core.memory_manager import get_memory_manager;print(json.dumps(get_memory_manager().memory_report(), ensure_ascii=False, indent=2))"
 
 test:
-	$(PY) tests/test_module1_config.py
-	$(PY) tests/test_module2_document_loader.py
-	$(PY) tests/test_module3_vectorstore.py
-	$(PY) tests/test_module4_llm_and_retriever.py
-	$(PY) tests/test_module5_rag_chain_api.py
-	$(PY) tests/test_module6_session_store.py
-	$(PY) tests/test_module7_redis_over_tcp.py
-	$(PY) tests/test_module8_mysql_session_store.py
-	$(PY) tests/test_module9_async_pipeline.py
-	$(PY) tests/test_module10_chunk_refs.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module1_config.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module2_document_loader.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module3_vectorstore.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module4_llm_and_retriever.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module5_rag_chain_api.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module6_session_store.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module7_redis_over_tcp.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module8_mysql_session_store.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module9_async_pipeline.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module10_chunk_refs.py
 
 # ---------- 异步解析 Worker（P0-3a）----------
 # 池、并发、超时、投递语义**全部在 worker/app.py 里按 settings 配置**，

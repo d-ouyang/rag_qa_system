@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     CHROMA_PORT : int = 8001
     EMBEDDING_MODEL_NAME : str = "bge_small_zh"
     EMBEDDING_DEVICE : str = "cpu"      # 可以配置cuda
+    # 嵌入从哪来（v2.0.0-p1.6）：
+    #   siliconflow = 调硅基流动的嵌入接口，进程不加载本地权重（运行路径用这个）
+    #   local       = 读 models/ 目录里的 HuggingFace 权重（仅 make test 回归用）
+    # 切换嵌入模型会改变向量维度，已有切片必须重灌，不能混在同一个 collection 里。
+    EMBEDDING_BACKEND : Literal["siliconflow", "local"] = "siliconflow"
+    SILICONFLOW_EMBEDDING_MODEL : str = "BAAI/bge-large-zh-v1.5"
     CHUNK_SIZE : int = 500
     CHUNK_OVERLAP : int = 50
 
@@ -35,6 +41,10 @@ class Settings(BaseSettings):
     SEARCH_TOP_K : int = 5
     USE_RERANKER : bool = True
     RERANKER_MODEL_NAME : str = "bge_reranker_base"
+    # 重排从哪来。siliconflow = POST /rerank，不加载本地 CrossEncoder（约 1.1GB）。
+    # local 只留给 make test。分数仍是「越大越相关」，阈值沿用 RERANK_SCORE_THRESHOLD。
+    RERANK_BACKEND : Literal["siliconflow", "local"] = "siliconflow"
+    SILICONFLOW_RERANK_MODEL : str = "BAAI/bge-reranker-v2-m3"
     # 重排前的候选池倍数：先按 SEARCH_TOP_K × N 从向量库召回候选，再精排到 SEARCH_TOP_K。
     # 若只召回 TOP_K 就直接重排，等于「把同样的 K 条换个顺序」，召回率没有任何提升。
     RERANK_CANDIDATE_MULTIPLIER : int = 4
@@ -211,10 +221,8 @@ class Settings(BaseSettings):
     # （实测单机应答 < 100ms）。worker 挤在一台 4C4G 上，1 秒是合理的分界。
     QUEUE_WORKER_PING_TIMEOUT_SECONDS : float = 1.0
 
-    # 意图识别配置（core/intent_router.py 消费）
-    # 分类任务只需输出一个词，用本地小模型足够且零成本；
-    # 模型加载/调用失败时自动降级为本地规则映射，不影响主链路。
-    INTENT_LLM_PROVIDER : Literal["openai", "siliconflow", "ollama"] = "ollama"
+    # 意图识别。默认走硅基流动，失败再降级成本地规则，不依赖本机 Ollama。
+    INTENT_LLM_PROVIDER : Literal["openai", "siliconflow", "ollama"] = "siliconflow"
     # 意图识别用的小模型名；留空则回退用 OLLAMA_MODEL_NAME
     INTENT_LLM_MODEL_NAME : str = ""
     INTENT_LLM_TIMEOUT : int = 10        # 分类必须快，超时直接走规则兜底

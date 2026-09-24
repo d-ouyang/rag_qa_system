@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.5c</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.6</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -257,15 +257,15 @@
       <div class="stat"><div class="k">后端自动化测试</div><div class="v">826<span class="u">项</span></div></div>
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
-      <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">6<span class="u">/ 10</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">12<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">7<span class="u">/ 10</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">13<span class="u">个</span></div></div>
     </div>
   </section>
 
   <section>
     <div class="prog-head">
       <h2>2.0.0 迭代进度</h2>
-      <span class="sub"><strong>P0 四项已全部完成</strong>（数据落库 · 鉴权 · 异步解析 · 引用可反查可点击），阶段标记为 tag <code>v2.0.0-p0.4</code>。<strong>P1-5 已完成</strong>（5a 中间件 + 5b 应用，2026-09-24 全栈联调通过），阶段标记为 tag <code>v2.0.0-p1.5</code>。</span>
+      <span class="sub"><strong>P0 四项已全部完成</strong>（数据落库 · 鉴权 · 异步解析 · 引用可反查可点击），阶段标记为 tag <code>v2.0.0-p0.4</code>。<strong>P1-5 已完成</strong>（5a 中间件 + 5b 应用，2026-09-24 全栈联调通过），阶段标记为 tag <code>v2.0.0-p1.5</code>。<strong>P1-6 已完成</strong>（嵌入 / 重排 / 对话 / 意图走硅基流动），标记为 tag <code>v2.0.0-p1.6</code>。</span>
     </div>
     <div class="bars">
       <div class="bar-row">
@@ -278,9 +278,9 @@
       <div class="bar-row">
         <div class="lbl">P1 容器化与部署 <em>容器 · 模型 · TLS</em></div>
         <div class="track" style="--seg:#58a6ff">
-          <div class="seg done"></div><div class="seg"></div><div class="seg"></div>
+          <div class="seg done"></div><div class="seg done"></div><div class="seg"></div>
         </div>
-        <div class="num">1 / 3</div>
+        <div class="num">2 / 3</div>
       </div>
       <div class="bar-row">
         <div class="lbl">P2 生产化打磨 <em>配置 · 观测 · 备份</em></div>
@@ -306,8 +306,8 @@
   <footer>
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
-      2.0.0 是进行中的大版本——模型目录、TLS、配置治理、观测备份都还没有做完，
-      所以「当前版本 2.0.0-p1.5c」不等于「可以上线」。
+      2.0.0 是进行中的大版本——TLS、配置治理、观测备份都还没有做完，
+      所以「当前版本 2.0.0-p1.6」不等于「可以上线」。
     </p>
     <dl>
       <div><dt>docs/RELEASES.md</dt><dd>对外变更叙事（本页内容来源）</dd></div>
@@ -327,6 +327,27 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p1.6",
+    date: "2026-09-24",
+    accent: "#58a6ff",
+    tagline: "模型不再装在本机，知识库列表能翻页",
+    problem: "嵌入和重排原先要在本机放一份模型文件，换机器就要准备目录、占磁盘、占内存。知识库文档一多，列表还会被裁在视口外面，滚不动。",
+    sections: [
+      { type: "improved", items: [
+        { star: true, h: "嵌入、重排、对话、意图都走硅基流动", t: "运行路径不再加载本机模型。嵌入用 BAAI/bge-large-zh-v1.5（1024 维），重排用 BAAI/bge-reranker-v2-m3。" },
+        { star: true, h: "知识库已按新模型重灌", t: "维度从 512 变成 1024，旧向量不能混用。24 篇文档、106 个切片已重新写入。" },
+        { h: "知识库列表每页 10 条，页面本身也能滚", t: "文档变多之后不会再被裁在视口外面。" }
+      ]},
+      { type: "verified", items: [
+        { star: true, h: "远程嵌入与问答已打通", t: "探测向量维度 1024；提问「员工入职要填什么表」走知识库问答，返回 5 条引用。" }
+      ]},
+      { type: "boundary", items: [
+        { h: "解析和问答会多一次公网请求", t: "会计入硅基流动用量。回归测试仍使用本机模型，避免测试去打付费接口。" },
+        { h: "旧对话里的引用编号对不上", t: "重灌之后文档编号变了，点旧引用会提示已随文档删除。正文还在知识库里。" }
+      ]}
+    ]
+  },
   {
     version: "v2.0.0-p1.5c",
     date: "2026-09-24",

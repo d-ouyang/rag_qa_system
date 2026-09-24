@@ -104,7 +104,10 @@ export const useDocumentStore = defineStore('documents', () => {
   async function fetchList(silent: boolean): Promise<boolean> {
     if (!silent) loading.value = true
     try {
-      const [list, s] = await Promise.all([docsApi.listDocuments(), docsApi.getVectorStats()])
+      const [list, s] = await Promise.all([
+        docsApi.listDocuments({ limit: 1000 }),
+        docsApi.getVectorStats(),
+      ])
       announceTransitions(list.documents)
       documents.value = list.documents
       counts.value = list.counts
