@@ -286,6 +286,8 @@ export async function postNdjson(
       }
     }
   }
+  // 结束时再 decode 一次（不带 stream），把解码器里残留的多字节吐出来
+  buffer += decoder.decode()
   const tail = buffer.trim()
   if (tail) {
     try {

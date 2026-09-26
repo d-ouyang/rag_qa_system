@@ -529,13 +529,24 @@ class RAGChain:
         AIMessageChunk 拍扁成字符串，usage_metadata（stream_usage=True 末帧携带）
         就丢了。直接用 llm.stream(PromptValue)，文本与用量都要。
         """
-        for chunk in llm.stream(prompt.invoke(variables)):
-            text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
-            if text:
-                yield text
-            captured = _extract_usage(chunk)
-            if captured["input_tokens"] or captured["output_tokens"]:
-                usage_box.update(captured)
+        chunks = llm.stream(prompt.invoke(variables))
+        try:
+            for chunk in chunks:
+                text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
+                if text:
+                    yield text
+                captured = _extract_usage(chunk)
+                if captured["input_tokens"] or captured["output_tokens"]:
+                    usage_box.update(captured)
+        except GeneratorExit:
+            # 客户端断开：停在当前 yield，关掉上游流，避免继续扣 token
+            closer = getattr(chunks, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    logger.warning("关闭模型流失败", exc_info=True)
+            raise
 
     # ------------------------------------------------------------------ #
     # 溯源信息整理
@@ -803,6 +814,7 @@ class RAGChain:
 
         记忆在流结束后写回：必须等答案拼完整再写，
         半途写入会把「残缺答案」存进历史，污染下一轮。
+        客户端断开时生成器在 yield 处退出，不写记忆、不再往下拉 token。
         """
         if not question or not question.strip():
             raise ValueError("问题不能为空")

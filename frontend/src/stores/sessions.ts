@@ -13,6 +13,12 @@ import { computed, ref } from 'vue'
 import * as qaApi from '@/api/qa'
 import type { ChatMessage, SessionUsage, SourceItem } from '@/types'
 
+function isAbortError(e: unknown): boolean {
+  return e instanceof DOMException
+    ? e.name === 'AbortError'
+    : e instanceof Error && e.name === 'AbortError'
+}
+
 export interface LocalSession {
   session_id: string
   /** 列表展示标题：自定义标题 > 首条用户消息 > 「新会话」 */
@@ -37,6 +43,8 @@ export const useSessionStore = defineStore('sessions', () => {
   const historyLoading = ref(false)
   /** 最近一次问答的意图/路由结果（轻量，重的每轮详情已随消息存展示） */
   const lastMeta = ref<{ intent?: string; route?: string }>({})
+  /** 当前这一轮流式请求；停止按钮与登出都靠它中断 */
+  let currentAbort: AbortController | null = null
 
   // ---------- getters ----------
   const currentSession = computed(() =>
@@ -158,35 +166,90 @@ export const useSessionStore = defineStore('sessions', () => {
     // 直接改刚 push 的原始对象不会触发依赖通知，界面将停在空气泡
     const assistantMsg = messages.value[messages.value.length - 1]
 
+    const controller = new AbortController()
+    currentAbort = controller
     streaming.value = true
+
+    // 高频小帧先攒着，一帧动画里合并写一次，避免每个 token 都触发重渲染和滚动
+    let pending = ''
+    let rafId = 0
+    const flushPending = () => {
+      if (rafId) {
+        cancelAnimationFrame(rafId)
+        rafId = 0
+      }
+      if (!pending) return
+      assistantMsg.content += pending
+      pending = ''
+    }
+    const enqueueChunk = (piece: string) => {
+      if (controller.signal.aborted) return
+      pending += piece
+      if (!rafId) {
+        rafId = requestAnimationFrame(flushPending)
+      }
+    }
+
     try {
       await qaApi.askStream(text, sessionId, (frame) => {
-        if (frame.type === 'meta') {
+        if (frame.type === 'session') {
+          adoptSessionId(sessionId, frame.session_id)
+        } else if (frame.type === 'meta') {
           assistantMsg.intent = frame.intent
           assistantMsg.sources = (frame.sources ?? []) as SourceItem[]
           lastMeta.value.intent = frame.intent
           lastMeta.value.route = frame.route
         } else if (frame.type === 'chunk') {
-          assistantMsg.content += frame.content
+          enqueueChunk(frame.content)
         } else if (frame.type === 'done') {
+          flushPending()
           // 每轮详情随消息存：尾部徽章 + 明细浮层的数据源，刷新后由历史接口恢复
           assistantMsg.usage = frame.usage
           assistantMsg.elapsed_ms = frame.elapsed_ms
         } else if (frame.type === 'error') {
+          flushPending()
           assistantMsg.content +=
             (assistantMsg.content ? '\n\n' : '') + `⚠️ ${frame.detail}`
         }
-      })
+      }, controller.signal)
     } catch (e) {
-      assistantMsg.content +=
-        (assistantMsg.content ? '\n\n' : '') +
-        `⚠️ 请求失败：${e instanceof Error ? e.message : String(e)}`
+      flushPending()
+      if (isAbortError(e) || controller.signal.aborted) {
+        // 主动停止：留下已生成的文本，不当成请求失败
+        if (!assistantMsg.usage) {
+          assistantMsg.content = assistantMsg.content
+            ? `${assistantMsg.content}\n\n（已停止生成）`
+            : '（已停止生成）'
+        }
+      } else {
+        assistantMsg.content +=
+          (assistantMsg.content ? '\n\n' : '') +
+          `⚠️ 请求失败：${e instanceof Error ? e.message : String(e)}`
+      }
     } finally {
+      flushPending()
       assistantMsg.streaming = false
       streaming.value = false
+      if (currentAbort === controller) currentAbort = null
       // 异步刷新列表（后端此刻已登记该会话）
       void fetchSessions()
     }
+  }
+
+  /** 停止当前这一轮生成（断开 fetch，后端生成器随之退出） */
+  function stopStream() {
+    currentAbort?.abort()
+  }
+
+  /**
+   * 服务端回传的 session_id 与本地不一致时改写本地条目。
+   * 现在前端总会自己生成 id 并带上，两边通常相同；这里是为了消费 session 帧。
+   */
+  function adoptSessionId(localId: string, serverId: string) {
+    if (!serverId || serverId === localId) return
+    const row = sessions.value.find((s) => s.session_id === localId)
+    if (row) row.session_id = serverId
+    if (currentId.value === localId) currentId.value = serverId
   }
 
   /** 编辑历史提问并从该处重新开始对话（已有产物不删除，仅截断后重问） */
@@ -248,6 +311,8 @@ export const useSessionStore = defineStore('sessions', () => {
    * 服务端数据不动（那些属于原用户，换个账号自然看不到）。
    */
   function resetAll() {
+    currentAbort?.abort()
+    currentAbort = null
     sessions.value = []
     currentId.value = null
     messages.value = []
@@ -270,6 +335,7 @@ export const useSessionStore = defineStore('sessions', () => {
     createSession,
     selectSession,
     ask,
+    stopStream,
     editAndResend,
     removeSession,
     renameSession,

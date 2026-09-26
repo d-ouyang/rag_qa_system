@@ -3,7 +3,10 @@
 import { ref } from 'vue'
 
 defineProps<{ disabled?: boolean; streaming?: boolean }>()
-const emit = defineEmits<{ (e: 'send', question: string): void }>()
+const emit = defineEmits<{
+  (e: 'send', question: string): void
+  (e: 'stop'): void
+}>()
 
 const draft = ref('')
 
@@ -32,8 +35,13 @@ function onKeydown(e: KeyboardEvent) {
         :disabled="disabled"
         @keydown="onKeydown"
       />
-      <button class="btn-primary send" :disabled="disabled || !draft.trim()" @click="submit">
-        {{ streaming ? '生成中…' : '发送' }}
+      <button
+        class="btn-primary send"
+        :class="{ stop: streaming }"
+        :disabled="streaming ? false : disabled || !draft.trim()"
+        @click="streaming ? emit('stop') : submit()"
+      >
+        {{ streaming ? '停止' : '发送' }}
       </button>
     </div>
     <p class="input-hint">回答由大模型生成，结合知识库检索结果，仅供参考。</p>
@@ -77,6 +85,12 @@ textarea:disabled {
 .send {
   padding: 6px 18px;
   flex-shrink: 0;
+}
+.send.stop {
+  background: var(--danger);
+}
+.send.stop:hover {
+  background: #c93636;
 }
 .input-hint {
   margin-top: 6px;

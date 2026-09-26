@@ -236,14 +236,26 @@ def ask_stream(request: AskRequest) -> StreamingResponse:
 
     def event_generator() -> Iterator[str]:
         """把 RAGChain.stream 的 dict 事件序列化为 NDJSON 行。"""
+        chain_stream = get_rag_chain().stream(request.question, session_id)
         try:
             # 先把 session_id 作为首帧发出去：客户端需要它做续聊
             yield json.dumps(
                 {"type": "session", "session_id": session_id},
                 ensure_ascii=False,
             ) + "\n"
-            for event in get_rag_chain().stream(request.question, session_id):
+            for event in chain_stream:
                 yield json.dumps(event, ensure_ascii=False) + "\n"
+        except GeneratorExit:
+            # Starlette 在客户端断开时 close() 这个生成器。
+            # 必须把内层流也关掉，否则 LLM 还会继续吐 token。
+            logger.info("客户端断开连接，停止流式生成 | session_id=%s", session_id)
+            closer = getattr(chain_stream, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    logger.warning("关闭问答流失败", exc_info=True)
+            raise
         except ValueError as e:
             yield json.dumps(
                 {"type": "error", "status": 400, "detail": str(e)},

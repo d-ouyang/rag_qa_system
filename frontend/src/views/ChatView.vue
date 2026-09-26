@@ -11,6 +11,10 @@ import { useSessionStore } from '@/stores/sessions'
 
 const sessions = useSessionStore()
 const scrollBox = ref<HTMLElement | null>(null)
+/** 距底部小于这个像素视为「还在看最新内容」，继续跟着流往下滚 */
+const NEAR_BOTTOM_PX = 80
+/** 用户上滑阅读时为 false，避免新帧把视口拽回底部 */
+let stickToBottom = true
 
 const INTENT_LABELS: Record<string, string> = {
   knowledge_query: '知识查询',
@@ -22,18 +26,38 @@ const INTENT_LABELS: Record<string, string> = {
   chitchat: '闲聊',
 }
 
-function scrollToBottom() {
-  const el = scrollBox.value
-  if (el) el.scrollTop = el.scrollHeight
+function distanceFromBottom(el: HTMLElement) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight
 }
 
-// 新消息 / 流式增量都自动滚到底部
+/** 只认用户触发的滚动。程序设置 scrollTop 也会冒出 scroll 事件，不能据此取消跟随。 */
+function onScroll(e: Event) {
+  if (!e.isTrusted) return
+  const el = scrollBox.value
+  if (!el) return
+  stickToBottom = distanceFromBottom(el) <= NEAR_BOTTOM_PX
+}
+
+function scrollToBottom() {
+  const el = scrollBox.value
+  if (!el || !stickToBottom) return
+  el.scrollTop = el.scrollHeight
+}
+
+// 新的一轮提问：回到底部并重新跟随
 watch(
-  () => [
-    sessions.messages.length,
-    sessions.messages[sessions.messages.length - 1]?.content,
-  ],
-  () => void nextTick(scrollToBottom),
+  () => sessions.messages.length,
+  () => {
+    stickToBottom = true
+    void nextTick(scrollToBottom)
+  },
+)
+// 流式增量：只有用户还停在底部时才滚
+watch(
+  () => sessions.messages[sessions.messages.length - 1]?.content,
+  () => {
+    if (stickToBottom) void nextTick(scrollToBottom)
+  },
 )
 onMounted(scrollToBottom)
 </script>
@@ -52,7 +76,7 @@ onMounted(scrollToBottom)
       </div>
     </header>
 
-    <div ref="scrollBox" class="message-scroll">
+    <div ref="scrollBox" class="message-scroll" @scroll="onScroll">
       <div v-if="sessions.historyLoading" class="empty-state">加载会话历史…</div>
       <template v-else-if="sessions.messages.length === 0">
         <div class="welcome">
@@ -66,7 +90,12 @@ onMounted(scrollToBottom)
       </template>
     </div>
 
-    <ChatInput :disabled="sessions.streaming" :streaming="sessions.streaming" @send="(q) => sessions.ask(q)" />
+    <ChatInput
+      :disabled="sessions.streaming"
+      :streaming="sessions.streaming"
+      @send="(q) => sessions.ask(q)"
+      @stop="sessions.stopStream()"
+    />
   </section>
 </template>
 

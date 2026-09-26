@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.6b</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.6c</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -258,7 +258,7 @@
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
       <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">7<span class="u">/ 10</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">14<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">15<span class="u">个</span></div></div>
     </div>
   </section>
 
@@ -307,7 +307,7 @@
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
       2.0.0 是进行中的大版本——TLS、配置治理、观测备份都还没有做完，
-      所以「当前版本 2.0.0-p1.6b」不等于「可以上线」。
+      所以「当前版本 2.0.0-p1.6c」不等于「可以上线」。
     </p>
     <dl>
       <div><dt>docs/RELEASES.md</dt><dd>对外变更叙事（本页内容来源）</dd></div>
@@ -327,6 +327,24 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p1.6c",
+    date: "2026-09-26",
+    accent: "#58a6ff",
+    tagline: "回答生成到一半，可以停下",
+    problem: "回答一旦开始就只能等它写完。往上翻去看引用时，新写出来的字还会把画面拉回底部。",
+    sections: [
+      { type: "improved", items: [
+        { star: true, h: "生成中可以停止", t: "按钮变成「停止」。已经出现的文字留下，并标明已停止。后面不再继续向模型要字。" },
+        { star: true, h: "上滑阅读不再被拽回底部", t: "人还停在最新内容附近时才跟着往下走。滚回底部附近后，跟随恢复。" },
+        { h: "长回答按帧合并显示", t: "小片段攒到同一帧再写入，减少文字不断跳动。" }
+      ]},
+      { type: "boundary", items: [
+        { h: "停掉的那一轮刷新后不在历史里", t: "半截回答不写入会话记录，避免残缺内容影响下一轮。" },
+        { h: "答案仍是纯文本", t: "标题、表格不会排成富文本。" }
+      ]}
+    ]
+  },
   {
     version: "v2.0.0-p1.6b",
     date: "2026-09-24",
