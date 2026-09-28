@@ -53,7 +53,7 @@ async function submit() {
   <div class="login-page">
     <form class="login-card" @submit.prevent="submit">
       <div class="brand">
-        <div class="brand-mark">RAG</div>
+        <img class="brand-mark" src="/gq_logo.jpg" alt="锅圈" />
         <h1>企业级 RAG 智能问答系统</h1>
         <p>请登录后使用</p>
       </div>
@@ -125,14 +125,8 @@ async function submit() {
   height: 48px;
   margin: 0 auto 12px;
   border-radius: 12px;
-  background: var(--primary);
-  color: #fff;
-  font-weight: 700;
-  font-size: 15px;
-  letter-spacing: 0.5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  object-fit: cover;
+  background: #fff;
 }
 
 .brand h1 {

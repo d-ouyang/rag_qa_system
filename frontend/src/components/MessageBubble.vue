@@ -180,7 +180,7 @@ async function loadChunk(id: string): Promise<void> {
 
 <template>
   <div class="bubble-row" :class="message.role">
-    <div v-if="message.role === 'assistant'" class="avatar ai">R</div>
+    <img v-if="message.role === 'assistant'" class="avatar ai" src="/gq_logo.jpg" alt="锅圈" />
     <div
       class="bubble-col"
       :class="message.role"
@@ -361,15 +361,8 @@ async function loadChunk(id: string): Promise<void> {
   height: 30px;
   border-radius: 8px;
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  font-weight: 600;
-  color: #fff;
-}
-.avatar.ai {
-  background: linear-gradient(135deg, #4f6ef7, #7b5bf2);
+  object-fit: cover;
+  background: #fff;
 }
 /* 用户消息不再带「我」头像：气泡列占满剩余宽度，气泡自身右对齐 */
 .bubble-col {

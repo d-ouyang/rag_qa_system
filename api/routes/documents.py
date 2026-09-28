@@ -244,13 +244,18 @@ def _sanitize_display_name(raw_name: str) -> str:
 # 列表（读 MySQL）
 # --------------------------------------------------------------------------- #
 @router.get(
-    "/",
+    "",
     summary="列出知识库文档",
     description=(
         "**数据源是 MySQL**（不是向量库）—— 因为「正在解析 / 解析失败」的文档在向量库里\n"
         "根本没有切片，只看向量库会让人以为「文件没上传成功」。\n"
         "支持按 status / project_id 过滤。"
     ),
+)
+@router.get(
+    "/",
+    include_in_schema=False,
+    summary="列出知识库文档（带末尾斜杠，兼容旧调用）",
 )
 def list_documents(
     status: str | None = Query(None, description="按状态过滤：pending/parsing/success/fail"),

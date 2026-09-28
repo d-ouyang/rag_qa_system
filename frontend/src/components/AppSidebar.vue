@@ -153,7 +153,7 @@ function fmtTime(ts: number | null): string {
   <aside class="sidebar">
     <!-- ① 项目信息 -->
     <div class="project-card" @click="navTo('chat')">
-      <div class="project-logo">R</div>
+      <img class="project-logo" src="/gq_logo.jpg" alt="锅圈" />
       <div class="project-meta">
         <div class="project-name">RAG 智能问答系统</div>
         <div class="project-sub">
@@ -310,13 +310,8 @@ function fmtTime(ts: number | null): string {
   width: 36px;
   height: 36px;
   border-radius: 9px;
-  background: linear-gradient(135deg, #4f6ef7, #7b5bf2);
-  color: #fff;
-  font-weight: 700;
-  font-size: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  object-fit: cover;
+  background: #fff;
   flex-shrink: 0;
 }
 .project-name {

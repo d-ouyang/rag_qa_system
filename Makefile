@@ -18,7 +18,8 @@ GATEWAY_PORT ?= 3000
         infra infra-check infra-logs infra-stop infra-down \
         stack-up stack-ps stack-logs stack-down stack-rebuild \
         db-upgrade db-current db-downgrade db-revision db-sql \
-        worker accept accept-ui reindex reindex-apply accept-p04a accept-ui-p04b
+        worker accept accept-ui reindex reindex-apply accept-p04a accept-ui-p04b \
+        smoke-session
 
 help:
 	@echo "—— 一次性 ——"
@@ -71,6 +72,10 @@ help:
 	@echo "                   一句话都不改数据。这个脚本会重灌整库，所以默认是干跑"
 	@echo "make reindex-apply 真执行（补登记 → 逐文档重灌 → 清掉缺 doc_id 的遗留切片）"
 	@echo "                   前置：先停掉 make worker（并发重灌会让切片翻倍）；需 MySQL + 向量库"
+	@echo ""
+	@echo "—— 会话冒烟 ——"
+	@echo "make smoke-session 用知识库跑一轮真问答，验多轮上下文 / 引用反查 / 落库一致 / 无孤儿。"
+	@echo "                   不打桩，需 make infra + make api；复核已有会话传 SESSION_ID=<id>"
 	@echo ""
 	@echo "—— 单独启动（想在各自终端看日志时用）——"
 	@echo "make api       启动 FastAPI (8000)"
@@ -208,6 +213,18 @@ reindex:
 
 reindex-apply:
 	$(PY) scripts/reindex.py --apply
+
+# ---------- 会话冒烟（真链路，P0-4a 之后）----------
+# 与上面两个「重灌知识库」不同，这里不碰知识库：它**用**知识库跑一轮完整的三段会话，
+# 验四件事 —— 多轮上下文真的带进去了 / 每条引用都能反查到原文 /
+# session 与 chat_message 落库条数对得上 / 没有孤儿切片。
+# 不打桩：真后端（直连 8000，不经网关）+ 真 Chroma + 真 MySQL + 真模型。
+# 问的三个问题都能在 docs/guoquan-kb/ 里查到答案 —— 问不到是知识库的锅，
+# 脚本会变成「假的通过」，所以别随手改问题。
+# ⚠️ 前置：make infra + make api。
+# 复核已有会话（不新增提问）：make smoke-session SESSION_ID=<id>
+smoke-session:
+	$(PY) scripts/smoke_session.py $(if $(SESSION_ID),--session-id $(SESSION_ID),)
 
 ollama:
 	@curl -s http://localhost:11434/api/tags | head -c 200; echo

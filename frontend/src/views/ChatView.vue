@@ -80,7 +80,7 @@ onMounted(scrollToBottom)
       <div v-if="sessions.historyLoading" class="empty-state">加载会话历史…</div>
       <template v-else-if="sessions.messages.length === 0">
         <div class="welcome">
-          <div class="welcome-logo">R</div>
+          <img class="welcome-logo" src="/gq_logo.jpg" alt="锅圈" />
           <h3>企业知识库智能问答</h3>
           <p>基于向量检索 + CrossEncoder 重排 + 多轮对话记忆。试着问我知识库里的内容，或先到「文件传输 · 知识库」上传文档。</p>
         </div>
@@ -160,13 +160,9 @@ onMounted(scrollToBottom)
   height: 56px;
   margin: 0 auto 16px;
   border-radius: 14px;
-  background: linear-gradient(135deg, #4f6ef7, #7b5bf2);
-  color: #fff;
-  font-size: 26px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  object-fit: cover;
+  background: #fff;
+  display: block;
 }
 .welcome h3 {
   color: var(--text-1);
