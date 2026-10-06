@@ -1,0 +1,301 @@
+/**
+ * 管理端样式令牌 —— 深色仪表盘。
+ *
+ * --------------------------------------------------------------------------
+ * 为什么管理端与主应用不同色（这个决定必须写下来）
+ * --------------------------------------------------------------------------
+ * 主应用（5173）是浅色聊天界面：它的背景是「内容」，要退到后面去。
+ * 管理端天天要盯的是**密集表格与状态列**，而这类信息在高对比深色上
+ * 比在浅色上更容易扫读（状态色、badge、边界线不会和卡片阴影互相干扰）。
+ *
+ * 代价也说清楚：两套视觉令牌要各自维护；两个应用同时出现在截屏/文档里时，
+ * 需要解释为什么不一样。**采用深色不是因为好看**，是因为它的主要任务是读表。
+ * 否掉的另一条路是「深色侧边栏 + 浅色内容」—— 那是把两套色板拼在一起，
+ * 结果是两边都要照顾对比度，反而更别扭。
+ *
+ * 强调色沿用主应用的蓝（#4f6ef7）：换了个环境，但仍是同一个产品。
+ */
+:root {
+  --bg-app: #0f1420;
+  --bg-panel: #151b2b;
+  --bg-elevated: #1b2234;
+  --bg-hover: #212a3d;
+  --bg-active: #24304a;
+  --border: #232c40;
+  --border-strong: #303b54;
+
+  --text-1: #e6eaf2;
+  --text-2: #a2acc2;
+  --text-3: #6f7b93;
+
+  --primary: #4f6ef7;
+  --primary-hover: #6480f9;
+  --primary-soft: rgba(79, 110, 247, 0.16);
+
+  --danger: #f0616d;
+  --danger-soft: rgba(240, 97, 109, 0.14);
+  --warn: #f0b13c;
+  --warn-soft: rgba(240, 177, 60, 0.14);
+  --success: #3ecf8e;
+  --success-soft: rgba(62, 207, 142, 0.14);
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --sidebar-width: 232px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  color: var(--text-1);
+  background: var(--bg-app);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  border: none;
+  cursor: pointer;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3348;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #38425c;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------------------- */
+/* 通用容器与小组件                                                          */
+/* ------------------------------------------------------------------------- */
+.card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.page-sub {
+  color: var(--text-3);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-1);
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--primary);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+.btn-danger {
+  color: var(--danger);
+  border-color: rgba(240, 97, 109, 0.4);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-2);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-1);
+  border-color: transparent;
+}
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.input,
+.select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-app);
+  color: var(--text-1);
+  outline: none;
+}
+.input:focus,
+.select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.input::placeholder {
+  color: var(--text-3);
+}
+
+label.field {
+  display: block;
+  margin-bottom: 14px;
+}
+label.field > span {
+  display: block;
+  color: var(--text-2);
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+label.field .hint {
+  color: var(--text-3);
+  font-size: 12px;
+  margin-top: 5px;
+}
+
+/* 表格：管理端的主视图 */
+table.grid {
+  width: 100%;
+  border-collapse: collapse;
+}
+table.grid th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-3);
+  font-size: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+table.grid td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+table.grid tbody tr:hover {
+  background: var(--bg-hover);
+}
+table.grid td.num,
+table.grid th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 12px;
+  line-height: 18px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.badge-admin {
+  background: var(--primary-soft);
+  color: #8fa6ff;
+  border-color: rgba(79, 110, 247, 0.35);
+}
+.badge-hr {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: rgba(62, 207, 142, 0.3);
+}
+.badge-user {
+  background: var(--bg-hover);
+  color: var(--text-2);
+  border-color: var(--border-strong);
+}
+.badge-active {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: rgba(62, 207, 142, 0.3);
+}
+.badge-disabled {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: rgba(240, 177, 60, 0.32);
+}
+.badge-resigned {
+  background: var(--bg-hover);
+  color: var(--text-3);
+  border-color: var(--border-strong);
+}
+.badge-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: rgba(240, 97, 109, 0.32);
+}
+
+.muted {
+  color: var(--text-3);
+}
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--text-3);
+}

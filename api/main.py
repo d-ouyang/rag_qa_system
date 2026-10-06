@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.logging_config import setup_logging
 from config.settings import settings
 # main.py 与 routes/ 同属 api 包，这里用包内相对导入，避免依赖「项目根是否在 sys.path」
-from .routes import chunks, documents, qa, system
+from .routes import admin, chunks, documents, qa, system
 
 # 初始化日志（类体在 import 时已执行，这里调用是项目既有约定，无实际副作用）
 setup_logging()
@@ -57,6 +57,10 @@ app.include_router(documents.router)
 app.include_router(chunks.router)
 # 系统配置（设置页读取关键配置项），挂在 /api/v1/system
 app.include_router(system.router)
+# 管理端（P2-13）：人事 CRUD 与密码管理。挂在 /api/v1/admin
+# 门槛在 core/identity.require_staff 里 —— 网关的路径级授权是粗筛，
+# 真正的判定必须在后端（设计规格 §5.2 第 13 行）
+app.include_router(admin.router)
 
 
 @app.get("/", summary="服务状态", include_in_schema=False)

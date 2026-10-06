@@ -154,6 +154,19 @@ class Settings(BaseSettings):
             f"?charset={self.MYSQL_CHARSET}"
         )
 
+    # ---------- 身份与信任边界（P2-13a 落地管理端时的第一次借用，见设计规格 §5.1.3 的 A 方案）----------
+    # 后端只认「由网关注入的身份头」，自己不验 JWT（认证只有一个入口）。
+    # 代价：8000 一旦对外可达，任何人都能靠伪造 X-User-Id 冒充任意用户。
+    # 所以 compose 里 backend 不映射端口，这一侧的防线在**网络拓扑**，不在代码。
+    #
+    #   dev     本地裸跑 / 测试：身份头缺失时回落到 DEV_USERNAME，库里查不到则
+    #           视作 `.env` 的 break-glass 超管（role=admin）。好处是 `make api`
+    #           起来就能用，代价是有后门 —— 所以它不该出现在任何非本机环境。
+    #   gateway 生产：缺头 / 查不到 / 非在职 → 一律 401（fail-closed）。
+    IDENTITY_MODE : Literal["dev", "gateway"] = "dev"
+    # dev 模式的回落登录名（应与 `.env` 里 GATEWAY_USERS 的账号一致）
+    IDENTITY_DEV_USERNAME : str = "admin"
+
     # ---------- 密码策略（P2-11b，账号体系）----------
     # 这一组是「判定规则」的唯一出处，core/password_policy.py 只从这里取值，
     # 任何地方都不许再写死 12 / 90 / 5 / 15 这几个数字 ——
@@ -269,7 +282,14 @@ class Settings(BaseSettings):
     LOG_FILE : Path = BASE_DIR / "app.log"
 
     # 安全配置
-    ALLOWED_ORIGINS : list[str] = ["http://localhost:5173","http://localhost:8501","http://localhost:3000"]
+    ALLOWED_ORIGINS : list[str] = [
+        "http://localhost:5173",
+        "http://localhost:8501",
+        "http://localhost:3000",
+        # 管理端（P2-13a，admin-console，端口固定 5174）。
+        # 正常链路走 Vite proxy（同源、不产生跨域），留白名单是给「不经代理直连调试」留的门。
+        "http://localhost:5174",
+    ]
     SECRET_KEY : str = ""
 
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(

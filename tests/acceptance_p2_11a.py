@@ -35,7 +35,9 @@ P2-11d 交付后种子数据把 10 个员工放进表里，这个限制第一次
 """
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -250,6 +252,78 @@ def restore_employee_no(snapshot: dict[int, str]) -> int:
             ).rowcount
     return n
 
+
+# --------------------------------------------------------------------------- #
+# user 表自己的业务列 —— 第 4 处往返损失（2026-10-07 修）
+# --------------------------------------------------------------------------- #
+# downgrade 到 0002 会把 0003 新增的**列连同数据一起 DROP**，
+# upgrade 回来时 ADD COLUMN 只能按 server_default 填 ——
+# 于是员工身上这些值全部被冲掉：
+#
+#     role → 'user'      status → 'active'      must_change_password → 0
+#     token_version → 0  password_changed_at → NULL   last_login_at → NULL
+#
+# 实测后果：10 个种子员工跑完一次往返，管理员吴静变成了普通员工、
+# 离职的郑爽变回在职、所有人不需要再改密码 —— 而脚本当时**一条断言都没红**
+# （它只盯着列在不在、行数变没变）。这就是「列回来了 ≠ 数据回来了」。
+#
+# 所以这里把**别人**（非本脚本）的员工行按 id 快照这些列，往返后 UPDATE 回去。
+USER_BUSINESS_COLS = (
+    "employee_no", "email", "phone", "gender", "department_id", "position_id",
+    "role", "status", "password_changed_at", "must_change_password", "token_version",
+    "failed_login_count", "locked_until", "last_login_at", "created_by", "updated_by",
+    "create_time", "update_time", "deleted_at",
+)
+
+
+def other_users_snapshot() -> dict[int, dict[str, Any]]:
+    """别人的员工行里「会被迁移冲掉」的那些列，按 id 全部快照。"""
+    cols_sql = ", ".join(USER_BUSINESS_COLS)
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text(f"SELECT id, {cols_sql} FROM `user` WHERE username NOT LIKE :p"),
+            {"p": f"{PREFIX}%"},
+        ).all()
+    return {int(r[0]): dict(zip(USER_BUSINESS_COLS, r[1:])) for r in rows}
+
+
+def restore_other_users(snapshot: dict[int, dict[str, Any]]) -> int:
+    """
+    按 id 把快照写回。**不校验「现在是默认值才写回」** ——
+    employee_no 那次就是因为加了 `AND employee_no LIKE 'LEGACY-%'` 这道过滤，
+    遇到别种污染就静默不还原。这里无条件写回：往返后这些列本来就该是快照里的值。
+    """
+    assignments = ", ".join(f"`{c}` = :{c}" for c in USER_BUSINESS_COLS)
+    n = 0
+    with get_engine().begin() as conn:
+        for uid, row in snapshot.items():
+            params = {c: row[c] for c in USER_BUSINESS_COLS}
+            params["_id"] = uid
+            n += conn.execute(
+                text(f"UPDATE `user` SET {assignments} WHERE id = :_id"), params
+            ).rowcount
+    return n
+
+
+def other_users_match(snapshot: dict[int, dict[str, Any]]) -> tuple[bool, str]:
+    """逐列比对（datetime 用 ISO 字符串比，避免 tzinfo 差异造成假红）。"""
+    cols_sql = ", ".join(USER_BUSINESS_COLS)
+    with get_engine().connect() as conn:
+        rows = conn.execute(text(f"SELECT id, {cols_sql} FROM `user`")).all()
+    current = {int(r[0]): dict(zip(USER_BUSINESS_COLS, r[1:])) for r in rows}
+    for uid, snap_row in snapshot.items():
+        now_row = current.get(uid)
+        if now_row is None:
+            return False, f"id={uid} 这一行不见了"
+        for col in USER_BUSINESS_COLS:
+            expected, actual = snap_row[col], now_row[col]
+            if isinstance(expected, datetime) or isinstance(actual, datetime):
+                expected = expected.isoformat() if isinstance(expected, datetime) else expected
+                actual = actual.isoformat() if isinstance(actual, datetime) else actual
+            if expected != actual:
+                return False, f"id={uid} 的 {col}：{snap_row[col]!r} → {now_row[col]!r}"
+    return True, ""
+
 # 灌 1 个员工（为什么只灌 1 个，见文件头）
 _uid = repo.create_user(
     username=f"{PREFIX}u1",
@@ -264,7 +338,10 @@ print(f"  员工行（往返前）：{ROW_BEFORE}")
 _rows_before = one("SELECT COUNT(*) FROM `user`")[0]
 EMP_NO_SNAPSHOT = employee_no_snapshot()
 CREATED_TABLES_SNAPSHOT = snapshot_created_tables()
+OTHER_USERS_SNAPSHOT = other_users_snapshot()
 print(f"  已快照 {len(EMP_NO_SNAPSHOT)} 行的工号，往返后原样写回")
+print(f"  已快照 {len(OTHER_USERS_SNAPSHOT)} 行员工的全业务列"
+      f"（role / status / must_change_password …）—— 往返会把它们冲成默认值")
 
 # --------------------------------------------------------------------------- #
 section("第 2 组：downgrade 到 0002")
@@ -374,6 +451,18 @@ check("每张表的行数都回到往返前",
       _counts == {t: len(v) for t, v in CREATED_TABLES_SNAPSHOT.items()},
       f"实际 {_counts}")
 check("没有员工的部门引用变成悬空", _dangling == 0, f"悬空 {_dangling} 行")
+
+# 往返把 user 表里由 0003 新增的**列连同数据**一起 DROP 了
+# （ADD COLUMN 回来的只有默认值：管理员变回普通员工、离职的人变回在职、
+# 待改密标记消失）。这里按 id 把快照整行写回。
+_users_back = restore_other_users(OTHER_USERS_SNAPSHOT)
+check(f"别人员工的业务列已还原（{_users_back} 行）",
+      _users_back == len(OTHER_USERS_SNAPSHOT),
+      f"写回 {_users_back} / 应写 {len(OTHER_USERS_SNAPSHOT)}")
+_user_ok, _user_why = other_users_match(OTHER_USERS_SNAPSHOT)
+check(f"还原后逐列一致（{len(OTHER_USERS_SNAPSHOT)} 行 × {len(USER_BUSINESS_COLS)} 列："
+      f"role / status / must_change_password / token_version …）",
+      _user_ok, _user_why)
 
 # --------------------------------------------------------------------------- #
 section("第 6 组：清理")

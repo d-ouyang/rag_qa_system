@@ -14,7 +14,7 @@ DOCKER ?= docker
 FRONTEND_PORT ?= 8080
 GATEWAY_PORT ?= 3000
 
-.PHONY: help setup venv sync lock api web frontend gateway dev stop test memory releases clean ollama \
+.PHONY: help setup venv sync lock api web frontend gateway admin admin-build dev stop test memory releases clean ollama \
         infra infra-check infra-logs infra-stop infra-down \
         stack-up stack-ps stack-logs stack-down stack-rebuild \
         db-upgrade db-current db-downgrade db-revision db-sql \
@@ -81,6 +81,7 @@ help:
 	@echo "make api       启动 FastAPI (8000)"
 	@echo "make gateway   启动 NestJS 鉴权网关 (3000，首次需 cd gateway && npm install)"
 	@echo "make frontend  启动 Vue3 前端 Vite 开发服务器 (5173)"
+	@echo "make admin     启动**管理端** Vite 开发服务器 (5174，独立应用；需网关在跑)"
 	@echo "make web       启动 Streamlit (8501，旧版界面)"
 	@echo ""
 	@echo "—— 排障与文档 ——"
@@ -111,6 +112,18 @@ frontend:
 
 gateway:
 	cd gateway && npm run start:dev
+
+# ---------- 管理端（P2-13a）----------
+# 独立前端应用 admin-console/，**不新增后端进程** —— 接口复用现有 FastAPI 的
+# /api/v1/admin/*（4C4G 内存预算，见 PLAN §11.1）。
+# 端口固定 127.0.0.1:5174 + strictPort（5173 是主应用）：被占用直接报错，
+# 而不是悄悄换端口让人打开一个长得差不多的页面。
+# ⚠️ 前置：中间件与网关在跑 —— make infra + make api + make gateway。
+admin:
+	cd admin-console && npm run dev
+
+admin-build:
+	cd admin-console && npm run build
 
 # 一键起三件套。各自的日志会混在同一终端里 —— 想看清爽的分栏日志就开三个终端分别 make api / gateway / frontend。
 # 这里显式记录三个 PID 再 kill，而不是用 `kill 0`（后者会连当前 shell 的进程组一起打掉）。
