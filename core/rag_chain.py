@@ -310,6 +310,21 @@ def _empty_context_result(inputs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _strip_leading_blank(text: str) -> str:
+    """
+    裁掉答案**开头**的空白，中间与结尾一律不动。
+
+    为什么要这一步：模型偶尔以 `\\n\\n` 开头（2026-09 真实使用中出现过一次）。
+    前端气泡是 `white-space: pre-wrap` 的纯文本容器，前导换行会渲染成空首行 ——
+    看起来像「气泡顶部凭空多了一块空白」，首帧恰为 `\\n\\n` 时甚至只剩一个空气泡。
+    答案开头的空白没有任何语义（本项目气泡不渲染 Markdown），所以在这里裁掉。
+
+    只在「答案成为结果的那一处」调用，让**流式增量 / 缓存回放 / 同步返回 / 落库正文**
+    四个出口口径一致 —— 否则会出现「当下看着对、刷新后冒空行」这类只在历史里复现的错。
+    """
+    return text.lstrip()
+
+
 class RAGChain:
     """
     生产级 RAG 链：意图路由 + 多轮记忆 + LCEL 检索问答。
@@ -530,11 +545,21 @@ class RAGChain:
         就丢了。直接用 llm.stream(PromptValue)，文本与用量都要。
         """
         chunks = llm.stream(prompt.invoke(variables))
+        started = False  # 是否已吐出过正文：答案开头的空白只裁一次，中间换行照旧保留
         try:
             for chunk in chunks:
                 text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
                 if text:
-                    yield text
+                    if started:
+                        yield text
+                    else:
+                        # 首包可能整段都是空白（实测模型会以 "\n\n" 开头）：这一帧既不发、
+                        # 也不算「已开始」，等真正的内容到达。否则前端会先渲染出空首行。
+                        text = _strip_leading_blank(text)
+                        if text:
+                            started = True
+                            yield text
+                # 用量仍逐帧收：末帧常带 usage 而 content 为空，跳过它就漏账
                 captured = _extract_usage(chunk)
                 if captured["input_tokens"] or captured["output_tokens"]:
                     usage_box.update(captured)
@@ -609,7 +634,7 @@ class RAGChain:
     ) -> dict[str, Any]:
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
         usage = _usage_zero()
-        answer = str(hit.get("answer") or "")
+        answer = _strip_leading_blank(str(hit.get("answer") or ""))
         sources = list(hit.get("sources") or [])
         intent = str(hit.get("intent") or "knowledge_query")
         route = str(hit.get("route") or "rag_qa")
@@ -725,7 +750,7 @@ class RAGChain:
             message = llm.invoke(
                 _chitchat_prompt.invoke({"input": question, "chat_history": chat_history})
             )
-            answer = str(message.content)
+            answer = _strip_leading_blank(str(message.content))
             _merge_usage(usage, _extract_usage(message))
             result: dict[str, Any] = {
                 "answer": answer,
@@ -752,7 +777,7 @@ class RAGChain:
                         ),
                     })
                 )
-                answer = str(message.content)
+                answer = _strip_leading_blank(str(message.content))
                 _merge_usage(usage, _extract_usage(message))
             result = {
                 "answer": answer,
