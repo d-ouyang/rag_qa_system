@@ -65,10 +65,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, or_, select, update
 
 from core.db import now_db, session_scope
-from core.schema import department_table, position_table, user_table
+from core.schema import (
+    department_table,
+    position_table,
+    user_password_history_table,
+    user_table,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -633,6 +638,104 @@ def record_login_failure(
             select(user_table.c.failed_login_count).where(user_table.c.id == user_id)
         ).first()
     return int(row[0]) if row else 0
+
+
+# --------------------------------------------------------------------------- #
+# 改密历史（P2-11b）
+# --------------------------------------------------------------------------- #
+# 这里只负责**存取**。「新密码是否命中历史」这个判定在 core/password_policy.py ——
+# 刻意不放仓储层：判定要能被单测，而单测连一个 MySQL 都不该起。
+def add_password_history(
+    user_id: int,
+    password_hash: str,
+    *,
+    changed_by_user_id: int | None = None,
+    now: datetime | None = None,
+) -> int:
+    """
+    追加一条改密历史，返回自增 id。
+
+    `changed_by_user_id` 传None 表示「本人自助改密」；管理员重置时传管理员 id。
+    刻意不用 0 占位（与 0001 里 `folder.user_id` 不用伪 id 同一个理由）。
+    """
+    if not password_hash:
+        raise ValueError("password_hash 不能为空")
+    values = {
+        "user_id": user_id,
+        "password_hash": password_hash,
+        "changed_at": now or now_db(),
+        "changed_by_user_id": changed_by_user_id,
+    }
+    with session_scope() as session:
+        result = session.execute(user_password_history_table.insert().values(**values))
+        return int(result.inserted_primary_key[0])
+
+
+def list_recent_password_hashes(user_id: int, limit: int) -> list[str]:
+    """
+    取最近 `limit` 条历史哈希，**按时间倒序**（最近的在最前）。
+
+    只返回哈希字符串本身：判定只需要它，不需要时间与操作人。
+    """
+    stmt = (
+        select(user_password_history_table.c.password_hash)
+        .where(user_password_history_table.c.user_id == user_id)
+        .order_by(
+            user_password_history_table.c.changed_at.desc(),
+            user_password_history_table.c.id.desc(),
+        )
+        .limit(max(1, int(limit)))
+    )
+    with session_scope() as session:
+        return [r[0] for r in session.execute(stmt).all()]
+
+
+def count_password_history(user_id: int) -> int:
+    stmt = (
+        select(user_password_history_table.c.id)
+        .where(user_password_history_table.c.user_id == user_id)
+    )
+    with session_scope() as session:
+        return len(session.execute(stmt).all())
+
+
+def prune_password_history(user_id: int, keep: int) -> int:
+    """
+    只保留最近 `keep` 条，裁掉更旧的，返回裁掉几条。
+
+    为什么按「时间倒序留 keep 条」而不是按 id：改密时间由应用显式传入，
+    同一毫秒连改两次时用 `id` 兜底排序（见 `list_recent_password_hashes`），
+    否则「哪条是最新的」在同秒并发下会不稳定。
+
+    为什么裁掉而不是永不删：全量历史既不能提高安全性（离线可验证的组合
+    与「最近用过哪几个」无关），又会无限增长。见迁移 0004 的文件头。
+    """
+    keep_n = max(1, int(keep))
+    survivors = list_recent_password_hashes_ids(user_id, keep_n)
+    if not survivors:
+        return 0
+    stmt = (
+        delete(user_password_history_table)
+        .where(user_password_history_table.c.user_id == user_id)
+        .where(user_password_history_table.c.id.notin_(survivors))
+    )
+    with session_scope() as session:
+        return session.execute(stmt).rowcount or 0
+
+
+def list_recent_password_hashes_ids(user_id: int, limit: int) -> list[int]:
+    """取最近 N 条历史的**行 id**（裁剪用），排序口径与取哈希时一致。"""
+    stmt = (
+        select(user_password_history_table.c.id)
+        .where(user_password_history_table.c.user_id == user_id)
+        .order_by(
+            user_password_history_table.c.changed_at.desc(),
+            user_password_history_table.c.id.desc(),
+        )
+        .limit(max(1, int(limit)))
+    )
+    with session_scope() as session:
+        return [int(r[0]) for r in session.execute(stmt).all()]
 
 
 # --------------------------------------------------------------------------- #

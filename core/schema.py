@@ -148,6 +148,23 @@ position_table = sa.Table(
     **TABLE_KW,
 )
 
+user_password_history_table = sa.Table(
+    "user_password_history",
+    metadata,
+    sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+    sa.Column("user_id", sa.BigInteger(), nullable=False, comment="员工 user.id"),
+    sa.Column("password_hash", sa.String(255), nullable=False,
+              comment="当时的 bcrypt 哈希；用于「历史不可复用」的逐条比对"),
+    sa.Column("changed_at", mysql.DATETIME(fsp=6), nullable=False, comment="这次改密发生的时间"),
+    sa.Column("changed_by_user_id", sa.BigInteger(), nullable=True,
+              comment="操作人 user.id；管理员重置时是管理员 id，本人改密为空"),
+    sa.PrimaryKeyConstraint("id"),
+    # 支持「取某个员工最近 N 条」—— 没有这个索引，每次改密都要全表扫
+    sa.Index("idx_pwh_user_changed", "user_id", "changed_at"),
+    comment="改密历史（P2-11b；只追加，超出保留条数的旧记录会被裁掉）",
+    **TABLE_KW,
+)
+
 folder_table = sa.Table(
     "folder",
     metadata,
@@ -250,6 +267,7 @@ document_table = sa.Table(
 __all__ = [
     "metadata",
     "user_table",
+    "user_password_history_table",
     "department_table",
     "position_table",
     "folder_table",

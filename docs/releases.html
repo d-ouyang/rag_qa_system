@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p2.11a</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p2.11b</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -258,7 +258,7 @@
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
       <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">7<span class="u">/ 14</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">18<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">19<span class="u">个</span></div></div>
     </div>
   </section>
 
@@ -321,7 +321,7 @@
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
       2.0.0 是进行中的大版本——TLS、配置治理、观测备份，以及第 3 / 4 版新增的用户权限、数据隔离、管理端与知识库写权限都还没有做完，
-      所以「当前版本 2.0.0-p2.11a」不等于「可以上线」。
+      所以「当前版本 2.0.0-p2.11b」不等于「可以上线」。
       其中<strong>数据隔离（P2-12）与知识库写权限（P2-14）都是上线前必须完成的</strong>：系统只要给多人用，
       「登录能分人、数据不分人」就是数据泄漏；写权限漏了更糟——一个只读账号能把整库重灌，全公司都会答错，而且不报错。
     </p>
@@ -343,6 +343,29 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p2.11b",
+    date: "2026-10-06",
+    accent: "#3fb950",
+    tagline: "密码策略落地",
+    problem: "「密码多久过期、错几次锁、能不能复用最近用过的」——这三条在多数系统里是口头承诺，代码里一行都没有。这一版把它们变成唯一的判定。",
+    sections: [
+      { type: "added", items: [
+        { star: true, h: "判定只有一处", t: "强度、到期、历史不可复用、失败锁定、临时密码，全部收在一个模块里，且不做任何数据库查询——要判重就把哈希列表取出来传进去。于是边界与文案都能不起库地钉死。" },
+        { star: true, h: "三种失败同一句话", t: "账号不存在、密码错、已锁定，对用户的提示逐字相同——否则就是个免费的用户名枚举器。内部仍分代码，日志与监控能区分。" },
+        { h: "耗时也对齐", t: "bcrypt 故意慢，慢到爆破不划算；但也慢到能被当侧信道。四条失败路径都跑一次真实比对，攻击者用响应时间数不出哪些账号存在。" }
+      ]},
+      { type: "verified", items: [
+        { h: "141 项断言，连跑 20 遍", t: "到期边界精确到秒（正好到期仍有效，超过一秒才算过期）、历史判重、锁定与解锁、老哈希渐进升级，每组都有反问「这条断言会不会是空的」。" },
+        { h: "反向验证两条", t: "把到期判据从大于改成大于等于 → 边界断言转红；删掉耗时对齐 → 耗时比红到五万多倍。" },
+        { h: "抓到一个 15 遍漏 13 遍的 bug", t: "临时密码只过滤了数字那一位，小写位能抽到 l、大写位能抽到 I/O。修法不只是补过滤：断言改成验「候选池」这个不变量，并在生产代码里加一道兜底自检，让越界在结构上不可能。" }
+      ]},
+      { type: "boundary", items: [
+        { star: true, h: "规则准备好了，但一条都还没在真实链路上跑过", t: "用户表仍是零行，登录真相源还是 .env。把这套判定接进真实登录是下一版的事。" },
+        { h: "到期拦截需要网关和后端一起做", t: "只在后端拦的话，前端绕过去就失效了。" }
+      ]}
+    ]
+  },
   {
     version: "v2.0.0-p2.11a",
     date: "2026-10-06",

@@ -154,6 +154,31 @@ class Settings(BaseSettings):
             f"?charset={self.MYSQL_CHARSET}"
         )
 
+    # ---------- 密码策略（P2-11b，账号体系）----------
+    # 这一组是「判定规则」的唯一出处，core/password_policy.py 只从这里取值，
+    # 任何地方都不许再写死 12 / 90 / 5 / 15 这几个数字 ——
+    # 「一处配三处用」的日子过不了两次需求就会漂。
+    #
+    # 哈希算法固定 bcrypt（与网关 bcryptjs 兼容，同一格式 `$2b$`），
+    # 刻意不用 MD5/SHA/可逆加密，也不换 argon2 —— 换算法会让现存哈希全部作废，
+    # 而账号体系本期刚起步，此时换是最便宜的时机，将来就不便宜了。
+    BCRYPT_COST : int = 12
+    # 最小长度。长度比复杂度规则有效得多（见设计规格 §4）。
+    PASSWORD_MIN_LENGTH : int = 10
+    # 有效期（天）。判据是 `now - password_changed_at > 天数`，所以「正好到期的
+    # 那一刻」仍算有效，差一秒才算过期 —— 边界写进测试，避免有人改口径。
+    PASSWORD_EXPIRE_DAYS : int = 90
+    # 剩余天数 ≤ 该值时登录后返回提醒横幅（P2-11c 用）。
+    PASSWORD_EXPIRE_WARN_DAYS : int = 7
+    # 最近 N 条历史不可复用。⚠️ 每条都要跑一次 bcrypt 比对：**本机实测 cost 12
+    # 单次约 165ms**（M 系列；别的机器会不同，这个数只说明量级），所以 N 调大是线性
+    # 变慢；5 条约 0.85s，只发生在「改密」这一次动作上，不在登录路径上，可接受。
+    PASSWORD_HISTORY_KEEP : int = 5
+    # 连续登录失败达该次数 → 锁定。
+    PASSWORD_MAX_FAILURES : int = 5
+    # 锁定时长（分钟）。到期自动解锁，不需人工介入。
+    PASSWORD_LOCK_MINUTES : int = 15
+
     # Redis 配置（队列 broker + 短期缓存；**不承载会话真相**）
     # 相同问题缓存（core/qa_cache.py）。只缓存规范化后逐字相同的问题，
     # 不缓存「办理居住证」这类改写过的近义句。Redis 丢了只是多调一次模型。

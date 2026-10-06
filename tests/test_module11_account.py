@@ -1,6 +1,6 @@
 # pyright: basic
 """
-模块11测试文件：组织与账号表（P2-11a 的**表与仓储**）。
+模块11测试文件：账号体系（P2-11a 表与仓储 + P2-11b 密码策略）。
 
 --------------------------------------------------------------------------
 它管什么、不管什么
@@ -26,12 +26,17 @@
    这是 P2-11c 的地基，本轮必须验。
 4. **脱敏**：`to_dict()` 不含 password_hash、手机号默认打码。
 5. **部门树**：三层结构 + 孤儿节点提到根层（数据坏了要看得见）。
-6. **存量数据零影响**：本模块跑完，`document` / `session` / `chat_message`
+6. **密码策略**（P2-11b）：到期边界（正好到期 / 差一秒）、历史不可复用、
+   连续失败锁定、cost 10 老哈希渐进升级；「账号不存在 / 密码错 / 已锁定」
+   三者对外文案必须逐字相同，且四条失败路径耗时同量级。
+   **这一组必须钉死时钟**（`now=`），否则夹具会在不同运行时刻给出不同答案。
+7. **改密历史仓储**：写入 / 取最近 N 条 / 裁剪到保留条数。
+8. **存量数据零影响**：本模块跑完，`document` / `session` / `chat_message`
    的行数与切片数必须与跑之前完全一致。
 
 运行：
     make infra                                          # 先起中间件
-    .venv/bin/python tests/test_module11_user_org.py
+    .venv/bin/python tests/test_module11_account.py
 """
 import os
 import sys
@@ -43,6 +48,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.logging_config import setup_logging  # noqa: E402
 
 setup_logging()
+
+import time  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -114,6 +122,12 @@ def cleanup() -> None:
     加了往返场景时，清理不会静默漏行。
     """
     with get_engine().begin() as conn:
+        # 先清改密历史再清 user —— 没有外键级联，但留着悬空的历史行更难查
+        conn.execute(
+            text("DELETE p FROM user_password_history p JOIN `user` u ON u.id = p.user_id "
+                 "WHERE u.employee_no LIKE :p OR u.username LIKE :p"),
+            {"p": f"{PREFIX}%"},
+        )
         conn.execute(
             text("DELETE FROM `user` WHERE employee_no LIKE :p OR username LIKE :p"),
             {"p": f"{PREFIX}%"},
@@ -347,9 +361,208 @@ check("不存在的职位按 code 查 → None", repo.get_position_by_code(f"{PR
 check("空列表建树 → 空树", repo.build_department_tree([]) == [])
 
 # --------------------------------------------------------------------------- #
-# 第 4 组：存量数据零影响
+# 第 4 组：密码策略（P2-11b）
 # --------------------------------------------------------------------------- #
-print("\n== 第 4 组：存量数据零影响 ==")
+# ⚠️ 这一组**必须把时钟钉死**：password_policy 的每个判定都接受 now= 参数，
+# 而「锁定未到期」「密码刚过期」这类夹具一旦用真实时钟，同一份夹具会在
+# 不同的运行时刻给出不同答案 —— 表现就是「本地绿、CI 红」的间歇性失败。
+print("\n== 第 4 组：密码策略 ==")
+from core import password_policy as policy  # noqa: E402
+
+# 测试用的固定时钟：所有判定都传它，绝不依赖 datetime.now()
+NOW = datetime(2026, 10, 6, 23, 0, 0)
+
+# cost 12 的哈希本机一次约 165ms，所以**全程只造一次**并复用；
+# 其余「只关心能不能判重」的地方用 cost 4 的快哈希（cost 值不影响判定语义）。
+_HASH_C12 = policy.hash_password("Abcdefghij1")
+_HASH_C10 = policy.hash_password("Abcdefghij1", cost=10)
+
+
+def fast_hash(password: str) -> str:
+    """只为「跑得快」存在的哈希。**不要**用它断言 needs_rehash。"""
+    return policy.hash_password(password, cost=4)
+
+
+def mk_user(**kw):
+    """造一个 UserRecord 做 verify 的夹具。"""
+    base = dict(
+        id=1, username="p11b", employee_no="p11b_E001", display_name="策略夹具",
+        email=None, phone=None, gender=None, department_id=None, position_id=None,
+        role=repo.ROLE_USER, status=repo.STATUS_ACTIVE, password_hash=_HASH_C12,
+        password_changed_at=NOW - timedelta(days=1), must_change_password=False,
+        token_version=0, failed_login_count=0, locked_until=None, last_login_at=None,
+        created_by=None, updated_by=None, create_time=NOW, update_time=NOW, deleted_at=None,
+    )
+    base.update(kw)
+    return repo.UserRecord(**base)
+
+
+# --- 5.1 到期边界（正好到期 / 差一秒）---
+check("正好 90 天 → 仍算有效（判据是严格大于）",
+      policy.is_expired(NOW - timedelta(days=90), now=NOW) is False)
+check("超过 90 天 1 秒 → 已过期",
+      policy.is_expired(NOW - timedelta(days=90) - timedelta(seconds=1), now=NOW) is True)
+check("89 天 → 未过期", policy.is_expired(NOW - timedelta(days=89), now=NOW) is False)
+check("password_changed_at 为 NULL → 按已过期处理（fail-closed）",
+      policy.is_expired(None, now=NOW) is True)
+check("expire_days=0 → 显式关闭到期策略",
+      policy.is_expired(NOW - timedelta(days=9999), now=NOW, expire_days=0) is False)
+check("剩余天数向上取整：85 天前改密 → 剩 5 天",
+      policy.expire_in_days(NOW - timedelta(days=85), now=NOW) == 5)
+check("已过期时剩余天数为负",
+      policy.expire_in_days(NOW - timedelta(days=100), now=NOW) == -10)
+check("剩余 5 天 → 该弹到期提醒", policy.should_warn_expire(NOW - timedelta(days=85), now=NOW) is True)
+check("剩余 30 天 → 不弹", policy.should_warn_expire(NOW - timedelta(days=30), now=NOW) is False)
+check("已过期 → 不弹提醒（那是拦截不是提醒）",
+      policy.should_warn_expire(NOW - timedelta(days=200), now=NOW) is False)
+
+# --- 5.2 历史不可复用 ---
+_H1, _H2 = fast_hash("HistoryOne1!"), fast_hash("HistoryTwo2!")
+check("命中历史 → 判为不可复用", policy.hits_history("HistoryOne1!", [_H1, _H2]) is True)
+check("未命中 → 放行", policy.hits_history("BrandNew3!", [_H1, _H2]) is False)
+check("历史为空 → 放行", policy.hits_history("Anything1!", []) is False)
+check("limit=0 → 相当于关闭历史检查", policy.hits_history("HistoryOne1!", [_H1], limit=0) is False)
+check("列表里有坏哈希不会打断判定（只跳过那一条）",
+      policy.hits_history("HistoryTwo2!", ["garbage-not-bcrypt", _H1, _H2]) is True)
+check("limit=1 时只看第一条：第二条的明文不算命中",
+      policy.hits_history("HistoryTwo2!", [_H1, _H2], limit=1) is False)
+check("limit=2 时第二条能命中",
+      policy.hits_history("HistoryTwo2!", [_H1, _H2], limit=2) is True)
+
+# --- 5.3 失败锁定 ---
+check("连错 4 次 → 不锁", policy.should_lock(4) is False)
+check("连错 5 次 → 锁", policy.should_lock(5) is True)
+check("锁定阈值可配：max_failures=3 时3 次就锁", policy.should_lock(3, max_failures=3) is True)
+check("锁定截止 = now + 15 分钟",
+      policy.lock_deadline(now=NOW) == NOW + timedelta(minutes=15))
+check("锁定时长可配", policy.lock_deadline(now=NOW, lock_minutes=5) == NOW + timedelta(minutes=5))
+
+# --- 5.4 cost 10 老哈希渐进升级 ---
+check("读出 cost12 = 12", policy.hash_cost(_HASH_C12) == 12)
+check("读出 cost10 = 10", policy.hash_cost(_HASH_C10) == 10)
+check("非 bcrypt 串读 cost → None（不抛）", policy.hash_cost("not-a-hash") is None)
+check("cost12 的哈希不需要 rehash", policy.needs_rehash(_HASH_C12) is False)
+check("cost10 的哈希需要 rehash（登录成功后顺带升级）", policy.needs_rehash(_HASH_C10) is True)
+check("坏串不需要 rehash（别在登录路径上把用户踢去改密）", policy.needs_rehash("not-a-hash") is False)
+check("verify 在密码正确时给出 rehash 提示",
+      policy.verify(mk_user(password_hash=_HASH_C10), "Abcdefghij1", now=NOW).rehash is True)
+check("verify 在已是目标 cost 时不提示 rehash",
+      policy.verify(mk_user(), "Abcdefghij1", now=NOW).rehash is False)
+
+# --- 5.5 强度校验 ---
+check("合格密码无违规项", policy.validate_strength("Abcdefghij1") == [])
+check("空密码被拒", policy.validate_strength("") == ["密码不能为空"])
+check("太短被拒", any("长度不足" in v for v in policy.validate_strength("Ab1!")))
+check("纯数字被拒", any("纯数字" in v for v in policy.validate_strength("12345678901")))
+check("单一字符类被拒", any("两类" in v for v in policy.validate_strength("abcdefghij")))
+check("与登录名相同被拒",
+      any("登录名" in v for v in policy.validate_strength("P11B", username="p11b")))
+check("与工号相同被拒",
+      any("工号" in v for v in policy.validate_strength("p11bE001", employee_no="p11bE001")))
+check("超过 72 字节被拒（bcrypt 只取前 72 字节，超出部分静默忽略）",
+      any("72 字节" in v for v in policy.validate_strength("中" * 30)))
+check("违规项是列表而不是布尔（管理端要逐条展示）",
+      isinstance(policy.validate_strength("123"), list))
+
+# --- 5.6 临时密码 ---
+_tps = {policy.generate_temporary_password() for _ in range(10)}
+check("临时密码不会重复", len(_tps) == 10)
+check("临时密码必然通过强度校验",
+      all(policy.validate_strength(p) == [] for p in _tps))
+# 断言「候选池」而不是「抽 24 个字符的样本」—— 后者是概率性的：
+# 单个 24 位样本含易混字符的概率约 28%，也就是说**这条断言 15 遍里会漏 13 遍**。
+# （第一版就栽在这儿：小写位能抽到 `l`、大写位能抽到 `I`/`O`，
+#   而测试只抽一个样本，13 次里只红 2 次，差点被当成「偶发」放过去。）
+check("候选池本身就不含易混字符（确定性断言）",
+      not (set(policy._TEMP_LOWER + policy._TEMP_UPPER + policy._TEMP_DIGIT)
+           & policy._TEMP_CONFUABLES))
+check("生成 200 个临时密码都不含易混字符 0/O/1/l/I（抄错会被当成密码错误）",
+      not set("".join(policy.generate_temporary_password(length=24) for _ in range(200)))
+      & policy._TEMP_CONFUABLES)
+check("临时密码长度可配但不低于 10",
+      len(policy.generate_temporary_password(length=20)) == 20
+      and len(policy.generate_temporary_password(length=4)) >= 10)
+
+# --- 5.7 verify：四条失败路径的文案必须完全一致 ---
+_codes = {
+    "not_found": policy.verify(None, "Abcdefghij1", now=NOW),
+    "wrong_password": policy.verify(mk_user(), "WrongPass123", now=NOW),
+    "locked": policy.verify(mk_user(locked_until=NOW + timedelta(minutes=5)), "Abcdefghij1", now=NOW),
+}
+check("账号不存在 / 密码错 / 已锁定 三者的对外文案逐字相同（防用户名枚举）",
+      len({o.message for o in _codes.values()}) == 1,
+      f"实际={[o.message for o in _codes.values()]}")
+check("三者 code 仍然可区分（给日志与监控看）",
+      len({o.code for o in _codes.values()}) == 3)
+check("锁定未到期 → 不放行", _codes["locked"].ok is False)
+check("锁定期刚过 → 放行",
+      policy.verify(mk_user(locked_until=NOW - timedelta(seconds=1)), "Abcdefghij1", now=NOW).code == "ok")
+check("停用/离职 → 单独文案（用户要看得懂，否则只会去找客服）",
+      policy.verify(mk_user(status=repo.STATUS_RESIGNED), "Abcdefghij1", now=NOW).code == "inactive")
+check("强制改密 → 放行但打标",
+      policy.verify(mk_user(must_change_password=True), "Abcdefghij1", now=NOW).code == "must_change")
+check("密码过期 → 不放行（到期后除改密与登出一律 403）",
+      policy.verify(mk_user(password_changed_at=NOW - timedelta(days=200)), "Abcdefghij1", now=NOW).ok is False)
+check("过期结果的 detail 带剩余天数",
+      policy.verify(mk_user(password_changed_at=NOW - timedelta(days=200)), "Abcdefghij1",
+                    now=NOW).detail.get("expire_in_days") == -110)
+check("正常登录 → ok 且无多余文案",
+      policy.verify(mk_user(), "Abcdefghij1", now=NOW).message == "")
+
+# --- 5.8 四条失败路径的耗时必须是同一量级 ---
+_t = {}
+for _label, _u, _c in (("not_found", None, "Abcdefghij1"),
+                       ("wrong_password", mk_user(), "WrongPass123"),
+                       ("locked", mk_user(locked_until=NOW + timedelta(minutes=5)), "Abcdefghij1"),
+                       ("inactive", mk_user(status=repo.STATUS_RESIGNED), "Abcdefghij1")):
+    _s = time.time(); policy.verify(_u, _c, now=NOW); _t[_label] = time.time() - _s
+_mn, _mx = min(_t.values()), max(_t.values())
+# 上界取 _mx * 3 + 0.02：bcrypt 自身有 165ms 抖动，纯计时断言必须留足余量，
+# 否则这是一条会随机红的断言（比没有断言更糟）。真正的防线是「代码里四条路径
+# 都调了 _burn」，计时断言只负责发现「有人把某条路径的 _burn 删了」。
+check(f"四条失败路径耗时同量级（最慢/最快 = {_mx/_mn:.2f}）", _mx < _mn * 3 + 0.02,
+      f"{_t}")
+
+# --------------------------------------------------------------------------- #
+# 第 5 组：改密历史的仓储（真 DB）
+# --------------------------------------------------------------------------- #
+print("\n== 第 5 组：改密历史仓储 ==")
+_uid3 = repo.create_user(username=f"{PREFIX}carol", employee_no=f"{PREFIX}E003",
+                         password_hash=fast_hash("InitialPass1!"), display_name="测试员工丙")
+# ⚠️ 明文与哈希要分成两个列表。曾经把哈希直接当 candidate 传给 hits_history，
+# 于是「不命中」那条断言因为「拿哈希跟哈希比永远不相等」而**假通过** ——
+# 空断言比没有断言更危险（坑35）。所以这里保留 _pws 供判重使用。
+_pws = [f"Rotate{i}Pass{i}!" for i in range(1, 7)]
+_hashes = [fast_hash(p) for p in _pws]
+for _i, _h in enumerate(_hashes):
+    repo.add_password_history(_uid3, _h, changed_by_user_id=None,
+                              now=NOW - timedelta(days=10 - _i))
+check("写入 6 条历史", repo.count_password_history(_uid3) == 6)
+_recent = repo.list_recent_password_hashes(_uid3, 3)
+check("取最近 3 条且按时间倒序", len(_recent) == 3 and _recent[0] == _hashes[-1])
+check("最近 3 条之外的更早记录取不到", _hashes[0] not in _recent)
+check("判重：命中最近 5 条里的最新一条（传的是**明文**）",
+      policy.hits_history(_pws[-1], repo.list_recent_password_hashes(_uid3, 5)) is True)
+check("判重：更早的第 6 条查不到 —— 深度就是策略本身",
+      policy.hits_history(_pws[0], repo.list_recent_password_hashes(_uid3, 5)) is False)
+check("反向验证上一条不是空断言：显式放宽深度到 10 就能命中更早那条",
+      policy.hits_history(_pws[0], repo.list_recent_password_hashes(_uid3, 10), limit=10) is True)
+check("深度上限是硬的：不传 limit 时按 PASSWORD_HISTORY_KEEP 封顶（传 10 条也只查 5 条）",
+      policy.hits_history(_pws[0], repo.list_recent_password_hashes(_uid3, 10)) is False)
+check("新密码（不在历史里）放行",
+      policy.hits_history("NeverUsed9!", repo.list_recent_password_hashes(_uid3, 5)) is False)
+check("裁剪到保留 5 条", repo.prune_password_history(_uid3, 5) == 1)
+check("裁剪后剩 5 条", repo.count_password_history(_uid3) == 5)
+check("裁剪保留的是最近 5 条（最旧那条已被裁掉）",
+      _hashes[0] not in repo.list_recent_password_hashes(_uid3, 10))
+check("裁剪到 1 条", repo.prune_password_history(_uid3, 1) == 4)
+check("再裁到 1 条时无事可做", repo.prune_password_history(_uid3, 1) == 0)
+check_raises("空哈希不能进历史", ValueError, repo.add_password_history, _uid3, "")
+
+# --------------------------------------------------------------------------- #
+# 第 6 组：存量数据未受影响
+# --------------------------------------------------------------------------- #
+print("\n== 第 6 组：存量数据零影响 ==")
 SNAP_AFTER = business_snapshot()
 check(f"document 行数/切片数未变（{SNAP_AFTER['document']}）",
       SNAP_AFTER["document"] == SNAP_BEFORE["document"],
