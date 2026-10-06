@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.6c</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.6e</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -257,15 +257,15 @@
       <div class="stat"><div class="k">后端自动化测试</div><div class="v">826<span class="u">项</span></div></div>
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
-      <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">7<span class="u">/ 10</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">15<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">7<span class="u">/ 13</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">17<span class="u">个</span></div></div>
     </div>
   </section>
 
   <section>
     <div class="prog-head">
       <h2>2.0.0 迭代进度</h2>
-      <span class="sub"><strong>P0 四项已全部完成</strong>（数据落库 · 鉴权 · 异步解析 · 引用可反查可点击），阶段标记为 tag <code>v2.0.0-p0.4</code>。<strong>P1-5 已完成</strong>（5a 中间件 + 5b 应用，2026-09-24 全栈联调通过），阶段标记为 tag <code>v2.0.0-p1.5</code>。<strong>P1-6 已完成</strong>（嵌入 / 重排 / 对话 / 意图走硅基流动），标记为 tag <code>v2.0.0-p1.6</code>。</span>
+      <span class="sub"><strong>P0 四项已全部完成</strong>（数据落库 · 鉴权 · 异步解析 · 引用可反查可点击），阶段标记为 tag <code>v2.0.0-p0.4</code>。<strong>P1-5 已完成</strong>（5a 中间件 + 5b 应用 + 5c 体验优化），阶段标记为 tag <code>v2.0.0-p1.5</code>。<strong>P1-6 已完成</strong>（嵌入 / 重排 / 对话 / 意图走硅基流动），标记为 tag <code>v2.0.0-p1.6</code>。<strong>2026-10-06 计划书修订到第 3 版</strong>，新增「用户权限与管理端」三项 —— 目前系统仍是单用户形态，所有登录的人看到同一份会话与同一个知识库。</span>
     </div>
     <div class="bars">
       <div class="bar-row">
@@ -289,6 +289,13 @@
         </div>
         <div class="num">0 / 3</div>
       </div>
+      <div class="bar-row">
+        <div class="lbl">P2 用户体系 <em>账号 · 数据隔离 · 管理端（第 3 版新增）</em></div>
+        <div class="track" style="--seg:#f0883e">
+          <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+        </div>
+        <div class="num">0 / 3</div>
+      </div>
     </div>
     <div class="legend">
       <span><i class="sq" style="width:7px;height:7px;border-radius:2px;background:#3fb950;display:inline-block"></i>新增能力</span>
@@ -306,8 +313,10 @@
   <footer>
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
-      2.0.0 是进行中的大版本——TLS、配置治理、观测备份都还没有做完，
-      所以「当前版本 2.0.0-p1.6c」不等于「可以上线」。
+      2.0.0 是进行中的大版本——TLS、配置治理、观测备份，以及第 3 版新增的用户权限与管理端都还没有做完，
+      所以「当前版本 2.0.0-p1.6e」不等于「可以上线」。
+      其中<strong>数据隔离（P2-12）是上线前必须完成的</strong>：系统只要给多人用，
+      「登录能分人、数据不分人」就是数据泄漏。
     </p>
     <dl>
       <div><dt>docs/RELEASES.md</dt><dd>对外变更叙事（本页内容来源）</dd></div>
@@ -327,6 +336,44 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p1.6e",
+    date: "2026-10-06",
+    accent: "#f0883e",
+    tagline: "回答不再顶着一行空白开头",
+    problem: "回答气泡偶尔以一行空白开头，看起来像气泡顶部凭空多出一块留白。模型极少这么做，出现过一次之后就再没复现。",
+    sections: [
+      { type: "fixed", items: [
+        { star: true, h: "答案开头不再带空行", t: "模型偶尔以两个换行符开头，整条链路里没有任何一处裁掉它，气泡又恰好是按原样排版的纯文本容器——换行就是空行。" },
+        { star: true, h: "历史记录里也不会带", t: "这一行空白同时被写进了会话记录，所以刷新页面后它还在。现在四个出口（流式增量、缓存回放、同步返回、落库正文）口径一致。" },
+        { h: "首包只有空白时不出现空气泡", t: "页面继续显示「正在思考」，而不是先渲染一个空的气泡。" },
+        { h: "只裁开头，正文照旧", t: "正文里正常的换行与段落间距不受影响。" }
+      ]},
+      { type: "verified", items: [
+        { h: "两层取证", t: "后端打桩模型实测首帧与落库正文都带脏前缀；渲染层用真实样式数行盒，1 行变 3 行，多出来的就是空行。" },
+        { h: "反向验证", t: "把修复还原后，新增的 7 条断言全部转红——确认这些断言真的在验东西，而不是一直绿。" }
+      ]},
+      { type: "boundary", items: [
+        { h: "已存在的那条历史记录不会自动变干净", t: "这是对业务数据的批量修改，给出 SQL 后交人工确认再执行。缓存里的旧回答会自然淘汰。" }
+      ]}
+    ]
+  },
+  {
+    version: "v2.0.0-p1.6d",
+    date: "2026-09-28",
+    accent: "#58a6ff",
+    tagline: "锅圈知识库换新",
+    problem: "锅圈那份知识库需要整库重灌，界面上的锅圈 logo 要换掉，知识库列表还有一个进不去的跳转问题。",
+    sections: [
+      { type: "improved", items: [
+        { h: "知识库整库重灌", t: "换用新的解析结果重建向量库。" },
+        { h: "修掉知识库列表进不去的问题", t: "跳转的重定向问题。" }
+      ]},
+      { type: "boundary", items: [
+        { h: "这一版当时只打了 tag，没有补文档", t: "迭代文档、CHANGELOG、RELEASES 三处都缺，本条是 2026-10-06 对账时补记的事实。当时的方案取舍已无从还原，因此不事后补写——事后编出来的「当时否掉了什么」比缺失更误导。" }
+      ]}
+    ]
+  },
   {
     version: "v2.0.0-p1.6c",
     date: "2026-09-26",
