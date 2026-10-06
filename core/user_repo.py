@@ -592,6 +592,36 @@ def update_password(
         return session.execute(stmt).rowcount > 0
 
 
+def set_must_change_password(
+    user_id: int,
+    must_change: bool,
+    *,
+    updated_by: int | None = None,
+) -> bool:
+    """
+    只改 `must_change_password` 一列 —— 这个开关**绝不能**走 `update_password`。
+
+    为什么单独开一个入口：`update_password` 会把 `password_changed_at` 写成
+    now（那是它该做的事：换密码 = 重新起算 90 天）。而「强制他下次登录改密」
+    **没有换密码** —— 走那条路等于顺手给他的旧密码续了 90 天有效期，
+    而管理员的意图恰恰相反（往往是「他的密码可能泄露了，让他改掉」）。
+    实测过：点一下开关，`password_changed_at` 就从三个月前跳到刚才。
+
+    它**不动** `token_version`：不换密码就不该把人踢下线。
+    """
+    stmt = (
+        update(user_table)
+        .where(user_table.c.id == user_id)
+        .values(
+            must_change_password=bool(must_change),
+            updated_by=updated_by,
+            update_time=now_db(),
+        )
+    )
+    with session_scope() as session:
+        return session.execute(stmt).rowcount > 0
+
+
 def record_login_success(user_id: int, *, now: datetime | None = None) -> bool:
     """登录成功：失败计数归零、清锁、写最后登录时间。"""
     stamp = now or now_db()

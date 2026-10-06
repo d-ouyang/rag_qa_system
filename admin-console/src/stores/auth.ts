@@ -95,9 +95,13 @@ export const useAuthStore = defineStore('adminAuth', () => {
     const result = await authApi.login(name, password)
     kickedReason.value = ''
     deniedReason.value = ''
+    // ⚠️ 顺序不能反：**先落 token，再问 /me**。
+    // token 是 `configureAuth.getToken` 的数据源，没落就发请求 = 裸请求 = 401，
+    // 于是「权限二次确认」永远失败，且报的是「账号已停用或不存在」——
+    // 一条把人指向完全错误方向的提示（13a 就是这么写的，浏览器里 100% 登不进来）。
+    setSession(result.access_token, result.user.username, result.expires_in)
     try {
       const actor = await adminApi.fetchProfile()
-      setSession(result.access_token, result.user.username, result.expires_in)
       profile.value = actor
       status.value = 'ready'
     } catch (e) {

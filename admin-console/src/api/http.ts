@@ -104,12 +104,13 @@ export async function get<T>(path: string): Promise<T> {
   return (await res.json()) as T
 }
 
-export async function postJson<T>(path: string, body: unknown): Promise<T> {
+/** `body` 可省：像「重置密码」这种无请求体的动作不该被迫传一个 `{}`。 */
+export async function postJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await ensureOk(
     await fetch(`${API_BASE}${path}`, {
       method: 'POST',
       headers: buildHeaders(true),
-      body: JSON.stringify(body),
+      body: body === undefined ? undefined : JSON.stringify(body),
     }),
   )
   return (await res.json()) as T

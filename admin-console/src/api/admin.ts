@@ -5,7 +5,7 @@
  * **逐字段对齐**，不做「前端顺手加个字段」的重映射：偏移一旦发生，
  * 界面上就是「改了没生效」，而排查会先看前端。
  */
-import { get } from './http'
+import { del, get, patchJson, postJson } from './http'
 
 // --------------------------------------------------------------------------- //
 // 角色与状态
@@ -123,4 +123,165 @@ export function fetchProfile(): Promise<ActorProfile> {
 
 export function fetchOptions(): Promise<Options> {
   return get<Options>('/api/v1/admin/options')
+}
+
+// --------------------------------------------------------------------------- //
+// 员工
+// --------------------------------------------------------------------------- //
+export interface UserListResult {
+  items: UserRow[]
+  total: number
+}
+
+export interface CreateUserPayload {
+  username: string
+  employee_no: string
+  display_name?: string
+  email?: string | null
+  phone?: string | null
+  gender?: string | null
+  department_id?: number | null
+  position_id?: number | null
+  role?: Role
+}
+
+export interface CreateUserResult {
+  user: UserRow
+  /** ⚠️ 只出现这一次：后端不存明文、不再有第二次查看的接口 */
+  temporary_password: string
+}
+
+export function fetchUsers(params: {
+  keyword?: string
+  department_id?: number | null
+  role?: string | null
+  status?: string | null
+  include_resigned?: boolean
+}): Promise<UserListResult> {
+  const query = new URLSearchParams()
+  if (params.keyword) query.set('keyword', params.keyword)
+  if (params.department_id != null) query.set('department_id', String(params.department_id))
+  if (params.role) query.set('role', params.role)
+  if (params.status) query.set('status', params.status)
+  if (params.include_resigned) query.set('include_resigned', 'true')
+  const suffix = query.toString()
+  return get<UserListResult>(`/api/v1/admin/users${suffix ? `?${suffix}` : ''}`)
+}
+
+export function createUser(payload: CreateUserPayload): Promise<CreateUserResult> {
+  return postJson<CreateUserResult>('/api/v1/admin/users', payload)
+}
+
+export function updateUser(
+  id: number,
+  payload: Partial<Pick<UserRow, 'display_name' | 'email' | 'phone' | 'gender' | 'department_id' | 'position_id'>>,
+): Promise<UserRow> {
+  return patchJson<UserRow>(`/api/v1/admin/users/${id}`, payload)
+}
+
+export function setUserStatus(id: number, status: UserStatus): Promise<UserRow> {
+  return patchJson<UserRow>(`/api/v1/admin/users/${id}/status`, { status })
+}
+
+export function setUserRole(id: number, role: Role): Promise<UserRow> {
+  return patchJson<UserRow>(`/api/v1/admin/users/${id}/role`, { role })
+}
+
+// --------------------------------------------------------------------------- //
+// 密码（P2-13c）
+// --------------------------------------------------------------------------- //
+export interface ResetPasswordResult {
+  user: UserRow
+  temporary_password: string
+}
+
+/** 重置为一次性临时密码 + 强制改密。明文**只在这一次响应里**。 */
+export function resetPassword(id: number): Promise<ResetPasswordResult> {
+  return postJson<ResetPasswordResult>(`/api/v1/admin/users/${id}/password/reset`)
+}
+
+export function setMustChange(id: number, mustChange: boolean): Promise<UserRow> {
+  return patchJson<UserRow>(`/api/v1/admin/users/${id}/password/must-change`, {
+    must_change: mustChange,
+  })
+}
+
+export interface PasswordBoard {
+  must_change: BoardItem[]
+  expiring_soon: BoardItem[]
+  expired: BoardItem[]
+  stale_login: BoardItem[]
+  locked: BoardItem[]
+  counts: {
+    must_change: number
+    expiring_soon: number
+    expired: number
+    stale_login: number
+    locked: number
+  }
+  generated_at: string
+  policy: { expire_days: number; warn_days: number }
+}
+
+export interface BoardItem {
+  id: number
+  username: string
+  display_name: string
+  department_id: number | null
+  status: UserStatus
+  must_change: boolean
+  expire_in_days: number | null
+  last_login_at: string | null
+}
+
+export function fetchPasswordBoard(): Promise<PasswordBoard> {
+  return get<PasswordBoard>('/api/v1/admin/password/board')
+}
+
+// --------------------------------------------------------------------------- //
+// 部门与职位
+// --------------------------------------------------------------------------- //
+export interface DepartmentPayload {
+  code: string
+  name: string
+  parent_id?: number | null
+  leader_user_id?: number | null
+  sort_order?: number
+}
+
+export function createDepartment(payload: DepartmentPayload): Promise<DepartmentRow> {
+  return postJson<DepartmentRow>('/api/v1/admin/departments', payload)
+}
+
+export function updateDepartment(
+  id: number,
+  payload: Partial<Pick<DepartmentRow, 'name' | 'parent_id' | 'leader_user_id' | 'sort_order'>>,
+): Promise<DepartmentRow> {
+  return patchJson<DepartmentRow>(`/api/v1/admin/departments/${id}`, payload)
+}
+
+export function deleteDepartment(id: number): Promise<{ ok: boolean }> {
+  return del<{ ok: boolean }>(`/api/v1/admin/departments/${id}`)
+}
+
+export interface PositionPayload {
+  code: string
+  name: string
+  level?: string | null
+  sequence?: Sequence
+}
+
+export function createPosition(payload: PositionPayload): Promise<PositionRow> {
+  return postJson<PositionRow>('/api/v1/admin/positions', payload)
+}
+
+export function updatePosition(
+  id: number,
+  payload: Partial<Pick<PositionRow, 'code' | 'name' | 'level' | 'sequence'>>,
+): Promise<PositionRow> {
+  return patchJson<PositionRow>(`/api/v1/admin/positions/${id}`, payload)
+}
+
+export function deletePosition(id: number): Promise<{ ok: boolean }> {
+  return del<{ ok: boolean }>(`/api/v1/admin/positions/${id}`)
 }

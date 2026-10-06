@@ -13,9 +13,12 @@
  *    `/api/v1/admin/me` 二次确认后再放行。
  */
 import { computed, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
+const router = useRouter()
+const route = useRoute()
 
 const username = ref('')
 const password = ref('')
@@ -34,6 +37,13 @@ async function submit() {
     await auth.login(username.value.trim(), password.value)
     // 凭据不该在表单里多留一秒
     password.value = ''
+    // ⚠️ 登录成功**必须自己跳**：store 只负责换凭据，路由不会因为「token 有了」
+    // 而自动离开这一页（13a 漏的就是这一行 —— 表现是填完账号密码点登录后
+    // 什么都不发生，而 curl 验接口时永远看不到，因为接口本身是 200）。
+    const target = typeof route.query.redirect === 'string' && route.query.redirect
+      ? route.query.redirect
+      : '/overview'
+    await router.replace(target)
   } catch (e) {
     errorText.value = e instanceof Error ? e.message : '登录失败，请稍后重试'
   } finally {

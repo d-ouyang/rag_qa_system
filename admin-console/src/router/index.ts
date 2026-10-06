@@ -64,8 +64,10 @@ router.beforeEach(async (to) => {
     await auth.verify()
   }
   if (!auth.isAuthenticated) {
-    // 被管理端拒过的账号已经在 store 里清了凭据，回到登录页由它展示原因
-    return to.path === '/login' ? true : { name: 'login' }
+    // 被管理端拒过的账号已经在 store 里清了凭据，回到登录页由它展示原因。
+    // ⚠️ `redirect` 不能省：直接访问 /users 被拦到登录页的人，登录后理应回到
+    // /users，而不是落到总览再自己点一遍（少带这个参数 = 每次深链接都要走两遍）。
+    return to.path === '/login' ? true : { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.path === '/login') {
     return { name: 'overview' }
