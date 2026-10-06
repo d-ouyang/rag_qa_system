@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p1.6e</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p2.11a</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -258,7 +258,7 @@
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
       <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">7<span class="u">/ 14</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">17<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">18<span class="u">个</span></div></div>
     </div>
   </section>
 
@@ -292,7 +292,7 @@
       <div class="bar-row">
         <div class="lbl">P2 用户体系 <em>账号 · 数据隔离 · 管理端（第 3 版新增）</em></div>
         <div class="track" style="--seg:#f0883e">
-          <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+          <div class="seg partial"></div><div class="seg"></div><div class="seg"></div>
         </div>
         <div class="num">0 / 3</div>
       </div>
@@ -321,7 +321,7 @@
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
       2.0.0 是进行中的大版本——TLS、配置治理、观测备份，以及第 3 / 4 版新增的用户权限、数据隔离、管理端与知识库写权限都还没有做完，
-      所以「当前版本 2.0.0-p1.6e」不等于「可以上线」。
+      所以「当前版本 2.0.0-p2.11a」不等于「可以上线」。
       其中<strong>数据隔离（P2-12）与知识库写权限（P2-14）都是上线前必须完成的</strong>：系统只要给多人用，
       「登录能分人、数据不分人」就是数据泄漏；写权限漏了更糟——一个只读账号能把整库重灌，全公司都会答错，而且不报错。
     </p>
@@ -343,6 +343,29 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p2.11a",
+    date: "2026-10-06",
+    accent: "#3fb950",
+    tagline: "组织与账号表就位",
+    problem: "「用户」一直只存在于 .env 的一行配置里。数据库里的 user 表从建表那天起一行都没有，全仓库也没有任何一行代码读过它——登录是谁在做？网关查 .env 里的哈希串。后端连「来的是谁」都不知道。",
+    sections: [
+      { type: "added", items: [
+        { star: true, h: "员工有工号、部门、职位与角色了", t: "账号表从 6 列扩到 23 列，另加部门树（自关联）与职位职级两张表。职级挂在职位上而不是人身上，因为同岗位的人职级一般一致，改一次动一处。" },
+        { star: true, h: "停用与离职是两种状态", t: "权威字段是 status：active / disabled / resigned。原来那个只表达「在/不在」的 is_active 布尔列下线了——布尔区分不了「账号被暂时冻结」和「人已离职」，而两者都必须保留历史行。" },
+        { h: "手机号默认脱敏", t: "输出是 138****5678，要原值必须显式说明。让「忘记脱敏」变成一个需要解释的选择，而不是一次疏忽。" }
+      ]},
+      { type: "verified", items: [
+        { h: "73 项 + 24 项断言", t: "仓储行为与迁移往返各自连跑两遍全绿；结构零漂移（含列注释比对）。" },
+        { h: "存量数据一行不少", t: "35 个文档、90 个切片、那个会话和它的 12 条消息，迁移前后完全一致。" },
+        { h: "反向验证两条", t: "摘掉状态取值校验 → 3 条断言转红；把列注释改错一个字符 → 被漂移检测精确报错。" }
+      ]},
+      { type: "boundary", items: [
+        { star: true, h: "这一版之后仍然只能用 admin 一个账号登录", t: "用户表建好了但零行数据，登录真相源还是 .env。「多人能登录」是下一版的事，「会话互相看不见」是再下一版。别把「用户表建好了」理解成「多用户能用」。" },
+        { h: "迁移往返后老员工的工号会变成空值", t: "加列只能填默认值，造不出真实工号，需要人工回填。这条已写成断言钉在验收脚本里，不会悄悄发生。" }
+      ]}
+    ]
+  },
   {
     version: "v2.0.0-p1.6e",
     date: "2026-10-06",

@@ -153,6 +153,7 @@ test:
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module8_mysql_session_store.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module9_async_pipeline.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module10_chunk_refs.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module11_user_org.py
 
 # ---------- 异步解析 Worker（P0-3a）----------
 # 池、并发、超时、投递语义**全部在 worker/app.py 里按 settings 配置**，
@@ -180,6 +181,17 @@ accept:
 # ⚠️ 前置：make infra。别在正跑着 make worker 的终端里跑这个。
 accept-p04a:
 	$(PY) tests/acceptance_p0_4a.py
+
+# ---------- 迁移往返验收（P2-11a）----------
+# 与上面几个 accept 的区别：它验的是**迁移本身能不能安全来回**，不是业务功能。
+# 做法是真的 downgrade 到 0002 再 upgrade 回 head，中间核对
+#   · 表增删是否符合预期（department/position 建了又删、is_active 下线又回归）
+#   · **非空表**上重新 upgrade 会不会报错（employee_no 的默认值就在这里被验证）
+#   · 往返之后 compare_metadata 仍然为 0（结构零漂移的往返版）
+#   · 存量业务数据一行不少（35 文档 / 90 切片 / 会话 / 消息）
+# ⚠️ 它会改**数据库结构**（虽然最终回到 head）。跑之前不要有别的进程在改库。
+accept-p211a:
+	$(PY) tests/acceptance_p2_11a.py
 
 # ---------- 前端验收（P0-3b）----------
 # 与 make accept 一样是「不打桩」的验收，区别在**它驱动真浏览器**：

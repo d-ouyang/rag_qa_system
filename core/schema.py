@@ -1,5 +1,8 @@
 """
-五张表的 Python 侧定义（SQLAlchemy Core）—— 应用读写时用的类型化视图。
+业务表的 Python 侧定义（SQLAlchemy Core）—— 应用读写时用的类型化视图。
+
+P2-11a 起是**七张**表：user / department / position / folder / session /
+chat_message / document。前三张是组织与账号（本期新增），后四张是 P0-1/P0-3 的存量。
 
 --------------------------------------------------------------------------
 与 alembic/versions/0001_*.py 的关系（别把这两份合并）
@@ -52,19 +55,96 @@ TABLE_KW = {
     "mysql_collate": "utf8mb4_0900_ai_ci",
 }
 
+# --------------------------------------------------------------------------- #
+# P2-11a：组织与账号三张表
+# --------------------------------------------------------------------------- #
 user_table = sa.Table(
     "user",
     metadata,
     sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
     sa.Column("username", sa.String(64), nullable=False, comment="登录名，唯一"),
-    sa.Column("display_name", sa.String(128), nullable=False, server_default="", comment="展示名"),
+    sa.Column("employee_no", sa.String(32), nullable=False,
+              comment="工号，唯一且不随人变；与 username 分开是因为登录名可改、工号不可改"),
+    sa.Column("display_name", sa.String(128), nullable=False, server_default="", comment="姓名"),
+    sa.Column("email", sa.String(128), nullable=True,
+              comment="公司邮箱；MySQL 唯一索引允许多个 NULL，故允许不填"),
+    sa.Column("phone", sa.String(20), nullable=True,
+              comment="手机号；属个人信息，展示时必须脱敏"),
+    sa.Column("gender", sa.String(8), nullable=True,
+              comment="可选，仅展示，不参与任何权限或筛选逻辑"),
+    sa.Column("department_id", sa.BigInteger(), nullable=True, comment="所属部门 department.id"),
+    sa.Column("position_id", sa.BigInteger(), nullable=True,
+              comment="职位 position.id；职级挂在职位上，不放这里"),
+    sa.Column("role", sa.String(16), nullable=False, server_default="user",
+              comment="系统角色：admin/hr/user；与职位职级正交，职级高低不自动换权限"),
+    sa.Column("status", sa.String(16), nullable=False, server_default="active",
+              comment="在职状态：active/disabled/resigned；只有 active 能登录，离职走 resigned 而非删行"),
     sa.Column("password_hash", sa.String(255), nullable=False, server_default="",
               comment="bcrypt 哈希；绝不放明文"),
-    sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+    sa.Column("password_changed_at", mysql.DATETIME(fsp=6), nullable=True,
+              comment="最后一次改密时间，算到期用（策略见 P2-11b）"),
+    sa.Column("must_change_password", sa.Boolean(), nullable=False, server_default=sa.text("0"),
+              comment="管理员重置为临时密码后置 1，本人改完清 0"),
+    sa.Column("token_version", sa.Integer(), nullable=False, server_default=sa.text("0"),
+              comment="改密/停用/改角色时 +1；JWT 里的 ver 与之比对，不匹配即失效（免去 token 白名单，见 PLAN §11 D4）"),
+    sa.Column("failed_login_count", sa.Integer(), nullable=False, server_default=sa.text("0"),
+              comment="连续登录失败次数；成功登录归零"),
+    sa.Column("locked_until", mysql.DATETIME(fsp=6), nullable=True,
+              comment="锁定到期时间；连续失败达阈值时写入"),
+    sa.Column("last_login_at", mysql.DATETIME(fsp=6), nullable=True, comment="最后一次成功登录时间"),
+    sa.Column("created_by", sa.BigInteger(), nullable=True, comment="创建人 user.id；人事操作留痕"),
+    sa.Column("updated_by", sa.BigInteger(), nullable=True, comment="最后修改人 user.id"),
     sa.Column("create_time", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+    sa.Column("update_time", mysql.DATETIME(fsp=6), nullable=False,
+              server_default=sa.text("CURRENT_TIMESTAMP(6)"),
+              comment="最后修改时间；由应用显式写入，不依赖 ON UPDATE（迁移里不便声明）"),
+    sa.Column("deleted_at", mysql.DATETIME(fsp=6), nullable=True,
+              comment="软删除标记；日常不删行，离职用 status=resigned"),
     sa.PrimaryKeyConstraint("id"),
     sa.UniqueConstraint("username", name="uk_user_username"),
-    comment="用户表（本期未启用，见 PLAN-v2.0.0 §11 D2）",
+    sa.UniqueConstraint("employee_no", name="uk_user_employee_no"),
+    sa.UniqueConstraint("email", name="uk_user_email"),
+    sa.Index("idx_user_dept_status", "department_id", "status"),
+    sa.Index("idx_user_role", "role"),
+    comment="用户表（P2-11a 启用为账号真相源；原 is_active 布尔列已下线，权威字段是 status）",
+    **TABLE_KW,
+)
+
+department_table = sa.Table(
+    "department",
+    metadata,
+    sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+    sa.Column("code", sa.String(32), nullable=False, comment="部门编码，唯一"),
+    sa.Column("name", sa.String(128), nullable=False, comment="部门名称"),
+    sa.Column("parent_id", sa.BigInteger(), nullable=True,
+              comment="上级部门 id；自关联表达「中心→部门→组」，不建闭包表（规模到不了那个量级）"),
+    sa.Column("leader_user_id", sa.BigInteger(), nullable=True,
+              comment="部门负责人 user.id；按 P2-14 的 D13，默认是该部门共享知识库的 writer"),
+    sa.Column("sort_order", sa.Integer(), nullable=False, server_default=sa.text("0"), comment="同级排序"),
+    sa.Column("create_time", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+    sa.PrimaryKeyConstraint("id"),
+    sa.UniqueConstraint("code", name="uk_dept_code"),
+    sa.Index("idx_dept_parent", "parent_id"),
+    sa.Index("idx_dept_leader", "leader_user_id"),
+    comment="部门（P2-11a）",
+    **TABLE_KW,
+)
+
+position_table = sa.Table(
+    "position",
+    metadata,
+    sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+    sa.Column("code", sa.String(32), nullable=False, comment="职位编码，唯一"),
+    sa.Column("name", sa.String(128), nullable=False, comment="职位名称"),
+    sa.Column("level", sa.String(16), nullable=True,
+              comment="职级（如 P6）；放这里而不是放 user，因为同岗位的人职级一般一致，改一次动一处"),
+    sa.Column("sequence", sa.String(16), nullable=False, server_default="tech",
+              comment="职位序列：技术/管理/职能"),
+    sa.Column("create_time", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+    sa.PrimaryKeyConstraint("id"),
+    sa.UniqueConstraint("code", name="uk_position_code"),
+    sa.Index("idx_position_level", "level"),
+    comment="职位（含职级，P2-11a）",
     **TABLE_KW,
 )
 
@@ -170,6 +250,8 @@ document_table = sa.Table(
 __all__ = [
     "metadata",
     "user_table",
+    "department_table",
+    "position_table",
     "folder_table",
     "session_table",
     "chat_message_table",
