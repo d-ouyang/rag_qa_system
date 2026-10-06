@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p2.11b</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p2.11d</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -258,7 +258,7 @@
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
       <div class="stat"><div class="k">2.0.0 大版本进度</div><div class="v">7<span class="u">/ 14</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">19<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">20<span class="u">个</span></div></div>
     </div>
   </section>
 
@@ -321,7 +321,7 @@
     <p class="note">
       本页由 <code style="font-family:var(--mono);color:var(--text-2)">docs/RELEASES.md</code> 的内容渲染而来，两者内容一致。
       2.0.0 是进行中的大版本——TLS、配置治理、观测备份，以及第 3 / 4 版新增的用户权限、数据隔离、管理端与知识库写权限都还没有做完，
-      所以「当前版本 2.0.0-p2.11b」不等于「可以上线」。
+      所以「当前版本 2.0.0-p2.11d」不等于「可以上线」。
       其中<strong>数据隔离（P2-12）与知识库写权限（P2-14）都是上线前必须完成的</strong>：系统只要给多人用，
       「登录能分人、数据不分人」就是数据泄漏；写权限漏了更糟——一个只读账号能把整库重灌，全公司都会答错，而且不报错。
     </p>
@@ -343,6 +343,28 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p2.11d",
+    date: "2026-10-07",
+    accent: "#3fb950",
+    tagline: "员工数据种上了",
+    problem: "表建好了、规则也写好了，但库里一行数据都没有—— 这套东西还只是个能编译的骨架。",
+    sections: [
+      { type: "added", items: [
+        { star: true, h: "3 个部门、6 个职位、10 个人", t: "含一个已离职的员工：管理端一进去就有「离职 ≠ 删行」的样本可看。他不签发凭据，也不需要——状态就先把他拦住了。" },
+        { star: true, h: "每个人一个随机密码，且必须改", t: "密码只显示一次，并且当场写进改密历史——所以他第一次改密时不能用同一个。" },
+        { h: "默认干跑", t: "会写库的命令不该在敲错时直接生效。确认计划对了再加 --apply。" }
+      ]},
+      { type: "verified", items: [
+        { h: "重跑不会把人打回临时密码", t: "最该防的事故是：有人为了「刷新数据」重跑脚本，把同事自己改过的密码冲掉。所以重跑只同步资料，不碰密码也不碰状态（停用了的人重跑后仍是停用）。" },
+        { h: "临时密码不进日志", t: "脚本走 print 不走 logging—— 实测在 4MB 的历史日志里搜三个临时密码，命中 0 次。" },
+        { h: "抓到一个只在有数据时才现形的迁移 bug", t: "早先留下一条「重放需要空表」的限制。种子数据一灌进去，迁移往返立刻报唯一键冲突。没有绕开，而是把迁移改对。" }
+      ]},
+      { type: "boundary", items: [
+        { star: true, h: "有了账号 ≠ 能登录", t: "登录真相源还是 .env，网关还看不见数据库里的这 10 个人。那是下一版的事。" }
+      ]}
+    ]
+  },
   {
     version: "v2.0.0-p2.11b",
     date: "2026-10-06",

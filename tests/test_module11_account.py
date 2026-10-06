@@ -353,11 +353,18 @@ check_raises("空部门名 → ValueError", ValueError, repo.create_department,
              code=f"{PREFIX}x", name="")
 check_raises("非法职位序列 → ValueError", ValueError, repo.create_position,
              code=f"{PREFIX}x", name="x", sequence="sales")
-check("按序列过滤职位", [p.code for p in repo.list_positions(sequence="tech")] != [])
-check("按序列过滤为空时返回空列表",
-      repo.list_positions(sequence="function") == [])
+check("按序列过滤只返回该序列下的职位",
+      all(p.sequence == "tech" for p in repo.list_positions(sequence="tech"))
+      and repo.get_position_by_code(f"{PREFIX}senior") is not None)
+# ⚠️ 原来这里写的是「按序列过滤为空时返回空列表」，用sequence="function" 断言全表为空。
+# 那是**在种子数据出现之前才成立的隐含前提** —— P2-11d 把 6 个职位（含 function 序列）
+# 灌进库之后，这条断言红了，而它本来就不该关心别人有没有数据。
+# 教训与踩坑清单第 49 条同源：**断言的判据不能依赖「这张表本来是空的」。**
+check("按序列过滤的判据不依赖表是否为空（本模块造的职位在结果里）",
+      f"{PREFIX}senior" in [p.code for p in repo.list_positions(sequence="tech")])
+check("不存在于本模块的职位按 code 查 → None",
+      repo.get_position_by_code(f"{PREFIX}nope") is None)
 check("不存在的部门按 code 查 → None", repo.get_department_by_code(f"{PREFIX}nope") is None)
-check("不存在的职位按 code 查 → None", repo.get_position_by_code(f"{PREFIX}nope") is None)
 check("空列表建树 → 空树", repo.build_department_tree([]) == [])
 
 # --------------------------------------------------------------------------- #

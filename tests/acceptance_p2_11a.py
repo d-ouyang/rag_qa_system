@@ -14,15 +14,18 @@ P2-11a 验收脚本：组织与账号表（迁移 0003）
     存量数据零损失         （35 个文档 / 90 个切片 / 1 个会话 / 12 条消息还在吗？）
 
 --------------------------------------------------------------------------
-为什么往返前只灌 **1 个**员工（而不是 2 个）
+往返前会往表里塞 1 个员工；表里通常还有 P2-11d 的 10 个种子员工
 --------------------------------------------------------------------------
-`employee_no` 在迁移里带 `server_default=""`。ADD COLUMN 会给存量行填空串，
-而紧接着要建唯一键 `uk_user_employee_no` —— **两行空串会撞唯一键**。
+这一条曾经是个「已知限制」：`employee_no` 带 `server_default=""`，
+ADD COLUMN 给存量行填空串，而紧接着要建唯一键 —— **两行空串会撞唯一键**，
+于是 0003 只在「user 表为空或至多 1 行」时能重放。
 
-所以这张迁移的真实前提是「user 表为空或至多 1 行」（真实场景就是空的，
-账号在 P2-11c 之前一直走 `.env`）。本脚本灌 1 行，既验证了「非空表上
-ADD COLUMN 不报错」，又不越到那个已知限制外面去。
-那个限制本身写在迁移文件头里，不是靠脚本藏起来的。
+P2-11d 交付后种子数据把 10 个员工放进表里，这个限制第一次真的被触发：
+迁移往返验收直接报 `1062 Duplicate entry ''`。修法是在迁移里加一步回填
+（`employee_no = CONCAT('LEGACY-', id)`），不是在本脚本里绕开。
+
+所以现在这条断言反过来成了回归防线：**往返之后，工号不能是空串，
+也不能互相重复。**
 
 --------------------------------------------------------------------------
 用法
@@ -135,6 +138,118 @@ check("当前已在 0003（department 表存在）", "department" in tables())
 check("is_active 已下线", "is_active" not in cols("user"))
 BEFORE = business()
 
+
+def others_rows() -> int:
+    """本脚本之外的 user 行数（P2-11d 的 10 个种子员工）。
+
+    为什么要单独数：本脚本第一版断言「user 表总行数为 0」——
+    那是**在种子数据出现之前才成立的前提**。P2-11d 把 10 个员工灌进来之后，
+    这条断言红了，而它本来就不该关心别人的数据。同一堂课今天已经咬第二次，
+    于是这里改成「按业务键数自己的行」，而不是断言整表为空。
+    """
+    return one("SELECT COUNT(*) FROM `user` WHERE username NOT LIKE :p",
+               {"p": f"{PREFIX}%"})[0]
+
+
+OTHERS_BEFORE = others_rows()
+
+
+# 由迁移 0003 / 0004 建出来的表 —— 往返时会被 DROP TABLE 删掉（含数据）。
+# 验收脚本必须把它们连数据一起快照、往返后按原 id 写回，否则会留下悬空引用
+# （员工的 department_id / position_id 指着那些被删掉的行）。
+# 这里按表名 → 列清单写死，而不是动态扫information_schema：
+# 动态扫在开发期方便，但一旦漏掉某张表就是静默的数据损失，而这里漏不起。
+ROUNDTRIP_TABLES = {
+    "position": ("id", "code", "name", "level", "sequence", "create_time"),
+    "department": ("id", "code", "name", "parent_id", "leader_user_id", "sort_order", "create_time"),
+    "user_password_history": ("id", "user_id", "password_hash", "changed_at", "changed_by_user_id"),
+}
+
+
+def snapshot_created_tables() -> dict[str, list[tuple]]:
+    snap: dict[str, list[tuple]] = {}
+    with get_engine().connect() as conn:
+        for table, cols in ROUNDTRIP_TABLES.items():
+            snap[table] = [tuple(r) for r in conn.execute(
+                text(f"SELECT {', '.join(cols)} FROM `{table}` ORDER BY id"))]
+    return snap
+
+
+def restore_created_tables(snap: dict[str, list[tuple]]) -> int:
+    n = 0
+    with get_engine().begin() as conn:
+        for table, cols in ROUNDTRIP_TABLES.items():
+            for row in snap[table]:
+                placeholders = ", ".join(f":c{i}" for i in range(len(cols)))
+                conn.execute(text(
+                    f"INSERT INTO `{table}` ({', '.join(cols)}) VALUES ({placeholders})"
+                ), {f"c{i}": v for i, v in enumerate(row)})
+                n += 1
+    return n
+
+
+OTHERS_BEFORE = others_rows()
+
+
+def org_snapshot() -> tuple[list, list]:
+    """部门与职位的全部行（含 id）。
+
+    为什么必须快照：往返会 `DROP TABLE department / position`，
+    **表里的数据跟着一起没了** —— 而员工的 `department_id` / `position_id`
+    还指着那些 id，于是变成悬空引用（实测：重跑种子后靠「只同步资料」才修回来）。
+    验收脚本不该留下这种状态，所以连数据一起快照、往返后按原 id 写回
+    （保留 id 很重要：员工的引用靠它才能继续有效）。
+    """
+    with get_engine().connect() as conn:
+        deps = conn.execute(text(
+            "SELECT id, code, name, parent_id, leader_user_id, sort_order, create_time "
+            "FROM department ORDER BY id"
+        )).all()
+        poss = conn.execute(text(
+            "SELECT id, code, name, level, sequence, create_time FROM position ORDER BY id"
+        )).all()
+    return deps, poss
+
+
+def restore_org(deps: list, poss: list) -> int:
+    n = 0
+    with get_engine().begin() as conn:
+        for r in poss:
+            conn.execute(text(
+                "INSERT INTO position (id, code, name, level, sequence, create_time) "
+                "VALUES (:id, :code, :name, :level, :seq, :ct)"
+            ), {"id": r[0], "code": r[1], "name": r[2], "level": r[3], "seq": r[4], "ct": r[5]})
+            n += 1
+        for r in deps:
+            conn.execute(text(
+                "INSERT INTO department (id, code, name, parent_id, leader_user_id, sort_order, "
+                "create_time) VALUES (:id, :code, :name, :pid, :lid, :so, :ct)"
+            ), {"id": r[0], "code": r[1], "name": r[2], "pid": r[3], "lid": r[4], "so": r[5], "ct": r[6]})
+            n += 1
+    return n
+
+
+def employee_no_snapshot() -> dict[int, str]:
+    """往返前把所有工号按 id 记下来。
+
+    为什么必须快照-还原：往返会把每行的 employee_no 冲成 `LEGACY-<id>`
+    （0003 的回填），那**不是**真实工号。验收脚本不该把别人的工号留在库里 ——
+    尤其 P2-11d 之后表里会有 10 个种子员工，他们的工号是有意义的业务数据。
+    """
+    with get_engine().connect() as conn:
+        return {int(r[0]): r[1] for r in conn.execute(text("SELECT id, employee_no FROM `user`"))}
+
+
+def restore_employee_no(snapshot: dict[int, str]) -> int:
+    n = 0
+    with get_engine().begin() as conn:
+        for uid, emp_no in snapshot.items():
+            n += conn.execute(
+                text("UPDATE `user` SET employee_no = :e WHERE id = :i AND employee_no LIKE 'LEGACY-%'"),
+                {"e": emp_no, "i": uid},
+            ).rowcount
+    return n
+
 # 灌 1 个员工（为什么只灌 1 个，见文件头）
 _uid = repo.create_user(
     username=f"{PREFIX}u1",
@@ -146,6 +261,10 @@ check("灌入 1 个员工成功", repo.get_by_username(f"{PREFIX}u1") is not Non
 ROW_BEFORE = one("SELECT username, display_name, password_hash, create_time FROM `user` WHERE id=:i",
                  {"i": _uid})
 print(f"  员工行（往返前）：{ROW_BEFORE}")
+_rows_before = one("SELECT COUNT(*) FROM `user`")[0]
+EMP_NO_SNAPSHOT = employee_no_snapshot()
+CREATED_TABLES_SNAPSHOT = snapshot_created_tables()
+print(f"  已快照 {len(EMP_NO_SNAPSHOT)} 行的工号，往返后原样写回")
 
 # --------------------------------------------------------------------------- #
 section("第 2 组：downgrade 到 0002")
@@ -185,10 +304,26 @@ check("新增列按默认值补齐：role=user / status=active / token_version=0
 # employee_no 变成空串 —— 意味着「工号唯一且有值」这条业务约束在往返后
 # 不再成立，必须人工/脚本回填。这一条写进迁移文件头的「已知限制」，
 # 这里断言它确实发生，避免它悄悄发生。
-check("【已知差异】往返后旧行的 employee_no 被填成空串，需人工回填工号",
-      _u.employee_no == "", f"实际 {_u.employee_no!r}")
-check("【已知差异】仓储层拒绝新号复用空串工号（create_user 的必填校验）",
+check("【回归防线】往返后 employee_no 不是空串（0003 里加了 LEGACY-回填）",
+      _u.employee_no != "", f"实际 {_u.employee_no!r}")
+check(f"回填值是 LEGACY-<自己的 id>（本行 id={_uid}）",
+      _u.employee_no == f"LEGACY-{_uid}", f"实际 {_u.employee_no!r}")
+check("仓储层拒绝新号复用空串工号（create_user 的必填校验）",
       _user_rejects_empty_employee_no())
+
+# ③ 往返之后：全表的 employee_no 必须互不重复（这正是以前会炸的地方）
+with get_engine().connect() as conn:
+    dup = conn.execute(
+        text("SELECT employee_no, COUNT(*) c FROM `user` GROUP BY employee_no HAVING c > 1")
+    ).all()
+    blanks = conn.execute(
+        text("SELECT COUNT(*) FROM `user` WHERE employee_no = ''")
+    ).scalar()
+    total = conn.execute(text("SELECT COUNT(*) FROM `user`")).scalar()
+check(f"往返后全表 {total} 行的工号互不重复（0003 的唯一键建得出来）",
+      not dup, f"重复={dup}")
+check("往返后没有空串工号", blanks == 0, f"空串 {blanks} 行")
+check("往返过程没有丢员工", total == _rows_before, f"{_rows_before} → {total}")
 
 # --------------------------------------------------------------------------- #
 section("第 4 组：结构零漂移 + 存量数据")
@@ -213,7 +348,35 @@ check(f"会话 {BEFORE['session']} 个未变", AFTER["session"] == BEFORE["sessi
 check(f"消息 {BEFORE['chat_message']} 条未变", AFTER["chat_message"] == BEFORE["chat_message"])
 
 # --------------------------------------------------------------------------- #
-section("第 5 组：清理")
+section("第 5 组：还原工号")
+# --------------------------------------------------------------------------- #
+_restored = restore_employee_no(EMP_NO_SNAPSHOT)
+check(f"往返造成的 LEGACY- 工号已全部还原（{_restored} 行）", _restored == len(EMP_NO_SNAPSHOT),
+      f"还原 {_restored} / 共 {len(EMP_NO_SNAPSHOT)}")
+with get_engine().connect() as conn:
+    _left_legacy = conn.execute(
+        text("SELECT COUNT(*) FROM `user` WHERE employee_no LIKE 'LEGACY-%'")
+    ).scalar()
+check("库里没有残留的 LEGACY- 工号", _left_legacy == 0, f"残留 {_left_legacy} 行")
+
+# 往返把 0003 / 0004 建的表整表 DROP 了 → 按原 id 写回
+_created = sum(len(v) for v in CREATED_TABLES_SNAPSHOT.values())
+print(f"  往返前这些表共 {_created} 行，往返后被 DROP TABLE 删空 → 按原 id 写回")
+_back = restore_created_tables(CREATED_TABLES_SNAPSHOT)
+check(f"迁移建的表数据已还原（{_back} 行）", _back == _created, f"写回 {_back} / 应写 {_created}")
+with get_engine().connect() as conn:
+    _dangling = conn.execute(text(
+        "SELECT COUNT(*) FROM `user` u LEFT JOIN department d ON d.id = u.department_id "
+        "WHERE u.department_id IS NOT NULL AND d.id IS NULL")).scalar()
+    _counts = {t: conn.execute(text(f"SELECT COUNT(*) FROM `{t}`")).scalar()
+               for t in ROUNDTRIP_TABLES}
+check("每张表的行数都回到往返前",
+      _counts == {t: len(v) for t, v in CREATED_TABLES_SNAPSHOT.items()},
+      f"实际 {_counts}")
+check("没有员工的部门引用变成悬空", _dangling == 0, f"悬空 {_dangling} 行")
+
+# --------------------------------------------------------------------------- #
+section("第 6 组：清理")
 # --------------------------------------------------------------------------- #
 cleanup()
 with get_engine().connect() as conn:
@@ -230,8 +393,13 @@ with get_engine().connect() as conn:
 check("验收数据已清理干净", left_user == 0 and left_dept == 0 and left_pos == 0,
       f"{left_user}/{left_dept}/{left_pos}")
 check("清理没有误伤业务数据", business() == BEFORE, f"{business()}")
-check("user 表里没有留下任何残留行（含空串工号那种漏网的）", total_user == 0,
-      f"user 表还有 {total_user} 行")
+with get_engine().connect() as conn:
+    _mine = conn.execute(
+        text("SELECT COUNT(*) FROM `user` WHERE username LIKE :p"), {"p": f"{PREFIX}%"}
+    ).scalar()
+check(f"本脚本造的 {PREFIX}* 行已全部清掉", _mine == 0, f"还剩 {_mine} 行")
+check(f"别人的行数未被本脚本改动（种子员工 {OTHERS_BEFORE} 人）",
+      others_rows() == OTHERS_BEFORE, f"{OTHERS_BEFORE} → {others_rows()}")
 
 print()
 print("=" * 66)

@@ -36,3 +36,8 @@ gateway/node_modules/
 gateway/dist/
 gateway/.env
 .DS_Store
+
+# 种子脚本一次性签发的临时密码（scripts/seed_users.py --credentials-file）。
+# 里面是**能直接登录的密码**，绝不能进仓库。
+.seed-credentials.csv
+*credentials*.csv

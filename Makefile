@@ -182,7 +182,18 @@ accept:
 accept-p04a:
 	$(PY) tests/acceptance_p0_4a.py
 
-# ---------- 迁移往返验收（P2-11a）----------
+# ---------- 模拟员工种子（P2-11d）----------
+# 干跑是默认：写的是「账号 + 密码」，参数敲错不该直接生效（沿用 reindex 的规矩）。
+# 干跑只打印计划，一个字都不写；--apply 才落库，且**可反复跑**（重跑只同步资料，
+# 不动密码、不动 status —— 管理员改过的密码不该被脚本打回临时密码）。
+# 临时密码只显示一次，且脚本走 print 不走 logging，所以不会进 app.log。
+seed-users:
+	$(PY) scripts/seed_users.py
+
+seed-users-apply:
+	$(PY) scripts/seed_users.py --apply
+
+# 迁移往返验收（P2-11a）----------
 # 与上面几个 accept 的区别：它验的是**迁移本身能不能安全来回**，不是业务功能。
 # 做法是真的 downgrade 到 0002 再 upgrade 回 head，中间核对
 #   · 表增删是否符合预期（department/position 建了又删、is_active 下线又回归）

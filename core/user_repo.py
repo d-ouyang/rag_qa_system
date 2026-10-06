@@ -789,6 +789,26 @@ def list_departments() -> list[DepartmentRecord]:
     return [_row_to_department(r) for r in rows]
 
 
+def set_department_parent(dept_id: int, parent_id: int | None) -> bool:
+    """
+    改部门的上级（树结构调整）。
+
+    **不防环**：把 A 的上级设成 B 的下级会形成环，`build_department_tree` 遇到环
+    不会死循环（它按 parent 是否在 nodes 里判断，环上的节点谁都不是根，会**整棵
+    环消失**，不是无限递归）—— 但那是「静默丢数据」，比崩更糟。
+
+    所以调用方（管理端 P2-13b）必须自己校验「不能选自己的子孙做上级」。
+    仓储层只负责落库，不替业务做树形决策。
+    """
+    stmt = (
+        update(department_table)
+        .where(department_table.c.id == dept_id)
+        .values(parent_id=parent_id)
+    )
+    with session_scope() as session:
+        return session.execute(stmt).rowcount > 0
+
+
 def set_department_leader(dept_id: int, leader_user_id: int | None) -> bool:
     """
     设部门负责人。
