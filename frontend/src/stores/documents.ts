@@ -37,7 +37,13 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import * as docsApi from '@/api/documents'
-import type { DocStatusCounts, KnowledgeDoc, ParseQueueStatus, VectorStats } from '@/types'
+import type {
+  DocStatusCounts,
+  KbCapabilitiesResponse,
+  KnowledgeDoc,
+  ParseQueueStatus,
+  VectorStats,
+} from '@/types'
 import { useUiStore } from './ui'
 
 /** 轮询间隔。2 秒：能让「排队 → 解析中 → 完成」肉眼连贯；这个接口只读一行 MySQL，很便宜 */
@@ -72,6 +78,21 @@ export const useDocumentStore = defineStore('documents', () => {
   const stats = ref<VectorStats | null>(null)
   /** 解析链路运行状态；拿不到时为 null（运维信息不该打断业务） */
   const queue = ref<ParseQueueStatus | null>(null)
+
+  /**
+   * 本人的知识库写权限（P2-14d）。**null = 还没拿到**。
+   *
+   * ⚠️ 拿不到时**一律当没有权限**（`canUpload` 等 getter 走 `?? false`）。
+   * 反过来（拿不到就当全能）会在请求失败时把上传区显示出来，
+   * 用户拖完文件才吃一个 403 —— 那比「按钮暂时不显示」差得多。
+   *
+   * 为什么不从登录响应里取：`/api/auth/me` 与登录响应的字段名不一致
+   * （前者 `kbRole` 驼峰、后者 `kb_role` 下划线），而登出/改密会让 token 失效。
+   * 问后端要一份**当前**的更简单，也不会出现「token 里的旧档位」与库里不一致。
+   */
+  const capabilities = ref<KbCapabilitiesResponse | null>(null)
+  const canUpload = computed(() => capabilities.value?.capabilities.upload ?? false)
+  const canDelete = computed(() => capabilities.value?.capabilities.delete ?? false)
 
   /** 首次加载 / 手动刷新时为 true（会显示「加载中…」）；后台轮询**不会**置它，否则表格每 2 秒闪一次 */
   const loading = ref(false)
@@ -133,6 +154,24 @@ export const useDocumentStore = defineStore('documents', () => {
       queue.value = await docsApi.getParseQueueStatus()
     } catch (e) {
       console.warn('读取解析链路状态失败（忽略）', e)
+    }
+  }
+
+  /**
+   * 拉一次本人的知识库写权限（P2-14d）。
+   *
+   * 刻意**不**与 `fetchList` 合成一个 `Promise.all`：
+   * 一个失败会让另一个的成果一起丢掉，而这两件事的重要程度完全不同
+   * —— 列表挂了页面没法用，权限拿不到只是按钮少几个。
+   *
+   * 失败时保留 `capabilities = null`（= 一律按无权限显示），
+   * **不**回退成「有权限」：宁可少显示几个按钮，也不要让人拖完文件才吃 403。
+   */
+  async function fetchCapabilities(): Promise<void> {
+    try {
+      capabilities.value = await docsApi.getMyCapabilities()
+    } catch (e) {
+      console.warn('读取知识库写权限失败（按无权限显示）', e)
     }
   }
 
@@ -251,9 +290,15 @@ export const useDocumentStore = defineStore('documents', () => {
   }
 
   // ---------------------------------------------------------------- 动作
-  /** 首次进入 / 手动刷新：显示加载态 */
+  /**
+   * 首次进入 / 手动刷新：显示加载态。
+   *
+   * ⚠️ 写权限只在**这里**拉，不进 `syncNow` 的轮询：
+   * 它在 token 有效期内不会变（后端改档位会 bump `token_version` 让旧 token 失效），
+   * 每 2 秒重复拉一次纯属浪费。轮询是为了 `status`，不是为了权限。
+   */
   async function refresh(): Promise<void> {
-    await syncNow(false)
+    await Promise.all([syncNow(false), fetchCapabilities()])
   }
 
   /** 单批文件数上限（与后端 BATCH_UPLOAD_MAX_FILES 一致；前端先拦一道，省一趟请求） */
@@ -269,6 +314,13 @@ export const useDocumentStore = defineStore('documents', () => {
     const ui = useUiStore()
     const list = Array.isArray(files) ? files : [files]
     if (list.length === 0) return
+    // 前端守卫只是**体验**（少发一趟必失败的请求），后端 `require_kb_upload`
+    // 才是真闸门。两者都要有：只有后端 → 用户拖完文件才看到 403；
+    // 只有前端 → 换个入口（直接 curl）就绕过去了。
+    if (!canUpload.value) {
+      ui.toast('你的账号没有上传知识库文档的权限，如需上传请联系管理员', 'error', 5000)
+      return
+    }
     if (list.length > BATCH_MAX_FILES) {
       ui.toast(`一次最多提交 ${BATCH_MAX_FILES} 份文件（这次选了 ${list.length} 份），请分批`, 'error', 6000)
       return
@@ -323,6 +375,10 @@ export const useDocumentStore = defineStore('documents', () => {
 
   async function retry(doc: KnowledgeDoc): Promise<void> {
     const ui = useUiStore()
+    if (!canUpload.value) {
+      ui.toast('你的账号没有重新解析知识库文档的权限，如需修改请联系管理员', 'error', 5000)
+      return
+    }
     try {
       const res = await docsApi.reparseDocument(doc.doc_id)
       watched.add(doc.doc_id)
@@ -339,6 +395,10 @@ export const useDocumentStore = defineStore('documents', () => {
 
   async function remove(doc: KnowledgeDoc): Promise<void> {
     const ui = useUiStore()
+    if (!canDelete.value) {
+      ui.toast('你的账号没有删除知识库文档的权限，如需修改请联系管理员', 'error', 5000)
+      return
+    }
     try {
       const res = await docsApi.deleteDocument(doc.doc_id)
       watched.delete(doc.doc_id)
@@ -395,6 +455,10 @@ export const useDocumentStore = defineStore('documents', () => {
     totalChunks.value = 0
     stats.value = null
     queue.value = null
+    // ⚠️ 权限**必须**跟着清：登出后如果还留着上一位用户的 capabilities，
+    // 下一个登录的人（尤其是只读档）会先看到一屏可点的上传/删除按钮。
+    // 表现是「新用户一登进来就能上传」，而那只是上一位的权限没清。
+    capabilities.value = null
     tick = 0
     failures = 0
   }
@@ -405,6 +469,9 @@ export const useDocumentStore = defineStore('documents', () => {
     totalChunks,
     stats,
     queue,
+    capabilities,
+    canUpload,
+    canDelete,
     loading,
     submitting,
     submittingName,

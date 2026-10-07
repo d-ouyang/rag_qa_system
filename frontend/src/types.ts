@@ -153,6 +153,26 @@ export interface DocumentListResponse {
 }
 
 /**
+ * 本人的知识库写权限（P2-14d · `GET /api/v1/documents/capabilities`）。
+ *
+ * ⚠️ `capabilities` 的三个键是**后端 `kb_acl.capabilities()` 的原样透传**，
+ * 前端不许自己按 `kb_role` 反推（那是「两份清单各自漂」的形状）。
+ * 将来后端加第四个动作（比如「导出」），这里加一个键即可，
+ * 旧前端读不到就当作 false —— 那个动作本来也还没有入口。
+ */
+export interface KbCapabilitiesResponse {
+  /** 本人的档位（none / ops / qa / dev / superadmin） */
+  kb_role: string
+  capabilities: {
+    upload: boolean
+    delete: boolean
+    reindex: boolean
+  }
+  /** 中文长标签（带能力说明），直接显示给用户看 */
+  label: string
+}
+
+/**
  * 上传受理响应（`POST /api/v1/documents/upload` → **202**）。
  *
  * ⚠️ 这里**没有 `chunks_added`** —— 响应发出的那一刻解析还没开始，

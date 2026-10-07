@@ -330,6 +330,24 @@ if isinstance(kbs, list) and kbs:
           and not none_cap.get("reindex"),
           f"none={none_cap}")
 
+    # 短标签：14f 实测长标签（最长 21 个汉字）放进表格行内下拉会把整张表
+    # 撑到横向溢出、连带把左边几列压成竖排单字，所以 `/options` 额外下发短名。
+    check("每档都有 short_label（表格行内下拉用，避免撑爆表格）",
+          all(x.get("short_label") for x in kbs),
+          str([x.get("value") for x in kbs if not x.get("short_label")]))
+    # 判据是「短标签 == 长标签括号前那段」—— 也就是**必须派生**，
+    # 另写一张表就会漂，而漂了的表现是「下拉里叫 A、徽章上叫 B」，无报错。
+    bad_short = [
+        v for v, x in by_value.items()
+        if x.get("short_label") != str(x.get("label", "")).split("（", 1)[0].strip()
+    ]
+    check("🔴 short_label 由 label 派生（不是另写一份 —— 漂了不报错）",
+          not bad_short, f"不一致={bad_short}")
+    check("short_label 确实比 label 短（否则没起到限宽作用）",
+          all(len(str(x.get("short_label", ""))) < len(str(x.get("label", "")))
+              for x in kbs),
+          str([(x.get("value"), x.get("short_label"), x.get("label")) for x in kbs]))
+
 # --------------------------------------------------------------------------- #
 section("第 7 组：还原 + 零残留")
 # --------------------------------------------------------------------------- #

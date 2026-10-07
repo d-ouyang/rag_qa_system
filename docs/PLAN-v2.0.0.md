@@ -272,7 +272,7 @@ D9 = 保留 break-glass 超管 1 个 / D10 = `hr` 不能重置密码 / D11 = 网
 | P2-11 用户账号与密码策略             | ✅ **已完成**（11a 表 · 11b 密码规则 · 11d 种子员工 · **11c 网关查库登录**）                                                               | `2.0.0-p2.11c` | `iterations/v2.0.0-p2.11a-user-org-schema.md`<br />`iterations/v2.0.0-p2.11b-password-policy.md`<br />`iterations/v2.0.0-p2.11d-seed-users.md`<br />`iterations/v2.0.0-p2.11c-gateway-mysql-auth.md`                           |
 | P2-12 多租户数据隔离               | 🔄 进行中（**12b 身份与信任边界 ✅** / **12c 会话隔离 ✅** / **12d 检索隔离 ❌ 已取消** /12a 缩范围 / 12e 缩范围 —— 全部按 §8.1 决策重排）                   | `2.0.0-p2.12c` | `iterations/v2.0.0-p2.12b-trust-boundary.md`<br />`iterations/v2.0.0-p2.12c-session-isolation.md`                                                                                                                              |
 | P2-13 管理端（admin-console）    | ✅ **已完成**（13a 脚手架 + 身份门槛 · 13b 员工 CRUD + 部门/职位 · 13c 密码管理 · **13d 审计日志**）                                             | `2.0.0-p2.13d` | `iterations/v2.0.0-p2.13a-admin-console.md`<br />`iterations/v2.0.0-p2.13bc-employee-crud-and-passwords.md`<br />`iterations/v2.0.0-p2.13d-audit-log.md`                                                                       |
-| **P2-14 知识库写权限分发**          | 🔄 **进行中**（**14a ✅ · 14b ✅ · 14c ✅ · 14e ✅ · 14f0 ✅**（`2.0.0-p2.14f0`）—— 权限模型 `kb_role` 五档 + 四条写路由守卫 + 写操作落审计 + 网关路径粗筛 + **越权回归与结构断言**（172 项 + 7 条反向验证）+ **🔴 修掉一个静默失效的身份注入缺陷**（`Expect: 100-continue` 使`proxyReq` 事件不触发 → 身份头不注入**且伪造头不剥离**，即 12b 那条洞的第二个入口）；**下一步 14d 界面收敛 / 14f 管理端下发授权**） | `2.0.0-p2.14f0` | `iterations/v2.0.0-p2.14a-kb-write-acl.md`<br />`iterations/v2.0.0-p2.14b-gateway-kb-gate.md`<br />`iterations/v2.0.0-p2.14e-write-acl-regression.md`<br />`iterations/v2.0.0-p2.14f0-fix-expect-header-drop.md` |
+| **P2-14 知识库写权限分发**          | 🔄 **进行中**（**14a ✅ · 14b ✅ · 14c ✅ · 14e ✅ · 14f0 ✅ · 14df ✅**（`2.0.0-p2.14df`）—— 权限模型 `kb_role` 五档 + 四条写路由守卫 + 写操作落审计 + 网关路径粗筛 + **越权回归与结构断言**（177 项 + 11 条反向验证）+ **🔴 修掉一个静默失效的身份注入缺陷**（`Expect: 100-continue` 使`proxyReq` 事件不触发 → 身份头不注入**且伪造头不剥离**，即 12b 那条洞的第二个入口）+ **界面入口收敛**（新增后端 `GET /documents/capabilities`，判据全部由 `kb_acl.capabilities()` 派生、前端**不自己抄一份五档表**；上传区/删除/重试按档位**不渲染**、🔴 `onDrop` 自己判权限—— 拖放挂在整个 section 上，「上传区不渲染」不妨碍「拖到空白处照样上传」，界面验收看不出来、只有盯网络请求才抓得到）+ **管理端下发授权**（行内下拉 + 徽章 + 二次确认说清「改完他将能干什么」+ 审计落 `user.kb_role.change`）；**六格全部就绪**） | `2.0.0-p2.14df` | `iterations/v2.0.0-p2.14a-kb-write-acl.md`<br />`iterations/v2.0.0-p2.14b-gateway-kb-gate.md`<br />`iterations/v2.0.0-p2.14e-write-acl-regression.md`<br />`iterations/v2.0.0-p2.14f0-fix-expect-header-drop.md`<br />`iterations/v2.0.0-p2.14df-frontend-gating.md` |
 | **P2-15 Token 额度与预警**       | ⬜ 未开始（**新增，2026-10-08 用户提的需求**；可与 P2-14 并行，**无前置依赖**：用量列 P0-1b 已有、`session.user_id` 12c 刚落）                           | —              | —                                                                                                                                                                                                                              |
 
 > 状态标记：⬜ 未开始 / 🔄 进行中 / ✅ 已完成。每完成一项就在此表更新状态，  
@@ -929,11 +929,22 @@ DELETE /api/v1/documents/587           → {"deleted_chunks":0,"record_removed":
 - ⚠️ **解析 Worker 没有身份**（它消费队列，不经过网关）→ **绝不能读请求头**；
   重灌的权限判定必须在**接口层做完再入队**。
 
-#### 14d 前端入口收敛
+#### 14d 前端入口收敛 ✅（`2.0.0-p2.14df`）
 
 主应用的上传区 / 删除按钮按当前用户的 `kb_role` 显示或禁用。
 ⚠️ **这只是防误操作，不是防线**（绕过 UI 直接调接口仍会被 14b/14c 拦）。
 理由与12d 相同：前端藏入口能防「手滑」，防不了「故意」。
+
+**实际交付（与计划的两处偏差，都有理由）**：
+
+- 判据**不问后端要**这件事本来的写法是「前端自己抄一份五档表」，
+  已否掉 —— 改为新增 `GET /api/v1/documents/capabilities`，
+  由 `kb_acl.capabilities()` 派生（端点内零 if）。理由同 13d / 14f 的「两份清单各自漂」。
+- **不是「禁用」而是「不渲染」**：置灰按钮仍然占位、仍然长得像能点，
+  而「删除」会把全公司共用的文档从索引里抹掉。改为不渲染 + 一段只读说明卡。
+- 🔴 **计划里没写到、但必须做的一条**：`@drop` 挂在**整个 section** 上，
+  所以「上传区不渲染」不妨碍「拖文件到页面空白处照样上传」。
+  `onDrop` 必须自己判权限 —— 界面验收看不出来，只有盯网络请求才抓得到。
 
 #### 14e 越权回归
 
@@ -956,7 +967,7 @@ DELETE /api/v1/documents/587           → {"deleted_chunks":0,"record_removed":
 ⚠️ **跑测试前先 `make kb-guard-count`** ——
 2026-10-07 刚发生过「跑回归把知识库清空」两次事故（见 §4.8 知识库保护）。
 
-#### 14f 管理端下发授权
+#### 14f 管理端下发授权 ✅（`2.0.0-p2.14f0` 后端 / `2.0.0-p2.14df` 前端）
 
 `PATCH /api/v1/admin/users/{id}/kb-role`：
 - 下拉选档，**不接受自由输入**（理由同 13b 的其他下拉：档位名拼错就静默失效）
@@ -966,6 +977,12 @@ DELETE /api/v1/documents/587           → {"deleted_chunks":0,"record_removed":
 
 > **依赖**：**无**。14a 的 `kb_role` 不依赖 `project` 表（`project` 从来就不存在）。
 > 「文档上传 UI 迁到管理端」仍不做，只做权限维度。
+
+**实际交付**：`core/admin_service.py::set_kb_role()`（`require_admin`、**只禁降级不禁升级**、
+值没变**幂等不动库**）+ 审计 `user.kb_role.change` + `/options` 下发五档字典
+（`short_label` **由长标签派生**—— 21 个汉字的长标签放进表格行内下拉会把整张表撑到横向溢出）。
+前端：列表「知识库写权限」一列徽章 + 行内下拉 + 二次确认（说清「改完他将能干什么」
++ 提醒「知识库是全公司共用的」，收回时措辞更重）。
 
 ---
 

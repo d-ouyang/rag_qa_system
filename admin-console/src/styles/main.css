@@ -288,6 +288,63 @@ table.grid th.num {
   border-color: rgba(240, 97, 109, 0.32);
 }
 
+/* ---------------------------------------------------------------------------
+   知识库写权限档位（P2-14f）
+   ---------------------------------------------------------------------------
+   配色刻意与 `role` 那组**不一样**：role 是「系统身份」，中性色系；
+   kb_role 是「对全公司共用的那个库能做什么」，**颜色随危险度递增**。
+
+   为什么 `superadmin` 用 danger（红）而不是 primary（蓝）：
+   `badge-admin` 那套蓝是「他是管理员」，读起来是身份；
+   而超管档的意思是「他能删掉全公司任何人的任何文档、能让整库重灌导致
+   所有人答错」—— 这件事的视觉重量对不上「蓝色=管理员」。
+   红在这里是**提示**而不是**报错**（他确实有这个权限）。
+   → 这是一个刻意的「看起来刺眼但不是错了」的用法。
+--------------------------------------------------------------------------- */
+.badge-kb-none {
+  background: var(--bg-hover);
+  color: var(--text-3);
+  border-color: var(--border-strong);
+}
+.badge-kb-ops {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: rgba(62, 207, 142, 0.3);
+}
+.badge-kb-qa {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: rgba(62, 207, 142, 0.3);
+}
+.badge-kb-dev {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: rgba(240, 177, 60, 0.32);
+}
+.badge-kb-superadmin {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: rgba(240, 97, 109, 0.32);
+}
+
+/** 表头里的「?」提示气泡（P2-14f：知识库权限那一列的说明）。 */
+.th-hint {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  line-height: 14px;
+  text-align: center;
+  border-radius: 50%;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-strong);
+  color: var(--text-3);
+  font-size: 10px;
+  font-style: normal;
+  cursor: help;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
 .muted {
   color: var(--text-3);
 }

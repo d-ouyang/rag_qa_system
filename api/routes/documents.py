@@ -8,6 +8,7 @@
     POST   /upload/batch            批量上传（p1.5c；逐份独立受理，单份失败不拖垮整批）
     GET    /                        列出知识库文档（**读 MySQL**，支持 ?status= &project_id=）
     GET    /stats                   向量库状态统计（后端类型/嵌入模型/总量）
+    GET    /capabilities            **本人**的知识库写权限（14d：前端入口收敛的数据源）
     GET    /download?doc_id=        下载原始文件（不允许直接暴露磁盘路径）
     GET    /{doc_id}/chunks         查看某文档的全部切分片段
     POST   /{doc_id}/reparse        手动重新触发解析
@@ -70,9 +71,10 @@ from fastapi.responses import FileResponse
 
 from config.settings import settings
 from core import document_repo as repo
+from core import kb_acl
 from core import kb_service
 from core.document_loader import DocumentLoader
-from core.identity import Actor, require_kb_delete, require_kb_upload
+from core.identity import Actor, current_actor, require_kb_delete, require_kb_upload
 from core.parsing import resolve_storage_path
 from core.queue import enqueue_parse
 from core.vector_store import get_vector_store_manager
@@ -348,6 +350,38 @@ def list_documents(
 )
 def document_stats() -> dict[str, Any]:
     return get_vector_store_manager().get_stats()
+
+
+# --------------------------------------------------------------------------- #
+# 当前用户的知识库写权限（14d：前端入口收敛的数据源）
+# --------------------------------------------------------------------------- #
+@router.get(
+    "/capabilities",
+    summary="当前用户的知识库写权限",
+    description=(
+        "返回**调用者本人**的 `kb_role` 与三个动作的判定结果。\n\n"
+        "**存在的理由**：前端要按权限显示/隐藏上传区与删除按钮，"
+        "而判据的唯一定义在 `core/kb_acl.py`（服务端）。\n"
+        "让前端自己抄一份五档表 = 两份清单各自漂 —— 13d 与 14f 都踩过这个形状。\n\n"
+        "⚠️ **这不是权限闸门**，只是把既有判定**如实告诉**前端：\n"
+        "   真正的拒绝发生在四条写路由的 `Depends(require_kb_*)` 上。\n"
+        "   所以即使这个端点被绕过（返回全 true），写操作依然会被后端 403 ——\n"
+        "   它错了只是让界面**多显示几个点了会失败的按钮**，不会造成越权。\n\n"
+        "⚠️ 用 `current_actor`（任意已登录）而不是 `require_kb_*`：\n"
+        "   恰恰是**没有**写权限的人才需要读它（才知道自己该看不能改）。\n"
+    ),
+)
+def my_kb_capabilities(actor: Actor = Depends(current_actor)) -> dict[str, Any]:
+    # 判据全部由 kb_acl 派生，这里不做任何 if。
+    # 档位值本身也回给前端：界面要显示「你当前是只读」这类说明，
+    # 而让前端从 capabilities 反推档位是绕路（且三档能力完全相同，分不出来）。
+    return {
+        "kb_role": actor.kb_role,
+        "capabilities": kb_acl.capabilities(actor.kb_role),
+        "label": kb_acl.KB_ROLE_LABELS.get(
+            actor.kb_role, kb_acl.KB_ROLE_LABELS[kb_acl.DEFAULT_KB_ROLE]
+        ),
+    }
 
 
 # --------------------------------------------------------------------------- #

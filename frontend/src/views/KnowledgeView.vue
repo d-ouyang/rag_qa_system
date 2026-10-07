@@ -120,6 +120,15 @@ function formatSize(bytes: number): string {
 }
 
 // ---------- 上传（p1.5c 起支持多文件 / 文件夹） ----------
+// ⚠️ Pinia 的 getter 在 store 实例上**已解包**，所以这里是 `docs.canUpload`
+// 而不是 `docs.canUpload.value`（后者 TS 报 boolean 上不存在 value）。
+// 判据全部来自后端（`GET /api/v1/documents/capabilities` → `docs.canUpload`
+// / `docs.canDelete`），**这里一个 if 都不判档位** —— 前端抄一份五档表就是
+// 「两份清单各自漂」，而漂了不报错（表现为「运营能上传却被藏了按钮」，
+// 没人会想到去比后端）。判据唯一定义在 `core/kb_acl.py`。
+const canUpload = computed(() => docs.canUpload)
+const canDelete = computed(() => docs.canDelete)
+
 function pickFile() {
   fileInput.value?.click()
 }
@@ -134,12 +143,27 @@ function onFileChosen(e: Event) {
   input.value = ''
 }
 
+/**
+ * 拖拽落点。
+ *
+ * ⚠️ 这里**必须自己判权限**，不能只靠「上传区没渲染」——
+ * 拖放事件挂在**整个 section** 上（见模板根节点的 @drop），
+ * 所以一个只读用户把文件拖到页面任意空白处，一样会触发上传。
+ * 那条路如果没有这里的判断，就是一个「按钮看不见但功能还在」的洞。
+ */
 function onDrop(e: DragEvent) {
   dragOver.value = false
+  if (!canUpload.value) {
+    ui.toast('你的账号没有上传知识库文档的权限，如需上传请联系管理员', 'error', 5000)
+    return
+  }
   // 多文件拖拽直接拿 files 列表。拖入文件夹时浏览器不会展开子目录。
   const files = e.dataTransfer?.files
   if (files?.length) void docs.upload(Array.from(files))
 }
+
+/** 只读用户看到的那段说明（替代上传区）。文案说清「为什么不能」与「找谁」 */
+const readOnlyHint = '你的账号当前对知识库是只读的：可以查看、搜索与下载，不能上传或删除文档。如需修改，请联系系统管理员在管理端为你开通知识库维护权限。'
 
 function confirmRemove(d: KnowledgeDoc) {
   // 正在解析/排队的文档，删除会中断这次解析 —— 这一点必须说在确认框里，
@@ -251,8 +275,11 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
     </div>
     <p v-if="chainWarning" class="chain-warn">{{ chainWarning }}</p>
 
-    <!-- 上传区 -->
-    <div class="card dropzone" :class="{ over: dragOver, busy: docs.submitting }" @click="!docs.submitting && pickFile()">
+    <!-- 上传区。P2-14d起**按写权限显隐**：
+         此前所有人（含 kb_role=none 的只读员工）都能看到上传区与删除按钮，
+         点了才吃一个 403 —— 那不是「权限在生效」，那是「权限在事后惩罚人」。
+         判据来自后端 capabilities 端点，前端不自己判档位。 -->
+    <div v-if="canUpload" class="card dropzone" :class="{ over: dragOver, busy: docs.submitting }" @click="!docs.submitting && pickFile()">
       <template v-if="docs.submitting">
         <div class="spinner" />
         <p class="drop-title">正在提交：{{ docs.submittingName }}</p>
@@ -271,6 +298,12 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
       </template>
       <input ref="fileInput" type="file" hidden multiple :accept="ACCEPT" @change="onFileChosen" />
     </div>
+    <!-- 只读时把上传区换成一句说明，而不是留一个点不动的虚线框：
+         空虚线框会让人以为页面坏了，而「你是只读的，找管理员开」把话说完了。 -->
+    <div v-else class="card readonly-note">
+      <p class="readonly-title">知识库维护：只读</p>
+      <p class="readonly-text">{{ readOnlyHint }}</p>
+    </div>
 
     <!-- 文档列表 -->
     <div class="card doc-table">
@@ -283,7 +316,11 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
         <span class="col-op">操作</span>
       </div>
       <div v-if="docs.loading && docs.documents.length === 0" class="empty-state">加载中…</div>
-      <div v-else-if="docs.documents.length === 0" class="empty-state">知识库为空，上传第一份文档开始使用</div>
+      <!-- 空态文案分两支：让只读用户看到「上传第一份文档」会让他去点一个
+           不存在的按钮（而且永远等不到它出现）。 -->
+      <div v-else-if="docs.documents.length === 0" class="empty-state">
+        {{ canUpload ? '知识库为空，上传第一份文档开始使用' : '知识库为空（你当前是只读权限，无法自行上传）' }}
+      </div>
       <div v-else class="table-body">
         <template v-for="d in pagedDocs" :key="d.doc_id">
         <div class="table-row">
@@ -299,8 +336,12 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
           <span class="col-op">
             <button class="op-btn" :disabled="!canShowChunks(d)" :title="chunksTitle(d)" @click="openChunks(d)">片段</button>
             <button class="op-btn" title="下载原文件" @click="docs.download(d)">下载</button>
-            <button class="op-btn" :disabled="!canRetry(d)" :title="retryTitle(d)" @click="docs.retry(d)">重试</button>
-            <button class="op-btn danger" @click="confirmRemove(d)">删除</button>
+            <!-- P2-14d：无写权限时**不渲染**重试/删除，而不是渲染成置灰。
+                 置灰按钮仍然占位、仍然长得像能点；而这两项一个能把全公司共用的
+                 文档从索引里抹掉、一个会重新触发解析，都不该出现在只读用户的界面上。
+                 「看不到」与「不能」在这里是同一件事的两面，所以选前者更诚实。 -->
+            <button v-if="canUpload" class="op-btn" :disabled="!canRetry(d)" :title="retryTitle(d)" @click="docs.retry(d)">重试</button>
+            <button v-if="canDelete" class="op-btn danger" @click="confirmRemove(d)">删除</button>
           </span>
         </div>
         <!-- 失败原因单独一行：它是**给用户看的下一步动作**（换文件重传 / 点重试），
@@ -559,6 +600,26 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ---------- 只读提示（14d：无写权限时代替上传区） ---------- */
+.readonly-note {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 22px;
+  background: var(--bg-sidebar);
+}
+.readonly-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 5px;
+}
+.readonly-text {
+  font-size: 12.5px;
+  color: var(--text-3);
+  line-height: 1.75;
+  max-width: 720px;
 }
 
 /* ---------- 文档表格 ---------- */

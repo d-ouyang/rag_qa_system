@@ -33,6 +33,47 @@ export const SEQUENCE_LABEL: Record<Sequence, string> = {
 }
 
 // --------------------------------------------------------------------------- //
+// 知识库写权限档位（P2-14a / 14f）
+// --------------------------------------------------------------------------- //
+/**
+ * 五档知识库写权限。
+ *
+ * ⚠️ **刻意不复用 `Role`** —— `role` 管「能不能进管理端」，
+ * 而 `kb_role` 管「能不能删全公司共用的那个库」。两者正交：
+ * `role=user + kb_role=superadmin` 是合法且常用组合
+ * （让一个不碰员工数据的员工去维护知识库）。
+ * 把它们塞进同一个类型里会诱使人写成「超管才能管知识库」——
+ * 那样就把 D14（按人授权的独立维度）改回按角色授权了。
+ *
+ * ⚠️ 这里**不维护 `KB_ROLE_LABEL`** —— 标签与每档能力由后端
+ * `GET /api/v1/admin/options` 的 `kb_roles` 字典下发（见 `Options`）。
+ * 前端自己再写一份标签/能力表，就是 13d 与 14a 各踩过一次的那个坑：
+ * **两份清单各自漂，且漂了不报错**（界面显示 A、判定按 B）。
+ */
+export type KbRole = 'none' | 'ops' | 'qa' | 'dev' | 'superadmin'
+
+/** `/options` 下发的单档描述（`value` 与 `KbRole` 对齐）。 */
+export interface KbRoleOption {
+  value: KbRole
+  /** 长标签（带能力说明）→ 给徽章与确认弹窗。 */
+  label: string
+  /**
+   * 短名（只有档位名）→ 给**宽度受限**的行内下拉。
+   *
+   * ⚠️ 14f 实测：长标签最长 21 个汉字，放进表格行内下拉会把整张表
+   * 撑到横向溢出、连带把左边几列压成竖排单字（部门名变成「总/部/职/能/中/心」）。
+   * **没有 `short_label` 的老后端**（升级错配）回落成长标签 ——
+   * 宁可挤一点也不要空白下拉。
+   */
+  short_label?: string
+  capabilities: {
+    upload: boolean
+    delete: boolean
+    reindex: boolean
+  }
+}
+
+// --------------------------------------------------------------------------- //
 // 数据结构
 // --------------------------------------------------------------------------- //
 export interface PasswordState {
@@ -47,12 +88,20 @@ export interface ActorProfile {
   username: string
   display_name: string
   role: Role
+  /** P2-14a新增：知识库写权限档位。**与 `role` 正交**，不是它的子集。 */
+  kb_role: KbRole
   status: UserStatus
   identity_source: string
   permissions: {
     staff: boolean
     reset_password: boolean
     manage_org: boolean
+    /** 知识库三档能力。**判据唯一处是后端 `core/kb_acl.py`**，
+     *  这里只转发 —— 前端不自己算「哪个档能干什么」（那是 13d「两份清单
+     *  各自漂」的形状，14a 又踩过一次）。 */
+    kb_upload: boolean
+    kb_delete: boolean
+    kb_reindex: boolean
   }
   password: PasswordState
 }
@@ -68,6 +117,8 @@ export interface UserRow {
   department_id: number | null
   position_id: number | null
   role: Role
+  /** P2-14a：知识库写权限档位（与 `role` 正交）。 */
+  kb_role: KbRole
   status: UserStatus
   must_change_password: boolean
   token_version: number
@@ -105,6 +156,15 @@ export interface Options {
   roles: Role[]
   statuses: UserStatus[]
   sequences: Sequence[]
+  /**
+   * P2-14f：知识库写权限五档 —— **标签与每档能力全部后端派生**。
+   *
+   * ⚠️ 刻意**不在前端维护**这张表：能力判定是安全判据，
+   * 前端那份只用于「按钮显不显示」，一旦与后端漂了，
+   * 症状是「界面给了权限但接口403」或反过来，且没有任何报错。
+   * `tests/test_module12_kb_role.py` 第 6 组逐档比对两边的 capabilities。
+   */
+  kb_roles: KbRoleOption[]
   password_policy: {
     min_length: number
     expire_days: number
@@ -193,6 +253,21 @@ export function setUserStatus(id: number, status: UserStatus): Promise<UserRow> 
 
 export function setUserRole(id: number, role: Role): Promise<UserRow> {
   return patchJson<UserRow>(`/api/v1/admin/users/${id}/role`, { role })
+}
+
+/**
+ * 下发 / 收回知识库写权限（P2-14f）。
+ *
+ * ⚠️ `kb_role` 的类型是 `KbRole` 而**不是 `string`** —— 让 TypeScript
+ * 在编译期挡住 `'superadminn'` 这类拼写错误。后端另有严格校验（非规范值 400），
+ * 但那是运行时；这里要的是**写错时编辑器就红**。
+ *
+ * 两条后端规则（前端要读得懂报错文案）：
+ *   · 不能改自己的档位往下调（降权会让登录立刻失效，恢复要找别人）；
+ *   · 值没变时后端不动库（不会把你白踢下线）。
+ */
+export function setUserKbRole(id: number, kbRole: KbRole): Promise<UserRow> {
+  return patchJson<UserRow>(`/api/v1/admin/users/${id}/kb-role`, { kb_role: kbRole })
 }
 
 // --------------------------------------------------------------------------- //

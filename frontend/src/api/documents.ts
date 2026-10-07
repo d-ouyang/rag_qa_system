@@ -29,6 +29,7 @@ import type {
   DocumentChunksResponse,
   DocumentListResponse,
   DocStatus,
+  KbCapabilitiesResponse,
   ParseQueueStatus,
   ReparseAccepted,
   UploadAccepted,
@@ -55,6 +56,20 @@ export function listDocuments(params: ListDocumentsParams = {}) {
 }
 
 export const getVectorStats = () => get<VectorStats>('/api/v1/documents/stats')
+
+/**
+ * 取**本人**的知识库写权限（P2-14d）—— 决定上传区与删除按钮的显隐。
+ *
+ * ⚠️ 判据在后端（`core/kb_acl.py`），前端**不自己抄一份五档表**：
+ * 两份清单各自漂是 13d / 14f 都踩过的形状，而且漂了不报错
+ * （表现为「运营能上传却被前端藏了按钮」，没人会想到去比后端）。
+ *
+ * ⚠️ 这个接口**不是权限闸门**，只是把既有判定如实告诉前端。
+ * 真正的拒绝在四条写路由的 `Depends(require_kb_*)` 上 ——
+ * 所以它错了的后果只是「界面上多显示几个点了会失败的按钮」。
+ */
+export const getMyCapabilities = () =>
+  get<KbCapabilitiesResponse>('/api/v1/documents/capabilities')
 
 /**
  * 上传文档 → **202 受理**（不代表解析完成，更不代表成功）。

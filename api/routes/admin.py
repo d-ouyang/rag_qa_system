@@ -188,7 +188,12 @@ def read_options(actor: Actor = Depends(require_staff)) -> dict[str, Any]:
         # 顺带把每档的「能干什么」也下发（从 kb_acl.capabilities 派生）——
         # 界面上要能给管理员看「这一档到底能做什么」，而不只是一句标签。
         "kb_roles": [
+            # `label` 是长标签（带能力说明）→ 给徽章与确认弹窗；
+            # `short_label` 是短名 → 给表格行内下拉，因为长标签会把整张表
+            # 撑到横向溢出、连带把左边几列压成竖排单字（14f 实测）。
+            # 两者都由 kb_acl 一处派生，不允许前端自己拼。
             {"value": v, "label": kb_acl.KB_ROLE_LABELS[v],
+             "short_label": kb_acl.KB_ROLE_SHORT_LABELS[v],
              "capabilities": kb_acl.capabilities(v)}
             for v in sorted(kb_acl.KB_ROLES)
         ],

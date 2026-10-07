@@ -369,6 +369,35 @@ KNOWN_WRITE_ROUTES = {
 }
 
 
+def _strip_py_comments(src: str) -> str:
+    """去掉 Python 源码里的注释（`#` 到行尾）与三引号字符串内容，**保留行结构**。
+
+    ⚠️ 不能用朴素的「按 # 切半行」：字符串里出现 `#`（URL 片段、颜色值 `#00E0A4`）
+    会被当成注释，把后面真正的代码一起吃掉 —— 那样提取器会**少**报依赖，
+    而「少报」在这类结构断言里等于「漏检」（踩坑清单第 12 条的形状）。
+
+    所以这里走 `tokenize`：它知道什么是字符串、什么是注释。
+    保留换行是为了让行号与原文仍然对得上（错误信息里要能报行号）。
+    """
+    import io
+    import tokenize
+
+    out: list[str] = []
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(src).readline)
+        for tok in tokens:
+            if tok.type in (tokenize.COMMENT, tokenize.STRING):
+                # 用等量空行占位，保持行数不变
+                out.append("\n" * tok.string.count("\n"))
+            else:
+                out.append(tok.string)
+    except tokenize.TokenError:
+        # 源码被截断（tokenize 遇不到结尾）时宁可保守：返回原文，
+        # 让提取器照常工作 —— 这时「多报」比「漏报」安全
+        return src
+    return "".join(out)
+
+
 def extract_routes(src: str) -> list[tuple[str, str, str, int]]:
     """
     从路由源码里提出 `(方法, 路径, Depends 列表原文, 行号)`。
@@ -395,7 +424,18 @@ def extract_routes(src: str) -> list[tuple[str, str, str, int]]:
         pm = re.search(r"""["'](\/[^"']*)["']""", block)
         path = pm.group(1) if pm else "?"
 
-        deps = " ".join(re.findall(r"Depends\(\s*([A-Za-z_][A-Za-z0-9_]*)", block))
+        # ⚠️ **必须先剥注释再找Depends**（14d 实测踩出来的）。
+        # 依赖提取的正则是 `Depends\(\s*(\w+)` —— 它不区分代码与注释，
+        # 于是一条在 docstring 里写着「真正的拒绝发生在
+        # `Depends(require_kb_*)` 上」的读路由，会被提取出
+        # `require_kb_` 这个依赖，然后「读路由不该挂 kb 守卫」那条转红。
+        #
+        # 症状极像真回归（一个 GET 路由真的挂了守卫？），而根因是提取器，
+        # 修法必须是**让提取器看不见注释** ——
+        # 加白名单「这几个依赖名算注释」只能救这一处，
+        # 下一个人写一句提到别的依赖的 docstring 就又红了。
+        code_only = _strip_py_comments(block)
+        deps = " ".join(re.findall(r"Depends\(\s*([A-Za-z_][A-Za-z0-9_]*)", code_only))
         out.append((method, path, deps, start + 1))
     return out
 
@@ -405,6 +445,48 @@ write_routes = [r for r in routes if r[0] in WRITE_METHODS]
 read_routes = [r for r in routes if r[0] == "get"]
 
 print(f"  （扫到写路由 {len(write_routes)} 条、读路由 {len(read_routes)} 条）")
+
+# 2-pre提取器自检：_strip_py_comments 生效，但**没有把真依赖一起吃掉**
+# ---------------------------------------------------------------------------
+# 为什么这三条必须在这里（而不是跑完再手工验一遍）：
+# 「剥注释」这个机制最坏的失效方式是**剥过头** —— 一旦它把代码也当成注释，
+# 提取器会报不出任何依赖，于是「每条写路由都挂了守卫」全部转红，
+# 而红的原因是提取器坏了、不是守卫没了。这类失效每次都会发生。
+# 所以它的判别力必须被钉住，且钉在**每次回归**里。
+print("\n-- 2pre 依赖提取器：剥注释但不误伤代码 --")
+_strip = _strip_py_comments
+_extract = lambda s: re.findall(  # noqa: E731
+    r"Depends\(\s*([A-Za-z_][A-Za-z0-9_]*)", s
+)
+
+# ① 注释/docstring 里的 Depends(名字) 不该被当成真依赖
+check("注释里的 Depends(require_kb_*) 不会被提取成依赖",
+      "require_kb_" not in _extract(
+          _strip('def f(a: A = Depends(current_actor)):\n'
+                 '    """判据在 Depends(require_kb_*) 上"""\n    pass')),
+      _extract(_strip('def f(a: A = Depends(current_actor)):\n'
+                      '    """Depends(require_kb_*)"""\n    pass')))
+
+# ② 真依赖仍然提取得到（剥过头这条失效的红）
+check("真依赖仍然提取得到（剥注释没有把代码也吃掉）",
+      _extract(_strip("def f(a: A = Depends(require_kb_upload)):\n    pass"))
+      == ["require_kb_upload"],
+      _extract(_strip("def f(a: A = Depends(require_kb_upload)):\n    pass")))
+
+# ③ 字符串里的 # 不是注释 —— 朴素的「按 # 切半行」会吃掉后面的代码，
+#    而「提取不到依赖」在这类结构断言里等于**漏检**（比误报更坏）
+check("字符串里的 # 不会被当成注释（否则后面的真依赖被吃掉 → 漏检）",
+      _extract(_strip("s = 'color #00E0A4'\n"
+                      "def f(a: A = Depends(require_kb_delete)):\n    pass"))
+      == ["require_kb_delete"],
+      _extract(_strip("s = 'color #00E0A4'\n"
+                      "def f(a: A = Depends(require_kb_delete)):\n    pass")))
+
+# ④ 行数不变（错误信息里要报得出真实行号）
+check("_strip_py_comments 保留行数（否则报行号会错位）",
+      _strip("a = 1\n# c\nb = 2\n").count("\n") == "a = 1\n# c\nb = 2\n".count("\n"),
+      f"剥后行数={_strip('a = 1' + chr(10) + '# c' + chr(10) + 'b = 2' + chr(10)).count(chr(10))}")
+
 
 # 2a 每一条写路由的依赖里必须有 require_kb_*
 print("\n-- 2a 每条写路由都挂了 kb 守卫 --")

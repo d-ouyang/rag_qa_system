@@ -240,6 +240,7 @@ test: kb-guard
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module13_login.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_trust_boundary.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_expect_header.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14d_frontend_gating.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module15_session_isolation.py
 
 # ---------- P2-12b 反向验证（**不进 make test**）----------
@@ -251,6 +252,12 @@ test: kb-guard
 accept-12b-reverse:
 	@echo "  注意：会临时改 core/identity.py 与 gateway/src 下两个 .ts，跑完自动还原"
 	@$(PY) tests/test_module14_trust_boundary_reverse.py
+
+# ---------- P2-14d 反向验证（**不进 make test**，理由同 accept-12b-reverse）----------
+# 14d 的五条反向验证**只改内存里的字符串、不落盘**，所以比 12b 那条安全得多；
+# 仍然不进 make test 是为了保持同一条理由：make test 的契约是「全绿」。
+accept-14d-reverse:
+	@$(PY) tests/test_module14d_frontend_gating.py --reverse
 
 # ---------- P2-12b 真链路验收（**也不进 make test**）----------
 # 两条不进的理由不同，别混：

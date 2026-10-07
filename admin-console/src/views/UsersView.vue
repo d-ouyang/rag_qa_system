@@ -22,7 +22,7 @@ import ModalDialog from '@/components/ModalDialog.vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { formatDateTime, newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
-import { ROLE_LABEL, STATUS_LABEL, type Role, type UserRow, type UserStatus } from '@/api/admin'
+import { ROLE_LABEL, STATUS_LABEL, type KbRole, type KbRoleOption, type Role, type UserRow, type UserStatus } from '@/api/admin'
 import { ApiError } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 
@@ -32,6 +32,12 @@ const auth = useAuthStore()
 const rows = ref<UserRow[]>([])
 const departments = ref<api.DepartmentRow[]>([])
 const positions = ref<api.PositionRow[]>([])
+/**
+ * P2-14f：五档知识库写权限的**标签与能力**，由后端 `/options` 下发。
+ * ⚠️ 前端不自己维护这份表 —— 判定唯一处是后端 `core/kb_acl.py`，
+ * 前端那份只用于「下拉里显示什么」。两份清单漂了不报错（13d/14a 各踩过一次）。
+ */
+const kbRoleOptions = ref<KbRoleOption[]>([])
 const loading = ref(false)
 const toasts = ref<ToastItem[]>([])
 
@@ -64,6 +70,9 @@ async function loadOptions() {
   const opt = await api.fetchOptions()
   departments.value = opt.departments
   positions.value = opt.positions
+  // P2-14f：五档标签与每档能力**全部后端派生**，前端只存不用来算权限。
+  // 少了这一行的话下拉会是空的 —— 而空下拉不报错，只是「授权不了」。
+  kbRoleOptions.value = opt.kb_roles ?? []
 }
 
 async function load() {
@@ -262,6 +271,9 @@ function changeStatus(row: UserRow, status: UserStatus) {
         await load()
       } catch (e) {
         toast('error', e instanceof ApiError ? e.message : '操作失败')
+        // 同 changeRole：失败后必须让这一行按库里的真实值重绘，
+        // 否则下拉停在「看起来改成功了」的值上，而库里还是旧值。
+        await load()
       }
     },
   )
@@ -278,7 +290,48 @@ function changeRole(row: UserRow, role: Role) {
         toast('ok', `${row.display_name} 的角色已改为${ROLE_LABEL[role]}`)
         await load()
       } catch (e) {
+        // ⚠️ **必须重新渲染这一行**，否则下拉会停在一个「看起来改成功了」的
+        // 值上：`:value` 是单向绑定，请求失败时数据没变、界面却已经变了，
+        // 而库里还是旧值 —— 管理员会以为改过了（这个坑下面两个 change* 一样）。
         toast('error', e instanceof ApiError ? e.message : '操作失败')
+        await load()
+      }
+    },
+  )
+}
+
+/**
+ * P2-14f：下发 / 收回知识库写权限。
+ *
+ * 确认文案刻意把「这一档具体能干什么」写出来 —— 那是 `/options` 下发的
+ * capabilities，**不是前端写死的**。管理员最需要知道的是
+ * 「给他超管档意味着他能删掉全公司共用的那个库里的任何东西」，
+ * 而这句话不该由前端硬编码（档位定义会变，见 kbRoleOptions 的注释）。
+ */
+function changeKbRole(row: UserRow, kbRole: KbRole) {
+  const opt = kbRoleOptions.value.find((o) => o.value === kbRole)
+  const caps: string[] = []
+  if (opt?.capabilities.upload) caps.push('上传文档')
+  if (opt?.capabilities.delete) caps.push('删除文档')
+  if (opt?.capabilities.reindex) caps.push('重建全部索引')
+  const can = caps.length ? caps.join('、') : '只能查看，不能改'
+  // ⚠️ 收回比给出更需要说清后果：他不会收到通知，被收的人也不会知道。
+  const losing = caps.length === 0
+  ask(
+    `把「${row.display_name}」的知识库写权限改为「${opt?.label ?? kbRole}」？\n\n` +
+      `改完他将${can}。\n` +
+      (losing
+        ? `\n⚠️ 他现在可能正在依赖这个权限操作，被收回后不会有任何提示。\n`
+        : `\n⚠️ 知识库是全公司共用的 —— 这个权限的范围等于整库，不只是他自己的文件。\n`) +
+      `\n他的登录凭证会立刻失效，需要重新登录。`,
+    async () => {
+      try {
+        await api.setUserKbRole(row.id, kbRole)
+        toast('ok', `${row.display_name} 的知识库写权限已改为「${opt?.label ?? kbRole}」`)
+        await load()
+      } catch (e) {
+        toast('error', e instanceof ApiError ? e.message : '操作失败')
+        await load()
       }
     },
   )
@@ -286,6 +339,16 @@ function changeRole(row: UserRow, role: Role) {
 
 const canReset = computed(() => auth.profile?.permissions.reset_password === true)
 const isSelf = (id: number) => auth.profile?.id === id
+
+/**
+ * 档位 → 中文标签。**查后端下发的表**，不在前端硬编码。
+ * 取不到时回落到档位原值而不是「—」：新加一档时旧版本前端会显示 `new_role`，
+ * 那一眼就能看出「后端加了档而我前端还没跟上」，比显示 `—` 可诊断得多。
+ */
+function kbRoleLabel(v: KbRole | string | null | undefined): string {
+  if (!v) return '—'
+  return kbRoleOptions.value.find((o) => o.value === v)?.label ?? String(v)
+}
 </script>
 
 <template>
@@ -333,6 +396,10 @@ const isSelf = (id: number) => auth.profile?.id === id
             <th>部门</th>
             <th>职位</th>
             <th>角色</th>
+            <th>
+              知识库写权限
+              <em class="th-hint" title="知识库是全公司共用的一个库（业务决策，不按人隔离读）。这一列决定谁能上传 / 删除 / 重建索引 —— 范围等于整库，不是他自己的文件。">?</em>
+            </th>
             <th>状态</th>
             <th>最近登录</th>
             <th class="ops">操作</th>
@@ -351,6 +418,9 @@ const isSelf = (id: number) => auth.profile?.id === id
             <td>{{ positionName(row.position_id) }}</td>
             <td>
               <span class="badge" :class="`badge-${row.role}`">{{ ROLE_LABEL[row.role] }}</span>
+            </td>
+            <td>
+              <span class="badge" :class="`badge-kb-${row.kb_role}`">{{ kbRoleLabel(row.kb_role) }}</span>
             </td>
             <td>
               <span class="badge" :class="`badge-${row.status}`">{{ STATUS_LABEL[row.status] }}</span>
@@ -386,11 +456,32 @@ const isSelf = (id: number) => auth.profile?.id === id
                 <option value="hr">人事</option>
                 <option value="admin">系统管理员</option>
               </select>
+              <!--
+                P2-14f：知识库写权限下拉。
+                ⚠️ **option 全部来自后端 `/options` 的 `kb_roles`** ——
+                刻意不接受自由输入（没有那个输入框），因为后端写路径只认规范值
+                （`kb_acl.is_canonical_kb_role`），自由输入必然 400。
+                而标签与每档能力也来自后端，前端不维护第二份（见 kbRoleOptions 注释）。
+
+                ⚠️ **自己那一行不显示下拉**，但仍显示档位标签（上面那个 badge）。
+                后端也拒「把自己降档」（降权后恢复要找别人），但 UI 直接不给入口
+                更好：让人先撞一次403 才知道规矩，体验差。
+              -->
+              <select
+                v-if="!isSelf(row.id) && kbRoleOptions.length"
+                class="select inline"
+                :value="row.kb_role"
+                @change="changeKbRole(row, ($event.target as HTMLSelectElement).value as KbRole)"
+              >
+                <option v-for="o in kbRoleOptions" :key="o.value" :value="o.value">
+                  {{ o.short_label ?? o.label }}
+                </option>
+              </select>
               <span v-if="isSelf(row.id)" class="muted self">（自己）</span>
             </td>
           </tr>
           <tr v-if="!rows.length">
-            <td colspan="8" class="empty">没有符合条件的员工</td>
+            <td colspan="9" class="empty">没有符合条件的员工</td>
           </tr>
         </tbody>
       </table>
@@ -458,6 +549,24 @@ const isSelf = (id: number) => auth.profile?.id === id
         </select>
         <span class="hint">建号后会签发一个一次性临时密码，他首次登录必须改掉</span>
       </label>
+      <!--
+        P2-14f：知识库写权限**只读展示**，不在这里给下拉。
+        刻意只有一个变更入口（表格行内那个下拉）：两处都能改的话，
+        管理员会问「这两个有什么区别」，而答案只是「没区别」——
+        多一个入口就多一处要同步维护、要测、要防漂移的地方。
+        另外它是**独立维度**，跟建号时的初始 role 无关，新建的人默认 `none`。
+      -->
+      <div v-if="editing" class="field">
+        <span>知识库写权限</span>
+        <div>
+          <span class="badge" :class="`badge-kb-${editing.kb_role}`">
+            {{ kbRoleLabel(editing.kb_role) }}
+          </span>
+          <span class="hint" style="margin-left: 8px">
+            要改请用列表里那一行的下拉（改动会立刻让对方重新登录）
+          </span>
+        </div>
+      </div>
 
       <p v-if="formError" class="form-error">{{ formError }}</p>
 
@@ -549,6 +658,14 @@ const isSelf = (id: number) => auth.profile?.id === id
   width: auto;
   padding: 3px 6px;
   font-size: 13px;
+  /* P2-14f：知识库档位的 label 最长是「超级管理员（可上传 / 删除 / 重灌索引）」，
+     直接放进下拉会把整张表撑到横向溢出、把左边几列压成竖排单字。
+     → 下拉**限宽并省略**，而完整文案在两处都能看到：
+       ① 那一行的档位徽章（badge 本身不截断，它在自己的列里）；
+       ② 确认弹窗（changeKbRole 里明确写出「改完他将能做什么」）。
+     这是刻意的取舍：下拉只承担「选一个档位」，不承担「解释这个档位」。 */
+  max-width: 168px;
+  text-overflow: ellipsis;
 }
 .self {
   font-size: 12px;
