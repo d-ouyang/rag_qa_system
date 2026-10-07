@@ -76,8 +76,10 @@ from urllib.parse import unquote
 from fastapi import Depends, Header, HTTPException, Request, status
 
 from config.settings import settings
+from core import kb_acl
 from core import password_policy as policy
 from core import user_repo as repo
+from core.kb_acl import KB_ROLE_NONE
 from core.user_repo import ROLE_ADMIN, ROLE_HR, STATUS_ACTIVE, UserRecord
 
 logger = logging.getLogger(__name__)
@@ -145,6 +147,12 @@ class Actor:
     username: str
     display_name: str
     role: str
+    #: 知识库写权限（P2-14a新增）。**与 `role` 正交** ——
+    #: `role` 管「能不能进管理端」，`kb_role` 管「能不能改知识库」，
+    #: 判据全在 `core/kb_acl.py`。`record=None`（break-glass 超管，
+    #: 库里那一行可能永远不会有）时按 `none` 处理 —— 它不在库里，
+    #: 也就没有任何人给它授权过，凭什么能删全公司共用的知识库。
+    kb_role: str
     status: str
     source: str
     record: UserRecord | None = None
@@ -167,6 +175,22 @@ class Actor:
         """能否维护部门/职位。这属于组织信息，hr 也能做。"""
         return self.role in STAFF_ROLES
 
+    # ---------- 知识库写权限（P2-14a；判据全在 core/kb_acl.py）----------
+    @property
+    def can_upload_document(self) -> bool:
+        """能否上传 / 重解析文档（重解析会重跑切分与嵌入）。"""
+        return kb_acl.can_upload(self.kb_role)
+
+    @property
+    def can_delete_document(self) -> bool:
+        """能否删除文档。"""
+        return kb_acl.can_delete(self.kb_role)
+
+    @property
+    def can_reindex_kb(self) -> bool:
+        """能否重建整库向量索引 —— 唯一会让全公司答错的操作，故单独一档。"""
+        return kb_acl.can_reindex(self.kb_role)
+
     def is_self(self, user_id: int) -> bool:
         return self.id is not None and int(user_id) == int(self.id)
 
@@ -178,12 +202,21 @@ class Actor:
             "username": self.username,
             "display_name": self.display_name,
             "role": self.role,
+            "kb_role": self.kb_role,
             "status": self.status,
             "identity_source": self.source,
             "permissions": {
                 "staff": self.can_staff,
                 "reset_password": self.can_reset_password,
                 "manage_org": self.can_manage_org,
+                # 知识库三档能力直接读上面的 property，而property 调
+                # `kb_acl.can_*` —— 即**判据的唯一出处仍然是 kb_acl**。
+                # 这里不改成 `**kb_acl.capabilities(...)`：那样键名会变成
+                # upload/delete/reindex，与本字典其余三个键的命名风格不一致，
+                # 而前端 `auth.ts` 要按 `permissions.kb_upload` 读。
+                "kb_upload": self.can_upload_document,
+                "kb_delete": self.can_delete_document,
+                "kb_reindex": self.can_reindex_kb,
             },
             "password": {
                 "must_change": bool(self.record.must_change_password) if self.record else False,
@@ -212,11 +245,18 @@ def _decode(value: str | None) -> str:
 def _make_actor(record: UserRecord | None, username: str, source: str) -> Actor:
     if record is None:
         # break-glass 超管：只存在于 `.env`，库里那一行可能永远不会有。
+        # ⚠️ `kb_role` 给 `none`而不是 `superadmin` —— 它不在库里，
+        # 也就没有任何人给它授权过。而它能做的一切「管理端」操作靠的是
+        # `role=ROLE_ADMIN`（见 can_staff），那些**不依赖** kb_role。
+        # 真的需要它改知识库时（连不上库、库里那个超管被停用了），
+        # 正解是往库里补一行并授权，而不是让一个不在库里的身份
+        # 天然持有「删掉全公司知识库」的能力。
         return Actor(
             id=None,
             username=username,
             display_name=f"{username}（内置超管）",
             role=ROLE_ADMIN,
+            kb_role=KB_ROLE_NONE,
             status=STATUS_ACTIVE,
             source=source,
         )
@@ -225,6 +265,7 @@ def _make_actor(record: UserRecord | None, username: str, source: str) -> Actor:
         username=record.username,
         display_name=record.display_name or record.username,
         role=record.role,
+        kb_role=kb_acl.normalize(record.kb_role),
         status=record.status,
         source=source,
         record=record,
@@ -457,6 +498,53 @@ def require_admin(actor: Actor = Depends(current_actor)) -> Actor:
     return actor
 
 
+def require_kb(action: str) -> Any:
+    """
+    知识库写权限门槛的**唯一**构造处 —— `require_kb_upload` /
+    `require_kb_delete` / `require_kb_reindex` 由它生成。
+
+    为什么用工厂而不是写三个函数：三个函数的内容会**一字不差**，
+    而三个一模一样的东西意味着「改判据时改漏一个」——
+    本次要防的失效恰恰是「不报错」的那种。
+
+    ⚠️ 判据**不在**这里写，`kb_acl` 才是唯一出处（见 core/kb_acl.py 文件头）。
+
+    路由层**必须**用这里的依赖而不是自己在函数体里判：
+    放在函数体里的话，`Depends` 列表里看不到它，于是
+    「这条路由到底有没有守卫」这件事无法被结构断言检查到
+    （14e 的断言就是靠 `Depends` 列表来判的）。
+    """
+
+    def _dep(actor: Actor = Depends(current_actor)) -> Actor:
+        if not kb_acl.can(actor.kb_role, action):
+            # 只记「谁在做什么被拒」，**不记他的 kb_role 具体值**：
+            # 日志的读者要能回答「谁被拒了」，不需要「他是什么档」。
+            # 但审计（14c落 audit_log）会记档位变化，那是另一件事。
+            logger.warning(
+                "知识库写操作被拒 | action=%s | actor=%s | uid=%s | source=%s",
+                action, actor.username, actor.id, actor.source,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=kb_acl.describe(action),
+            )
+        return actor
+
+    # 依赖名带动作，方便 FastAPI 的依赖覆写与调试时辨认
+    _dep.__name__ = f"require_kb_{action}"
+    return _dep
+
+
+#: 上传 / 批量上传 / 重新解析 —— 都是「往知识库里写东西」
+require_kb_upload = require_kb(kb_acl.ACTION_UPLOAD)
+#: 删除文档（Chroma 切片 + 磁盘原文件 + MySQL 记录，三件事）
+require_kb_delete = require_kb(kb_acl.ACTION_DELETE)
+#: 重建整库向量索引。**当前没有任何路由用它**（reindex 是脚本 `scripts/reindex.py`，
+#: 不在 HTTP 面上），但依赖先备好 —— 等它变成接口时，就不会再出现
+#: 「上线时忘了挂守卫」这种事了。
+require_kb_reindex = require_kb(kb_acl.ACTION_REINDEX)
+
+
 __all__ = [
     "Actor",
     "GATEWAY_PROOF_HEADER",
@@ -469,6 +557,10 @@ __all__ = [
     "STAFF_ROLES",
     "current_actor",
     "require_admin",
+    "require_kb",
+    "require_kb_delete",
+    "require_kb_reindex",
+    "require_kb_upload",
     "require_staff",
     "resolve_actor",
     "verify_gateway_proof",

@@ -78,6 +78,9 @@ user_table = sa.Table(
               comment="职位 position.id；职级挂在职位上，不放这里"),
     sa.Column("role", sa.String(16), nullable=False, server_default="user",
               comment="系统角色：admin/hr/user；与职位职级正交，职级高低不自动换权限"),
+    sa.Column("kb_role", sa.String(16), nullable=False, server_default="none",
+              comment="知识库写权限(P2-14a)：none(只读,默认)/ops(可传可删)/qa·dev·superadmin(额外可重灌索引)；"
+                      "与 role 正交 —— role 管能不能进管理端，kb_role 管能不能改知识库"),
     sa.Column("status", sa.String(16), nullable=False, server_default="active",
               comment="在职状态：active/disabled/resigned；只有 active 能登录，离职走 resigned 而非删行"),
     sa.Column("password_hash", sa.String(255), nullable=False, server_default="",
@@ -107,6 +110,7 @@ user_table = sa.Table(
     sa.UniqueConstraint("email", name="uk_user_email"),
     sa.Index("idx_user_dept_status", "department_id", "status"),
     sa.Index("idx_user_role", "role"),
+    sa.Index("idx_user_kb_role", "kb_role"),
     comment="用户表（P2-11a 启用为账号真相源；原 is_active 布尔列已下线，权威字段是 status）",
     **TABLE_KW,
 )
@@ -120,7 +124,8 @@ department_table = sa.Table(
     sa.Column("parent_id", sa.BigInteger(), nullable=True,
               comment="上级部门 id；自关联表达「中心→部门→组」，不建闭包表（规模到不了那个量级）"),
     sa.Column("leader_user_id", sa.BigInteger(), nullable=True,
-              comment="部门负责人 user.id；按 P2-14 的 D13，默认是该部门共享知识库的 writer"),
+              comment="部门负责人 user.id；知识库是全公司共用的，写权限改由 user.kb_role 授予（见 core/kb_acl.py），"
+                      "本列不再隐含「负责人默认能写」——2026-10-08 原 D13 已作废"),
     sa.Column("sort_order", sa.Integer(), nullable=False, server_default=sa.text("0"), comment="同级排序"),
     sa.Column("create_time", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
     sa.PrimaryKeyConstraint("id"),

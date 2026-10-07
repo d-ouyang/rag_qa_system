@@ -14,6 +14,31 @@
     DELETE /{doc_id}                删除文档（磁盘 + Chroma + MySQL **三件事**）
 
 --------------------------------------------------------------------------
+**四条写路由的身份依赖**（P2-14c，2026-10-08 加）
+--------------------------------------------------------------------------
+14.0 的实测基线：这四条路由当时**一条身份依赖都没有** ——
+
+    普通员工 chen.jie → POST   /api/v1/documents/upload  → 202 + doc_id=587
+    普通员工 chen.jie → DELETE /api/v1/documents/587     → {"record_removed": true}
+
+也就是说「谁能改全公司共用的知识库」这件事**当时完全没有答案**。
+本轮从零补上守卫：
+
+    POST   /upload           Depends(require_kb_upload)
+    POST   /upload/batch     Depends(require_kb_upload)
+    POST   /{doc_id}/reparse Depends(require_kb_upload)
+    DELETE /{doc_id}         Depends(require_kb_delete)
+
+⚠️ **守卫必须写在 `Depends` 里，不能写在函数体里** —— `tests/test_module12_write_acl.py`
+有一条**结构断言**正扫这份源码，核对「每条写路由的 `Depends` 列表里有没有
+`require_kb_*`」。判据就是这张列表；一旦把判定挪进函数体，列表就是空的，
+而这次要防的失效恰恰是「漏一条路由且**不报错**」。
+
+⚠️ **本文件没有 `PUT` / `PATCH`**。将来新增写操作时，
+`tests/test_module12_write_acl.py` 的结构断言会因为「新路由不在已知清单里」而转红 ——
+那正是它该做的事。
+
+--------------------------------------------------------------------------
 与 P0-3 之前的最大区别：上传不再同步解析
 --------------------------------------------------------------------------
 旧版把「解析 → 切分 → 嵌入 → 入库」全放在这个 HTTP 请求里跑完再返回。
@@ -40,12 +65,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status as http_status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status as http_status
 from fastapi.responses import FileResponse
 
 from config.settings import settings
 from core import document_repo as repo
+from core import kb_service
 from core.document_loader import DocumentLoader
+from core.identity import Actor, require_kb_delete, require_kb_upload
 from core.parsing import resolve_storage_path
 from core.queue import enqueue_parse
 from core.vector_store import get_vector_store_manager
@@ -86,9 +113,10 @@ def _get_loader() -> DocumentLoader:
 async def upload_document(
     file: UploadFile = File(..., description="待入库的文档文件"),
     project_id: str = Query("default", description="归属项目，多租户隔离用"),
+    actor: Actor = Depends(require_kb_upload),
 ) -> dict[str, Any]:
     content = await file.read()
-    outcome = _accept_one_upload(file.filename or "unnamed", content, project_id)
+    outcome = _accept_one_upload(file.filename or "unnamed", content, project_id, actor=actor)
     if not outcome["ok"]:
         # 单文件入口保持原有对外语义：失败 = 4xx + detail 文案
         raise HTTPException(status_code=outcome["status_code"], detail=outcome["error"])
@@ -117,6 +145,7 @@ BATCH_UPLOAD_MAX_FILES = 50
 async def upload_documents_batch(
     files: list[UploadFile] = File(..., description="待入库的文档文件列表"),
     project_id: str = Query("default", description="归属项目，多租户隔离用"),
+    actor: Actor = Depends(require_kb_upload),
 ) -> dict[str, Any]:
     if not files:
         raise HTTPException(status_code=400, detail="没有收到文件")
@@ -131,7 +160,7 @@ async def upload_documents_batch(
         raw_name = f.filename or "unnamed"
         # 串行 read：逐份读进内存、落盘后释放，内存峰值与批量数无关
         content = await f.read()
-        outcome = _accept_one_upload(raw_name, content, project_id)
+        outcome = _accept_one_upload(raw_name, content, project_id, actor=actor)
         if outcome["ok"]:
             results.append({"ok": True, **outcome["result"]})
         else:
@@ -147,13 +176,29 @@ async def upload_documents_batch(
     }
 
 
-def _accept_one_upload(raw_name: str, content: bytes, project_id: str) -> dict[str, Any]:
+def _accept_one_upload(
+    raw_name: str,
+    content: bytes,
+    project_id: str,
+    *,
+    actor: Actor | None = None,
+) -> dict[str, Any]:
     """
     单份文件的受理逻辑：后缀校验 → 大小校验 → uuid 落盘 → 同名替换 → 建 pending → 入队。
 
     单文件与批量两个入口共用这一套。失败**不抛异常**，返回 `{"ok": False, ...}`，
     由调用方决定怎么呈现：单文件接口映射回 4xx（保持原有对外语义），
     批量接口记进该项结果继续处理下一份（单份失败不拖垮整批）。
+
+    `actor` 是**可选**的，这本身是个需要解释的形状：
+    权限判定在**路由的 Depends** 里做（`require_kb_upload`），不在这里 ——
+    放在这里的话，`Depends` 列表里看不到守卫，14e 的结构断言就判不出来，
+    而「这条路由有没有守卫」正是这次最需要被机器检查的事实。
+
+    所以 `actor` 只用于**审计**（谁上传的），而 `actor=None` 时记NULL
+    （=「查不到是谁」，比如将来某个内部脚本直接调这个函数）。
+    审计失败不阻断上传 —— 理由与 13d 一致：业务与审计不同事务，
+    把只读的历史表变成业务单点是更坏的结果。
     """
     # ---- 1. 后缀白名单（拦在最前面，避免把注定失败的文件落盘）----
     ext = Path(raw_name).suffix.lower()
@@ -196,6 +241,16 @@ def _accept_one_upload(raw_name: str, content: bytes, project_id: str) -> dict[s
             "同名文档替换 | 原 doc_id=%s | 新文件=%s | 清理: 切片=%s 磁盘=%s",
             existing.doc_id, safe_name, purged["deleted_chunks"], purged["file_removed"],
         )
+        # 被替换掉的那份也是一次「删除」，且它删掉的是**已经入库、有引用指向**的文档
+        #（正在被别人的历史回答引用着）。不记的话，「这份文档为什么消失了」
+        # 只有 `document.upload` 一条记录，看不出它顶掉过谁。
+        kb_service.record_delete(
+            actor, doc_id=existing.doc_id, file_name=existing.file_name,
+            deleted_chunks=purged["deleted_chunks"],
+            file_removed=purged["file_removed"],
+            record_removed=purged["record_removed"],
+            reason="同名替换",
+        )
 
     # ---- 5. 建待解析记录 ----
     doc_id = repo.create_pending(
@@ -219,6 +274,14 @@ def _accept_one_upload(raw_name: str, content: bytes, project_id: str) -> dict[s
     if not queued:
         result["detail"] = "文件已保存，但解析任务入队失败（消息队列不可用）。可稍后用 reparse 接口补投。"
     logger.info("文档已受理 | doc_id=%s | 文件=%s | 大小=%s | 排队=%s", doc_id, safe_name, len(content), queued)
+
+    # 审计在**成功受理之后**才落：失败的那些在第 1/2 步就 return 了，
+    # 那时没有 doc_id、没有磁盘文件，记一条「上传失败」对排查没有价值
+    # （失败原因已经原样返回给调用方了）。
+    kb_service.record_upload(
+        actor, doc_id=doc_id, file_name=safe_name,
+        file_size=len(content), project_id=project_id,
+    )
     return {"ok": True, "result": result}
 
 
@@ -379,7 +442,10 @@ def get_document_chunks(doc_id: int) -> dict[str, Any]:
         "否则「重解析」的语义会变得含糊（是删掉旧切片重建，还是叠加？）。"
     ),
 )
-def reparse_document(doc_id: int) -> dict[str, Any]:
+def reparse_document(
+    doc_id: int,
+    actor: Actor = Depends(require_kb_upload),
+) -> dict[str, Any]:
     record = repo.get(doc_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"文档不存在：doc_id={doc_id}")
@@ -404,6 +470,7 @@ def reparse_document(doc_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="文档状态刚刚发生变化，请刷新后重试")
 
     queued = enqueue_parse(doc_id)
+    kb_service.record_reparse(actor, doc_id=doc_id, file_name=record.file_name, queued=queued)
     return {
         "doc_id": doc_id,
         "status": repo.STATUS_PENDING,
@@ -425,10 +492,15 @@ def reparse_document(doc_id: int) -> dict[str, Any]:
         "库里会永远留着一批查不到、删不掉的孤儿向量。"
     ),
 )
-def delete_document(doc_id: int) -> dict[str, Any]:
+def delete_document(
+    doc_id: int,
+    actor: Actor = Depends(require_kb_delete),
+) -> dict[str, Any]:
     record = repo.get(doc_id)
     if record is None:
         # 幂等：删一个不存在的文档不算错误（前端可能连点两次）
+        # ⚠️ 这里**不落审计** —— 什么都没删，「谁删了 doc_id=999」这条日志
+        # 只有噪音没有信息。真要追「谁在乱点」，靠网关访问日志。
         return {
             "doc_id": doc_id,
             "deleted_chunks": 0,
@@ -438,6 +510,12 @@ def delete_document(doc_id: int) -> dict[str, Any]:
         }
 
     purged = _purge_document(record)
+    kb_service.record_delete(
+        actor, doc_id=doc_id, file_name=record.file_name,
+        deleted_chunks=purged["deleted_chunks"],
+        file_removed=purged["file_removed"],
+        record_removed=purged["record_removed"],
+    )
     return {"doc_id": doc_id, **purged}
 
 

@@ -65,6 +65,12 @@ ACTION_LABELS: Final[dict[str, str]] = {
     "user.role.change": "变更系统角色",
     "user.password.reset": "重置密码",
     "user.password.must_change": "开关强制改密",
+    # P2-14c：知识库写操作。target_type 用 `document`（不是 `kb`）——
+    # 因为审计要能回答「谁动了这份文档」，而 `kb` 这个粒度回答不了。
+    # 重建整库索引那条（`kb.reindex`）粒度确实是整库，target_id 留空。
+    "document.upload": "上传知识库文档",
+    "document.delete": "删除知识库文档",
+    "document.reparse": "重新解析文档",
     "department.create": "新建部门",
     "department.update": "修改部门",
     "department.delete": "删除部门",
@@ -77,7 +83,7 @@ ACTION_LABELS: Final[dict[str, str]] = {
     "auth.logout": "登出",
 }
 
-TARGET_TYPES: Final[tuple[str, ...]] = ("user", "department", "position", "auth")
+TARGET_TYPES: Final[tuple[str, ...]] = ("user", "department", "position", "auth", "document")
 
 
 # --------------------------------------------------------------------------- #

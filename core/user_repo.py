@@ -68,6 +68,7 @@ from typing import Any
 from sqlalchemy import delete, or_, select, update
 
 from core.db import now_db, session_scope
+from core.kb_acl import KB_ROLE_NONE, check_kb_role
 from core.schema import (
     department_table,
     position_table,
@@ -144,6 +145,7 @@ class UserRecord:
     department_id: int | None
     position_id: int | None
     role: str
+    kb_role: str
     status: str
     password_hash: str
     password_changed_at: datetime | None
@@ -176,6 +178,7 @@ class UserRecord:
             "department_id": self.department_id,
             "position_id": self.position_id,
             "role": self.role,
+            "kb_role": self.kb_role,
             "status": self.status,
             "must_change_password": bool(self.must_change_password),
             "token_version": int(self.token_version),
@@ -265,6 +268,15 @@ def _row_to_user(row: Any) -> UserRecord:
         department_id=int(row.department_id) if row.department_id is not None else None,
         position_id=int(row.position_id) if row.position_id is not None else None,
         role=row.role,
+        # ⚠️ 唯一用 getattr 容错的字段，理由与其他字段不同：
+        # 其余列要么在 0001 建表时就有、要么在 0003 一次补齐，
+        # 只有 kb_role 是**本轮（0006）刚加的**，存在「迁移还没跑」的窗口
+        # （比如有人直接 checkout 新代码而忘了 make db-upgrade）。
+        # 那时若抛 AttributeError，`resolve_actor()` 会 500，
+        # 症状是「刚拉完代码整个系统进不去」—— 而真实原因只是一列没建。
+        # 降级成 none 的话，最坏结果是**所有人暂时没有写权限**（fail-closed），
+        # 而不是所有人进不去。后者会让人往完全错误的方向排查。
+        kb_role=getattr(row, "kb_role", None) or KB_ROLE_NONE,
         status=row.status,
         password_hash=row.password_hash,
         password_changed_at=row.password_changed_at,
@@ -319,6 +331,7 @@ def create_user(
     department_id: int | None = None,
     position_id: int | None = None,
     role: str = ROLE_USER,
+    kb_role: str = KB_ROLE_NONE,
     status: str = STATUS_ACTIVE,
     must_change_password: bool = False,
     password_changed_at: datetime | None = None,
@@ -335,6 +348,8 @@ def create_user(
     """
     _check_role(role)
     _check_status(status)
+    # 校验并取规范值（去空格 + 小写），拿到的一定是合法 kb_role
+    kb_role = check_kb_role(kb_role)
     if not username or not username.strip():
         raise ValueError("username 不能为空")
     if not employee_no or not employee_no.strip():
@@ -372,6 +387,7 @@ def create_user(
         "department_id": department_id,
         "position_id": position_id,
         "role": role,
+        "kb_role": kb_role,
         "status": status,
         "password_hash": password_hash,
         "password_changed_at": password_changed_at,
@@ -386,8 +402,8 @@ def create_user(
         result = session.execute(user_table.insert().values(**values))
         user_id = int(result.inserted_primary_key[0])
     logger.info(
-        "员工已创建 | id=%s | username=%s | employee_no=%s | role=%s | status=%s",
-        user_id, values["username"], values["employee_no"], role, status,
+        "员工已创建 | id=%s | username=%s | employee_no=%s | role=%s | kb_role=%s | status=%s",
+        user_id, values["username"], values["employee_no"], role, kb_role, status,
     )
     return user_id
 
@@ -549,6 +565,37 @@ def set_role(user_id: int, role: str, *, updated_by: int | None = None) -> bool:
         .where(user_table.c.id == user_id)
         .values(
             role=role,
+            token_version=user_table.c.token_version + 1,
+            updated_by=updated_by,
+            update_time=now_db(),
+        )
+    )
+    with session_scope() as session:
+        return session.execute(stmt).rowcount > 0
+
+
+def set_kb_role(user_id: int, kb_role: str, *, updated_by: int | None = None) -> bool:
+    """
+    改知识库写权限，**同样 +1 token_version**（提权/降权都要立刻生效）。
+
+    ⚠️ 为什么 `kb_role` 变更也要 `token_version+1`（P2-14b 之后这条才生效，
+    在此之前 `kb_role` 不进 JWT，所以老 token 拿不到旧值）：
+
+    `kb_role` 会**进 JWT**（D15），网关用它做粗筛。不+1 的话，
+    管理员刚把一个`none` 提到 `superadmin`，那个人手里的旧 token
+    在最长 12h 内仍然带着 `kb_role=none` —— 网关会继续拦他，
+    于是「授权了却还要重新登录才生效」。而**降权**方向更危险：
+    把一个 `superadmin` 降到 `none`，旧 token 还能删知识库。
+
+    所以：**凡是「权限」字段的变更，都必须立刻使旧 token 失效**。
+    这条与 `set_role` / `set_status` / `update_password` 是同一个理由。
+    """
+    kb_role = check_kb_role(kb_role)
+    stmt = (
+        update(user_table)
+        .where(user_table.c.id == user_id)
+        .values(
+            kb_role=kb_role,
             token_version=user_table.c.token_version + 1,
             updated_by=updated_by,
             update_time=now_db(),

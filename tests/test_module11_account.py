@@ -395,7 +395,8 @@ def mk_user(**kw):
     base = dict(
         id=1, username="p11b", employee_no="p11b_E001", display_name="策略夹具",
         email=None, phone=None, gender=None, department_id=None, position_id=None,
-        role=repo.ROLE_USER, status=repo.STATUS_ACTIVE, password_hash=_HASH_C12,
+        role=repo.ROLE_USER, kb_role=repo.KB_ROLE_NONE,
+        status=repo.STATUS_ACTIVE, password_hash=_HASH_C12,
         password_changed_at=NOW - timedelta(days=1), must_change_password=False,
         token_version=0, failed_login_count=0, locked_until=None, last_login_at=None,
         created_by=None, updated_by=None, create_time=NOW, update_time=NOW, deleted_at=None,

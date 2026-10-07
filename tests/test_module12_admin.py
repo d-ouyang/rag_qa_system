@@ -113,6 +113,7 @@ except Exception:  # noqa: BLE001 - 表不存在属于「还没迁移」，不�
     AUDIT_BASELINE_MAX_ID = None
 from config.settings import settings  # noqa: E402
 from core import password_policy as policy  # noqa: E402
+from core import kb_acl  # noqa: E402
 from core import user_repo as repo  # noqa: E402
 from core.db import get_engine, now_db  # noqa: E402
 from core.identity import (  # noqa: E402
@@ -250,6 +251,7 @@ _overrides_before = dict(app.dependency_overrides)
 def always_pass() -> Actor:
     """一个把 require_staff 换掉的替身：谁都能过。"""
     return Actor(id=-1, username="__override__", display_name="替身", role="admin",
+                 kb_role=kb_acl.KB_ROLE_SUPERADMIN,
                  status="active", source="test")
 
 
@@ -475,6 +477,7 @@ check("hr **不能**重置他人密码（D10）", _r14.status_code == 403, f"{_r
 _overrides_before = dict(app.dependency_overrides)
 app.dependency_overrides[require_admin] = lambda: Actor(
     id=-1, username="__override__", display_name="替身", role="admin",
+    kb_role=kb_acl.KB_ROLE_SUPERADMIN,
     status="active", source="test")
 _r14b = client.post(f"/api/v1/admin/users/{_plain.id}/password/reset", headers=_hr_h)
 app.dependency_overrides.clear()

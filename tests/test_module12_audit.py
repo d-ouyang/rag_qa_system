@@ -71,6 +71,7 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 # --------------------------------------------------------------------------- #
 print("== 第 1 组：前置与表结构 ==")
 from core import audit_repo  # noqa: E402
+from core import kb_acl  # noqa: E402
 from core.db import get_engine, now_db  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
@@ -221,7 +222,8 @@ from core import admin_service as svc  # noqa: E402
 # 第一版是对 chen.jie 改手机号跑的，跑完种子数据里他的号码就变成了测试值 ——
 # 而「测试跑完库要回到原样」是本项目的铁律（seed 的存在意义就是「像样的小公司」）。
 actor_admin = Actor(id=None, username=ADMIN_USERNAME, display_name="吴静",
-                    role="admin", status="active", source=SOURCE_HEADER)
+                    role="admin", kb_role=kb_acl.KB_ROLE_SUPERADMIN,
+                    status="active", source=SOURCE_HEADER)
 _newbie = svc.create_user(actor_admin, username=f"{PREFIX}newbie",
                           employee_no=f"{PREFIX}E1", display_name="审计测试新人")
 target_id = _newbie.record.id
@@ -277,22 +279,28 @@ check("  └ 明确记了「开关不续期」这条性质",
 print("\n== 第 6 组：九类写操作全部留痕（覆盖完整性） ==")
 
 dept = svc.create_department(Actor(id=None, username=ADMIN_USERNAME, display_name="x",
-                                   role="admin", status="active", source=SOURCE_HEADER),
+                                   role="admin", kb_role=kb_acl.KB_ROLE_SUPERADMIN,
+                    status="active", source=SOURCE_HEADER),
                              code=f"{PREFIX}D1", name="审计测试部")
 dept2 = svc.create_department(Actor(id=None, username=ADMIN_USERNAME, display_name="x",
-                                    role="admin", status="active", source=SOURCE_HEADER),
+                                    role="admin", kb_role=kb_acl.KB_ROLE_SUPERADMIN,
+                    status="active", source=SOURCE_HEADER),
                               code=f"{PREFIX}D2", name="审计测试部下级", parent_id=dept.id)
 svc.update_department(Actor(id=None, username=ADMIN_USERNAME, display_name="x",
-                             role="admin", status="active", source=SOURCE_HEADER),
+                             role="admin", kb_role=kb_acl.KB_ROLE_SUPERADMIN,
+                    status="active", source=SOURCE_HEADER),
                       dept2.id, name="改过名字的下级")
 pos = svc.create_position(Actor(id=None, username=ADMIN_USERNAME, display_name="x",
-                                role="admin", status="active", source=SOURCE_HEADER),
+                                role="admin", kb_role=kb_acl.KB_ROLE_SUPERADMIN,
+                    status="active", source=SOURCE_HEADER),
                           code=f"{PREFIX}P1", name="审计测试职位")
 svc.update_position(Actor(id=None, username=ADMIN_USERNAME, display_name="x",
-                           role="admin", status="active", source=SOURCE_HEADER),
+                           role="admin", kb_role=kb_acl.KB_ROLE_SUPERADMIN,
+                    status="active", source=SOURCE_HEADER),
                     pos.id, name="改过名字的职位")
 svc.delete_position(Actor(id=None, username=ADMIN_USERNAME, display_name="x",
-                          role="admin", status="active", source=SOURCE_HEADER), pos.id)
+                          role="admin", kb_role=kb_acl.KB_ROLE_SUPERADMIN,
+                    status="active", source=SOURCE_HEADER), pos.id)
 
 # user.create 已在第 4 组开头落下（建 _newbie），这里补齐其余员工动作
 svc.update_profile(actor_admin, target_id, phone="13000000000")
