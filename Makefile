@@ -76,6 +76,17 @@ help:
 	@echo "                      ⚠️ 这三条都不进 make test：前两条要求进程已起着，reverse 要求「必须红」"
 	@echo "⚠️ 这三条都会临时改 chen.jie / zhao.min 的密码（真 token 只能真登录），收尾换随机临时密码 + 强制改密"
 	@echo ""
+	@echo "—— 手动测试用的固定密码账号 ——"
+	@echo "make dev-test-accounts          干跑：报告三个测试账号的现状（默认什么都不改）"
+	@echo "make dev-test-accounts-apply    真设固定密码。你手动测之前必须先跑这个，"
+	@echo "                                 否则种子脚本给的随机临时密码你根本不知道"
+	@echo "make dev-test-accounts-reset    还原成种子形态（随机临时密码 + 强制改密）"
+	@echo "  产出：chen.jie/DevTest2026!Aa、zhao.min/DevTest2026!Bb（role=user，只登主应用 5173）"
+	@echo "        wu.jing /DevAdmin2026!Aa（role=admin，登主应用 + **管理端 5174**）"
+	@echo "  ⚠️ admin/admin123 已失效（11c 起账号真相源在 MySQL，库里没有 admin 这一行）"
+	@echo "  ⚠️ 5174 只接受 role=admin/hr，普通员工登进去 403 是预期行为"
+	@echo "  ⚠️ 手动流程全文见 docs/手动验收清单-v2.0.0.md §4.7"
+	@echo ""
 	@echo "—— 知识库重建（P0-4a）——"
 	@echo "make reindex       干跑：报告「要补登记哪些文件 / 要重灌几篇 / 有多少孤儿切片」"
 	@echo "                   一句话都不改数据。这个脚本会重灌整库，所以默认是干跑"
@@ -272,6 +283,26 @@ seed-users:
 
 seed-users-apply:
 	$(PY) scripts/seed_users.py --apply
+
+# 手动测试用的固定密码账号（P2-12c）----------
+# 为什么要有它：种子脚本给的全是**随机**临时密码（只显示一次），
+# 而验收脚本每轮跑完还会把密码换成新的随机值 —— 于是「能不能自己手动测」
+# 被凭据挡住了，这不是功能问题。详见 docs/手动验收清单-v2.0.0.md §4.7。
+# 产出三个账号（两档role）：
+#   chen.jie  / DevTest2026!Aa   role=user  → 只能登主应用 5173
+#   zhao.min  / DevTest2026!Bb   role=user  → 只能登主应用 5173
+#   wu.jing   / DevAdmin2026!Aa  role=admin → 5173 + 管理端 5174
+# ⚠️ **重置密码测完之后要再跑一次 --apply**，否则被重置的那个账号进不去了。
+# ⚠️ 本机开发用，别带到生产（生产由管理员在管理端发放，明文只显示一次）。
+dev-test-accounts:
+	$(PY) scripts/dev_test_accounts.py
+
+dev-test-accounts-apply:
+	$(PY) scripts/dev_test_accounts.py --apply
+
+# 还原成种子形态：改回随机临时密码 + 强制改密。
+dev-test-accounts-reset:
+	$(PY) scripts/dev_test_accounts.py --reset
 
 # 迁移往返验收（P2-11a）----------
 # 与上面几个 accept 的区别：它验的是**迁移本身能不能安全来回**，不是业务功能。
