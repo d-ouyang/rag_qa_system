@@ -148,8 +148,35 @@ def normalize(kb_role: Any) -> str:
 
 
 def is_valid_kb_role(kb_role: Any) -> bool:
-    """取值是否合法。给仓储层 `set_kb_role()` 的入口校验用（失败要早、要响）。"""
+    """取值是否合法（**宽松**：接受大小写与空白变体）。给仓储层 `set_kb_role()` 用。"""
     return isinstance(kb_role, str) and kb_role.strip().lower() in KB_ROLES
+
+
+def is_canonical_kb_role(kb_role: Any) -> bool:
+    """取值是否**就是规范形态**（严格：必须逐字等于某一档）。
+
+    --------------------------------------------------------------------------
+    为什么需要严格版（14f 加的，写路径专用）
+    --------------------------------------------------------------------------
+    `is_valid_kb_role` 的宽松是为**读**路径准备的：库里可能躺着 `'Ops '`
+    （手工 SQL 灌进去的），判定前不规整就会失配 —�� 那会让一个人莫名失去权限，
+    而且**不报错**。所以 `normalize()` 必须宽松。
+
+    但**写**路径不能宽松。管理端下拉框给的是规范值（14f 规定前端不接受自由
+    输入），宽松在这条路上没有正当来源，却会「静默改写别人的权限」：
+
+        管理员发来`'SUPERADMIN'` → 库里存成 `superadmin`
+        → 审计detail 的 from/to 记的也是规范化后的值
+        → 「我明明选了 A，它存成了 B」在任何一界都看不出来
+
+    宁可让接口回400、让人重选一次。这与 `admin_service.set_role()` 的
+    `role in repo.ROLES`（精确匹配、不做strip/lower）是同一条规格。
+
+    ⚠️ 代价要说清：如果哪天管理端改成允许自由输入，就必须换成宽松那条，
+    同时前端得把「输入的值」当成最终值回显 —— 否则用户会看到自己填的
+    和系统存的不是一回事。
+    """
+    return isinstance(kb_role, str) and kb_role in KB_ROLES
 
 
 def check_kb_role(kb_role: str) -> str:

@@ -91,10 +91,13 @@ export class ProxyController {
       // 保持默认的「代理自己 pipe 响应」：这是流式不被缓冲的前提
       selfHandleResponse: false,
       on: {
-        proxyReq: (proxyReq, req, res) => {
+        proxyReq: (proxyReq, req) => {
           const incoming = req as ProxiedRequest;
-
           /**
+           * ⚠️ 这里**只剩**「必须在 proxyReq 上做的两件事」：改 Accept-Encoding
+           * 与 fixRequestBody。身份头的剥离/注入在 `stampIdentityOnInbound()`
+           * 里、转发**之前**就完成了 —— 不要把它挪回来，理由见那个方法的注释。
+           *
            * ⚠️ 这里的语句顺序是**不能调换**的，曾经踩过：
            *
            * `fixRequestBody` 在重写完请求体后会调用 `proxyReq.end()` —— 那一刻
@@ -109,49 +112,10 @@ export class ProxyController {
            * （一条请求换一个进程），宁可降级成「这次转发不带附加头」也不能崩。
            */
           try {
-            // ⓿ **无条件剥离**（P2-12b）。
-            //    必须排在注入**之前**，且**不挂在任何 if 里** ——
-            //    条件式剥离等于「有身份时才算数」，而白名单路径（守卫不跑）
-            //    上恰恰没有身份，于是伪造头原样穿透到后端。
-            //    12b 施工前实测：白名单路径带 `X-User-Id: 440`（真管理员 id）
-            //    → 后端按 admin 处理请求。这不是理论隐患。
-            for (const h of INBOUND_IDENTITY_HEADERS) {
-              proxyReq.removeHeader(h);
-            }
-
-            // ① 注入真实身份（**在剥离之后**）+ 网关证明 X-Internal-Auth。
-            //    后端因此不需要自己解析 JWT：它只要信任「这个头是网关加的」。
-            //    ⚠️ 这意味着后端必须只在内网可达（compose 里不暴露 8000 端口），
-            //    否则绕过网关直接调用就能伪造 X-User-Id。12b 起还多一道：
-            //    后端会验 X-Internal-Auth（缺/错一律 401），所以拓扑被破坏时
-            //    伪造也伪造不成立 —— 但那依赖两边共享同一个密钥。
-            //
-            // ⚠️ **白名单路径也要注入 X-Internal-Auth**（见 identity-headers.ts
-            //    里的说明）：后端在 gateway 模式下要靠它判断「请求来自网关」，
-            //    少了它那两个探活接口会在后端全被 401。
-            if (incoming.user) {
-              const identity = buildForwardIdentityHeaders(
-                {
-                  userId: incoming.user.userId,
-                  username: incoming.user.username,
-                  role: incoming.user.role,
-                  tokenVersion: incoming.user.tokenVersion,
-                  source: incoming.user.source,
-                },
-                this.config.internalToken,
-              );
-              for (const [k, v] of Object.entries(identity)) {
-                proxyReq.setHeader(k, v);
-              }
-            } else if (this.config.internalToken) {
-              proxyReq.setHeader('X-Internal-Auth', this.config.internalToken);
-            }
-            if (incoming.requestId) proxyReq.setHeader('X-Request-Id', incoming.requestId);
-
-            // ② 不压缩：NDJSON 逐字输出最怕中间多一层 gzip 缓冲（见文件头坑 #2）
+            // 不压缩：NDJSON 逐字输出最怕中间多一层 gzip 缓冲（见文件头坑 #2）
             proxyReq.setHeader('Accept-Encoding', 'identity');
 
-            // ③ 最后才重写请求体（这一步会 end 掉 proxyReq，必须在所有 setHeader 之后）
+            // 最后才重写请求体（这一步会 end 掉 proxyReq，必须在所有 setHeader 之后）
             fixRequestBody(proxyReq, req as Request);
           } catch (e) {
             this.logger.error(
@@ -207,6 +171,105 @@ export class ProxyController {
   }
 
   /**
+   * 在**转发之前**把身份头盖在入站 `req.headers` 上（P2-14f 修的真缺陷）。
+   *
+   * ---------------------------------------------------------------------------
+   * 为什么不能放在 `on.proxyReq` 里 —— 那是这个方法存在的全部理由
+   * ---------------------------------------------------------------------------
+   * `http-proxy@1.18.1` 的 `lib/http-proxy/passes/web-incoming.js`：
+   *
+   *     proxyReq.on('socket', function (socket) {
+   *       if (server && !proxyReq.getHeader('expect')) {
+   *         server.emit('proxyReq', proxyReq, req, res, options);
+   *       }
+   *     });
+   *
+   * **`proxyReq` 事件在客户端带了 `Expect: 100-continue` 时根本不触发。**
+   * 而 12b 把「无条件剥离客户端伪造的身份头」与「注入真实身份」**全都**
+   * 放在了这个事件的回调里 —— 头一出现，回调一次都不跑，后果是两条：
+   *
+   *   1. 真实身份没注入 → 后端在 dev 模式回落到 break-glass 超管（`kb_role=none`）
+   *      → `require_kb_upload` 判拒 → 上传 403 `FORBIDDEN_KB_WRITE`；
+   *      gateway 生产模式则是缺 `X-Internal-Auth` → 全站 401。
+   *   2. **剥离也没执行** → 客户端自带的 `X-User-Id` 原样穿透到后端。
+   *      dev 模式下等于「伪造身份直接生效」，正是 12b 当年量化过的那条洞。
+   *
+   * 本机实测（`gateway/scripts/probe-expect-header-drop.cjs`，真实
+   * http-proxy-middleware@3.0.7）：带 `Expect` 时下游收到的四个身份头**全为空**，
+   * 不带时全在。浏览器 `fetch`/`XHR` 默认不发 `Expect`，所以从前端点上传是好的 ——
+   * 触发的是 curl / 部分 HTTP 客户端 / 压测工具。这解释了为什么它能活这么久：
+   * **默认路径不经过它，只有非常规客户端才会踩到**。
+   *
+   * ---------------------------------------------------------------------------
+   * 为什么改入站 `req.headers` 就够
+   * ---------------------------------------------------------------------------
+   * `http-proxy` 的 `common.setupOutgoing()` 第 43 行：
+   *
+   *     outgoing.headers = extend({}, req.headers);
+   *
+   * 整个复制过去。所以在这里改入接头，与改 `proxyReq` 的**最终效果完全一致**，
+   * 但不依赖那个「可能不触发」的事件。
+   *
+   * ---------------------------------------------------------------------------
+   * 顺带把 `Expect` 摘掉（这不是顺便，是必要的）
+   * ---------------------------------------------------------------------------
+   * 摘掉之后 `proxyReq` 事件才会触发，`fixRequestBody` 与 `Accept-Encoding`
+   * 才有地方执行 —— 否则这两件事在带 `Expect` 的请求上会一起失效
+   * （症状是「上传体是空的」或「响应被 gzip 缓冲」）。
+   * 代价：客户端的 `100-continue` 握手不再透传到后端。这**没有**风险：
+   *  · `Expect` 按 RFC 7231 §5.1.1 是逐跳（hop-by-hop）头，代理剥掉它本就是合规的；
+   *  · 握手已经在「客户端 ↔ 网关」这一跳完成了（网关的 http server 会自动回
+   *    `100 Continue`），后端直接收到完整请求体，不需要再问一次；
+   *  · 不加这个头也不会让网关提前把 body 转发 —— body 一直在流上 pipe，
+   *    与 `Expect` 无关。
+   */
+  private stampIdentityOnInbound(req: ProxiedRequest): void {
+    // ⓿ **无条件剥离**（P2-12b）。
+    //    必须排在注入**之前**，且**不挂在任何 if 里** ——
+    //    条件式剥离等于「有身份时才算数」，而白名单路径（守卫不跑）
+    //    上恰恰没有身份，于是伪造头原样穿透到后端。
+    //    12b 施工前实测：白名单路径带 `X-User-Id: 440`（真管理员 id）
+    //    → 后端按 admin 处理请求。这不是理论隐患。
+    for (const h of INBOUND_IDENTITY_HEADERS) {
+      delete req.headers[h];
+    }
+
+    // ① 注入真实身份（**在剥离之后**）+ 网关证明 X-Internal-Auth。
+    //    后端因此不需要自己解析 JWT：它只要信任「这个头是网关加的」。
+    //    ⚠️ 这意味着后端必须只在内网可达（compose 里不暴露 8000 端口），
+    //    否则绕过网关直接调用就能伪造 X-User-Id。12b 起还多一道：
+    //    后端会验 X-Internal-Auth（缺/错一律 401），所以拓扑被破坏时
+    //    伪造也伪造不成立 —— 但那依赖两边共享同一个密钥。
+    //
+    // ⚠️ **白名单路径也要注入 X-Internal-Auth**（见 identity-headers.ts
+    //    里的说明）：后端在 gateway 模式下要靠它判断「请求来自网关」，
+    //    少了它那两个探活接口会在后端全被 401。
+    if (req.user) {
+      const identity = buildForwardIdentityHeaders(
+        {
+          userId: req.user.userId,
+          username: req.user.username,
+          role: req.user.role,
+          tokenVersion: req.user.tokenVersion,
+          source: req.user.source,
+        },
+        this.config.internalToken,
+      );
+      for (const [k, v] of Object.entries(identity)) {
+        req.headers[k.toLowerCase()] = v;
+      }
+    } else if (this.config.internalToken) {
+      req.headers['x-internal-auth'] = this.config.internalToken;
+    }
+    // requestId 由 RequestIdMiddleware 写进入站头（它也走 setupOutgoing 的复制），
+    // 这里不重复设 —— 12b 时那句 `proxyReq.setHeader('X-Request-Id', ...)` 是冗余的。
+
+    // ② 摘掉 Expect，让 proxyReq 事件（fixRequestBody / Accept-Encoding）能触发。
+    //    逐跳头，剥掉合规；理由与代价见上面那段注释。
+    delete req.headers.expect;
+  }
+
+  /**
    * 公开健康检查：白名单放行的两个上游探活路径，免 token 转发。
    *
    * ⚠️ **必须声明在下面那个通配路由之前**。
@@ -226,6 +289,7 @@ export class ProxyController {
     @Next() next: NextFunction,
   ): void {
     req.proxyStartedAt = Date.now();
+    this.stampIdentityOnInbound(req);
     this.proxy(req, res, next);
   }
 
@@ -284,6 +348,7 @@ export class ProxyController {
       });
     }
     req.proxyStartedAt = Date.now();
+    this.stampIdentityOnInbound(req);
     this.proxy(req, res, next);
   }
 }

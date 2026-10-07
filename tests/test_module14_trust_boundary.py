@@ -83,6 +83,24 @@ def section(title: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 剥离写法判据（P2-14f 抽出来）
+# --------------------------------------------------------------------------- #
+def _strip_is_removal(src: str) -> bool:
+    """剥离必须是「让头缺失」：`removeHeader(h)` 或 `delete req.headers[h]`。
+
+    刻意**不**接受 `req.headers[h] = ''`：那样后端收到的是空串而不是缺失。
+    多数判据（`if not x` / `if x`）把两者当同一件事，于是「用空串冒充剥离」
+    能骗过它们；只有按 `header is not None` 判断的代码才会区分 ——
+    而那种代码在网关侧就存在（后端 `_make_actor` 的 None 检查）。
+    """
+    loop_re = re.compile(
+        r"for \(const h of INBOUND_IDENTITY_HEADERS\)\s*\{\s*"
+        r"(?:proxyReq\.removeHeader\(h\)|delete req\.headers\[h\])",
+    )
+    return loop_re.search(src) is not None
+
+
+# --------------------------------------------------------------------------- #
 # 与 TS 侧等价的 Python 重实现（用来验规则本身）。
 # 刻意**不复用**生产代码的任何函数—— 那会让测试与实现同源，
 # 实现错了测试也跟着错（这是第 51 条坑的形状）。
@@ -255,8 +273,18 @@ check("⚠️ 剥离不在任何 if 内（11c 的写法是 if (incoming.user) �
       "if (" not in window_around,
       f"剥离行±6 行内含 if：{window_around.strip()[-140:]}")
 
-check("剥离走的是 removeHeader（不是 setHeader 空串 —— 那样后端收到的是空值而不是缺失）",
-      "removeHeader" in PROXY_SRC)
+# ⚠️ P2-14f：这条断言原来写的是「源码里有 removeHeader」，14f 把剥离从
+#    `proxyReq.removeHeader(h)` 改成入站头的 `delete req.headers[h]` 之后它就红了。
+#    改掉它不是因为「新写法不好」，而是**它验的是 API 名、不是意图**：
+#    意图是「剥离后这个头是**缺失**，而不是空串」（空串会让后端读到 ''，
+#    而 `if user_id_header:` 之类判据把 '' 和缺失当同一件事 —— 真正的风险在
+#    另一种判据上：`_make_actor` 若按 `header is not None` 判断，'' 就会被
+#    当成「有身份头」走下去）。
+#    现在按意图断言：接受 removeHeader / delete 两种写法，但**不接受**
+#    `= ''` / `= ""` 这种「置空」。API 名会变，意图不会。
+check("剥离是「让头缺失」而不是「置空串」（removeHeader / delete 皆可，= '' 不可）",
+      _strip_is_removal(PROXY_SRC),
+      "剥离写成了赋值空串，或两种写法一个都没找到")
 strip_line_no = next((i for i, ln in enumerate(lines) if "for (const h of INBOUND_IDENTITY_HEADERS)" in ln), -1)
 
 # --------------------------------------------------------------------------- #

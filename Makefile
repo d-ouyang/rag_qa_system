@@ -239,6 +239,7 @@ test: kb-guard
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_write_acl.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module13_login.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_trust_boundary.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_expect_header.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module15_session_isolation.py
 
 # ---------- P2-12b 反向验证（**不进 make test**）----------

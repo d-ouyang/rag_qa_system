@@ -49,6 +49,7 @@ from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
 from core import audit_repo
+from core import kb_acl
 from core import password_policy as policy
 from core import user_repo as repo
 from core.db import now_db
@@ -372,6 +373,102 @@ def set_role(actor: Actor, user_id: int, role: str) -> repo.UserRecord:
         actor, "user.role.change", "user",
         target_id=user_id, target_label=_user_label(record),
         detail={"from": record.role, "to": role,
+                "token_version": after.token_version},
+    )
+    return after
+
+
+# --------------------------------------------------------------------------- #
+# 知识库写权限（P2-14f）
+# --------------------------------------------------------------------------- #
+def set_kb_role(actor: Actor, user_id: int, kb_role: str) -> repo.UserRecord:
+    """
+    下发 / 收回知识库写权限。**与 `set_role` 并列的独立维度**（D14）。
+
+    --------------------------------------------------------------------------
+    为什么权限在库里、判定在 `core/kb_acl.py`，而这里只做编排
+    --------------------------------------------------------------------------
+    与 `set_role` 同构：`role` 的合法值在 `repo.ROLES`、判权限在 `identity`，
+    `kb_role` 的合法值在 `kb_acl.KB_ROLES`、判权限在 `kb_acl.can`。
+    **服务层不重写一遍判据** —— 那是 13d 踩过的「两份清单各自漂」。
+
+    --------------------------------------------------------------------------
+    为什么 `require_admin` 而不是 `require_staff`
+    --------------------------------------------------------------------------
+    hr 能改员工资料，但**不能改权限** —— 与 D10「hr 不能重置密码」同一取舍。
+    理由不是不信任 hr，而是**权限变更的后果不对称**：
+    改资料填错了员工自己能看出来；把谁能删全公司知识库这件事写错了，
+    当事人根本不会知道（14a 已把「读开放写收紧」做成了默认）。
+    所以凡是「权限」两个字，一律admin 专属。
+
+    --------------------------------------------------------------------------
+    为什么不能改自己的 kb_role
+    --------------------------------------------------------------------------
+    与 `set_role` 同一条理由，但这里**后果更隐蔽**：
+    把自己从 `superadmin` 降到 `none` 之后，你手上的 token 立刻失效
+    （`token_version+1`），重新登录会发现「我连知识库都改不了了」，
+    而恢复的方法是**再找一个人来改** —— 一个人把自己锁在外面时，
+    那个「另一个人」未必存在。
+
+    ⚠️ 但**升自己的权不做禁止**：把自己从 `none` 提到 `ops` 是无害的
+    （他本来就能看，只是能改了），而禁止它会带来一个荒唐的后果 ——
+    「唯一一个想维护知识库的人恰好是管理员，于是他必须找同事来授权给他」。
+    所以规则是**只禁降级，不禁升级**，与 `set_role` 的判断方式一致
+    （那里判的是 `role != record.role` 后再单独处理，这里判 `kb_role` 变小）。
+    """
+    _require(actor.role == repo.ROLE_ADMIN, "只有系统管理员能改知识库写权限", status=403)
+    # ⚠️ **精确匹配**，不走 `kb_acl.check_kb_role`（它会 strip + lower）。
+    #
+    # 这与 `set_role` 的 `role in repo.ROLES` 是同一条规格：**写路径只认规范值。**
+    # `check_kb_role` 的宽松是为**读**路径准备的（14a：手工 SQL 灌进库的
+    # `'Ops '` 不规整就会让判据失配），而这里的输入来自管理端的**下拉框**，
+    # 14f 已规定前端不接受自由输入 —— 宽松在这条路上没有任何正当来源。
+    #
+    # 宽松反而会咬人：管理员发来 `'SUPERADMIN'`、库里静默存成 `superadmin`，
+    # 而审计的 detail 里 from/to 记的是**规范化之后**的值，于是
+    # 「我明明选了 A，它存成了 B」这件事在任何一界都看不出来。
+    # 宁可 400 让人重选一次，也不要静默改写别人的权限。
+    #
+    # 为什么不自己写 `kb_role in KB_ROLES`：那正是本函数要避免的
+    # 「两份清单各自漂」。判据仍然来自 kb_acl，只是换一个更严的入口 ——
+    # `is_canonical_kb_role` 就是 kb_acl 里的「严格版合法性」（14f 加的）。
+    _require(kb_acl.is_canonical_kb_role(kb_role),
+             f"知识库写权限档位只能是 {sorted(kb_acl.KB_ROLES)}")
+    target = kb_acl.normalize(kb_role)
+    record = _load_user(user_id)
+
+    # 只禁降级，不禁升级（理由见文档字符串）
+    if actor.is_self(user_id):
+        was_allowed = kb_acl.capabilities(record.kb_role)
+        now_allowed = kb_acl.capabilities(target)
+        lost = [a for a in was_allowed if was_allowed[a] and not now_allowed[a]]
+        if lost:
+            names = {"upload": "上传", "delete": "删除", "reindex": "重建索引"}
+            raise AdminError(
+                f"不能收回自己的知识库权限（会失去：{'、'.join(names[a] for a in lost)}）"
+                f" —— 降权会让你的登录立刻失效，而恢复要找别人改",
+                status=403,
+            )
+
+    if target == record.kb_role:
+        # 幂等：值没变就不动库。理由与 `set_role` 一致 ——
+        # 不变的「变更」若也 +1 token_version，会把对方白踢下线一次。
+        # 仍然返回 after（而不是 record），让调用方的响应形状与其他接口一致。
+        return record
+
+    repo.set_kb_role(user_id, target, updated_by=actor.id)
+    logger.info("知识库写权限变更 | actor=%s | id=%s | %s → %s",
+                actor.username, user_id, record.kb_role, target)
+    after = _load_user(user_id)
+    _audit(
+        actor, "user.kb_role.change", "user",
+        target_id=user_id, target_label=_user_label(record),
+        # ⚠️ `from`/`to` 记的是**档位名**。审计与界面都能答出
+        # 「谁在什么时候把谁从哪一档改到哪一档」，而 `kb_role` 不进
+        # 「谁能看谁的什么」那类筛选（D13 已作废，无按档位检索的需求）。
+        detail={"from": record.kb_role, "to": target,
+                "from_label": kb_acl.KB_ROLE_LABELS.get(record.kb_role, record.kb_role),
+                "to_label": kb_acl.KB_ROLE_LABELS.get(target, target),
                 "token_version": after.token_version},
     )
     return after

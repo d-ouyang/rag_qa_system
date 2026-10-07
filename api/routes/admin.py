@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 from config.settings import settings
 from core import admin_service as svc
 from core import audit_repo
+from core import kb_acl
 from core import user_repo as repo
 from core.identity import Actor, require_admin, require_staff
 
@@ -84,6 +85,22 @@ class StatusBody(BaseModel):
 
 class RoleBody(BaseModel):
     role: str
+
+
+class KbRoleBody(BaseModel):
+    """
+    下发知识库写权限的请求体。
+
+    ⚠️ 类型是 `str` 而不是枚举，**故意的** —— 合法性由
+    `kb_acl.check_kb_role` 在服务层判，它抛 `ValueError` 而 FastAPI 不会
+    把它翻成 422。这样「档位名拼错」的报错文案与服务层其它地方一致
+    （`kb_role 只能是 [...]，收到 'boss'`），而不是变成一条
+    Pydantic 的英文校验消息。
+
+    **代价**：OpenAPI 里看不出合法值 —— 所以 `/options` 额外下发
+    `kb_roles` 字典，前端下拉的数据源来自那里（不接受自由输入）。
+    """
+    kb_role: str
 
 
 class MustChangeBody(BaseModel):
@@ -165,6 +182,16 @@ def read_options(actor: Actor = Depends(require_staff)) -> dict[str, Any]:
         "roles": sorted(repo.ROLES),
         "statuses": sorted(repo.STATUSES),
         "sequences": sorted(repo.SEQUENCES),
+        # 🔴 P2-14f：**五档知识库写权限的字典来自后端**，前端不自己维护一份。
+        # 理由同 13d踩过的坑（后端写 `{from,to}`、前端读 `detail.status`，
+        # 两边各自自洽，页面上整列是 `—`，而接口全绿、不报错）。
+        # 顺带把每档的「能干什么」也下发（从 kb_acl.capabilities 派生）——
+        # 界面上要能给管理员看「这一档到底能做什么」，而不只是一句标签。
+        "kb_roles": [
+            {"value": v, "label": kb_acl.KB_ROLE_LABELS[v],
+             "capabilities": kb_acl.capabilities(v)}
+            for v in sorted(kb_acl.KB_ROLES)
+        ],
         "password_policy": {
             "min_length": settings.PASSWORD_MIN_LENGTH,
             "expire_days": settings.PASSWORD_EXPIRE_DAYS,
@@ -280,6 +307,38 @@ def patch_role(user_id: int, body: RoleBody, actor: Actor = Depends(require_admi
         record = svc.set_role(actor, user_id, body.role)
     except svc.AdminError as e:
         raise _fail(e) from e
+    return record.to_dict()
+
+
+@router.patch(
+    "/users/{user_id}/kb-role",
+    summary="下发 / 收回知识库写权限（仅管理员）",
+    description=(
+        "知识库是**全公司共用**的（不做读隔离），所以这一档管的是"
+        "「谁能往里加东西、谁能删东西、谁能重建整库索引」。\n\n"
+        "**改完会 `token_version + 1`** → 被改的人必须重新登录才生效。"
+    ),
+)
+def patch_kb_role(
+    user_id: int, body: KbRoleBody, actor: Actor = Depends(require_admin)
+) -> dict[str, Any]:
+    """
+    与 `PATCH /role` **完全并列**的另一个维度（D14）：`role` 管「能不能进管理端」，
+    `kb_role` 管「能不能改知识库」。15 种组合全部合法。
+
+    ⚠️ **不接受自由输入**：合法值由 `kb_acl.check_kb_role` 判，
+    拼错会400 而不是静默失效 —— 静默失效是权限系统最坏的失败方式
+    （管理员以为授权成功了，那个人却还是传不上去，且没有任何报错）。
+    """
+    try:
+        record = svc.set_kb_role(actor, user_id, body.kb_role)
+    except svc.AdminError as e:
+        raise _fail(e) from e
+    except ValueError as e:
+        # check_kb_role 的非法值 —— 400（请求有问题），不是 500。
+        # 路由层显式接住它，是因为「档位名拼错」是**调用方的错**，
+        # 而服务层抛 ValueError 是为了不给路由层漏判的机会。
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return record.to_dict()
 
 

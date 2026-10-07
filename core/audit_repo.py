@@ -63,6 +63,10 @@ ACTION_LABELS: Final[dict[str, str]] = {
     "user.profile.update": "修改员工资料",
     "user.status.change": "变更员工状态",
     "user.role.change": "变更系统角色",
+    # P2-14f：知识库写权限是**独立维度**（D14），所以单列一个动作名，
+    # 不复用 user.role.change —— 审计里分不清「改了能不能进后台」与
+    # 「改了能不能删知识库」，而这两件事的严重程度完全不同。
+    "user.kb_role.change": "变更知识库写权限",
     "user.password.reset": "重置密码",
     "user.password.must_change": "开关强制改密",
     # P2-14c：知识库写操作。target_type 用 `document`（不是 `kb`）——
