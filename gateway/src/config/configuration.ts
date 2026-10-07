@@ -141,7 +141,8 @@ export function loadGatewayConfig(): GatewayConfig {
     // 判定规则（防枚举文案 / 耗时对齐 / 到期边界 / 锁定 / 强制改密）在
     // Python 侧只有一份，带 141 条断言。让网关再写一份 TypeScript 等于
     // 把这三条各复制到一个没有测试守着的地方，半年后必然静默漂移。
-    // 代价是登录多一次内网 HTTP（实测 < 5ms），认下来。
+    // 代价是登录多一次内网 HTTP（纯 HTTP 开销实测 0.7~1.1ms；整个判定
+    // 172~179ms 是 bcrypt cost 12 的成本，判定放在哪一侧都一样）。
     internalAuthPath: process.env.GATEWAY_INTERNAL_AUTH_PATH ?? '/api/v1/internal/auth/login',
     // 与后端的 INTERNAL_SHARED_SECRET 必须是同一个值。
     // 缺失时**不做兜底默认值**（见 loadInternalToken 的注释）。

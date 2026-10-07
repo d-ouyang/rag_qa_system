@@ -19,7 +19,7 @@ GATEWAY_PORT ?= 3000
         stack-up stack-ps stack-logs stack-down stack-rebuild \
         db-upgrade db-current db-downgrade db-revision db-sql \
         worker accept accept-ui reindex reindex-apply accept-p04a accept-ui-p04b \
-        smoke-session
+        smoke-session accept-12b-reverse
 
 help:
 	@echo "—— 一次性 ——"
@@ -170,6 +170,30 @@ test:
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_admin.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_audit.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module13_login.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_trust_boundary.py
+
+# ---------- P2-12b 反向验证（**不进 make test**）----------
+# 它会临时改生产源码（core/identity.py + 两个 .ts）再跑主测试看断言转红，
+# 跑完还原。放进 `make test` 意味着每次回归都在动源码 ——
+# 主测试一旦失败，你分不清是「回归真失败」还是「反向验证把自己改坏了」。
+# 反过来也有一层理由：反向验证的价值在于「拆掉之后必须红」，
+# 而 make test 的契约是「全绿」，把两件事塞进同一条命令会让判据含混。
+accept-12b-reverse:
+	@echo "  注意：会临时改 core/identity.py 与 gateway/src 下两个 .ts，跑完自动还原"
+	@$(PY) tests/test_module14_trust_boundary_reverse.py
+
+# ---------- P2-12b 真链路验收（**也不进 make test**）----------
+# 两条不进的理由不同，别混：
+#   · accept-12b-reverse —— 它**改源码**，混进去会让「回归失败」不可分辨。
+#   · accept-12b         —— 它要求后端+网关两个进程**已经起着**（真 HTTP、真 token），
+#     而 make test 的契约是「离线可跑、必须永远全绿」。
+# 为什么它不能省：module14 是 Python 脚本，对网关那一半（TypeScript）只能
+# ① 在 Python 里等价重实现（验规则对不对）② 正扫 .ts 源码（验那份代码写着这些规则）。
+# 两条都不等于「运行时真的这么跑」—— 而本仓库目前**没有 tsc 测试环节**。
+# ⚠️ 它会临时改 wu.jing / chen.jie 的密码（要拿真 token 只能真登录），
+#    收尾换成新随机临时密码 + 强制改密。别在这两个账号正被使用时报。
+accept-12b:
+	@$(PY) tests/acceptance_p2_12b.py
 
 # ---------- 异步解析 Worker（P0-3a）----------
 # 池、并发、超时、投递语义**全部在 worker/app.py 里按 settings 配置**，

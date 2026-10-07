@@ -148,11 +148,32 @@ check("四个账号的角色/状态正如种子所写",
 print("\n== 第 2 组：身份解析（core/identity）==")
 
 
-def act_as(username: str | None, *, user_id_header: bool = True) -> tuple[int, dict]:
-    """打一次 /me。返回 (status_code, json_or_empty)。"""
+#: `act_as` 不显式传 `gateway_proof` 时用它，表示「按settings 里的真密钥发证明」。
+#: 为什么要有这个默认值：12b 之后 `IDENTITY_MODE=gateway` 下后端**验过网关证明才认身份头**。
+#: 如果默认「不发证明」，那么第 5 组里那条「gateway 模式下正常链路不受影响」会被证明校验
+#: 挡成401 —— 断言红了，但红的不是它想验的东西；更坏的是如果有人把断言改成 `s == 401`
+#: 「修绿」，它就变成一条恒真的假绿（第 50 条：断言看着在跑，实际什么也没验）。
+#: 所以默认走「正常链路」形态，要验 fail-closed 的地方显式传 `""`（不发）或错值。
+_AUTO_PROOF = "\x00auto\x00"
+
+
+def act_as(username: str | None, *, user_id_header: bool = True,
+           gateway_proof: str = _AUTO_PROOF) -> tuple[int, dict]:
+    """打一次 /me。返回 (status_code, json_or_empty)。
+
+    `gateway_proof` 是 **P2-12b 新增**的：网关转发时会带 `X-Internal-Auth`，
+    后端在 `IDENTITY_MODE=gateway` 下**验过它才认身份头**（缺或错一律 401）。
+
+    - 省略 / `_AUTO_PROOF` → 按 `settings.INTERNAL_SHARED_SECRET` 发正确证明（正常链路）
+    - `""`                → 压根不发这个头（验「没证明就 401」）
+    - 其他字符串           → 原样发（验「证明错了就 401」）
+    """
     headers = {}
     if username is not None:
         headers["X-User-Id" if user_id_header else "X-Username"] = username
+    proof = settings.INTERNAL_SHARED_SECRET if gateway_proof == _AUTO_PROOF else gateway_proof
+    if proof:
+        headers["X-Internal-Auth"] = proof
     r = client.get("/api/v1/admin/me", headers=headers)
     try:
         return r.status_code, r.json()
@@ -243,6 +264,11 @@ check("  └ 说明上面那条 403 真的是这道守卫拦的（不是别的�
 
 
 print("\n== 第 5 组：gateway 模式必须 fail-closed==")
+# 前置条件：证明校验要有东西可比。
+# 没有它的话下面「正确证明 → 200」那条会因为拿不到密钥而变成 401，
+# 而红的理由跟它想验的东西无关 —— 又是一次「假红」（第 50 条）。
+check("前置：.env 里配了 INTERNAL_SHARED_SECRET（否则整组都在验空气）",
+      bool(settings.INTERNAL_SHARED_SECRET), "未配置")
 _mode_before = settings.IDENTITY_MODE
 settings.IDENTITY_MODE = MODE_GATEWAY
 try:
@@ -252,8 +278,25 @@ try:
     s_ghost2, b_ghost2 = act_as("nobody.m12a")
     check("gateway 模式下查不到的人 → 401（不允许 break-glass 兜底）",
           s_ghost2 == 401, f"{s_ghost2} {b_ghost2}")
-    s_ok2, _ = act_as(ADMIN_USERNAME)
-    check("gateway 模式下正常链路不受影响", s_ok2 == 200, f"{s_ok2}")
+
+    # --- 以下三条是 P2-12b 追加的：证明这一层 ---------------------------------
+    # 12b 之前后端只信身份头，于是本机任何进程 curl 一下就能冒充管理员
+    # （实测：`curl -H 'X-User-Id: 440' localhost:8000/api/v1/admin/users`
+    #   返回 200 + 完整员工名单）。现在身份头前面多了一道证明。
+    s_noproof, b_noproof = act_as(ADMIN_USERNAME, gateway_proof="")
+    check("⚠️ 身份头合法但**没有网关证明** → 401（12b 前是 200 + 员工名单）",
+          s_noproof == 401, f"{s_noproof} {b_noproof}")
+    check("  └ 401 的文案说的是「没经过网关」，不是「没权限」",
+          "网关" in b_noproof.get("detail", "") or "鉴权" in b_noproof.get("detail", ""),
+          f"{b_noproof.get('detail')}")
+    _sec = settings.INTERNAL_SHARED_SECRET
+    s_badproof, b_badproof = act_as(ADMIN_USERNAME, gateway_proof=_sec[:-1] + "X")
+    check("⚠️ 网关证明差一位 → 401（不是 403 / 500 / 放行）",
+          s_badproof == 401, f"{s_badproof} {b_badproof}")
+
+    s_ok2, b_ok2 = act_as(ADMIN_USERNAME)
+    check("gateway 模式下正常链路（正确证明）不受影响",
+          s_ok2 == 200 and b_ok2.get("role") == "admin", f"{s_ok2} {b_ok2}")
 finally:
     settings.IDENTITY_MODE = _mode_before
 

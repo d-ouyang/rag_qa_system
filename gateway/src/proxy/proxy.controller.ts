@@ -35,9 +35,11 @@
 import {
   All,
   Controller,
+  ForbiddenException,
   Inject,
   Logger,
   Next,
+  NotFoundException,
   Req,
   Res,
 } from '@nestjs/common';
@@ -46,6 +48,11 @@ import { createProxyMiddleware, fixRequestBody, RequestHandler } from 'http-prox
 import { gatewayConfig, GatewayConfig } from '../config/configuration';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { Public } from '../auth/decorators/public.decorator';
+import {
+  buildForwardIdentityHeaders,
+  INBOUND_IDENTITY_HEADERS,
+} from '../auth/identity-headers';
+import { decidePath } from '../auth/path-authorization';
 
 /**
  * 免 token 放行的上游健康检查路径（PLAN-v2.0.0 P0-2 白名单）。
@@ -102,33 +109,42 @@ export class ProxyController {
            * （一条请求换一个进程），宁可降级成「这次转发不带附加头」也不能崩。
            */
           try {
-            // ① 把身份信息注入下游请求头。
+            // ⓿ **无条件剥离**（P2-12b）。
+            //    必须排在注入**之前**，且**不挂在任何 if 里** ——
+            //    条件式剥离等于「有身份时才算数」，而白名单路径（守卫不跑）
+            //    上恰恰没有身份，于是伪造头原样穿透到后端。
+            //    12b 施工前实测：白名单路径带 `X-User-Id: 440`（真管理员 id）
+            //    → 后端按 admin 处理请求。这不是理论隐患。
+            for (const h of INBOUND_IDENTITY_HEADERS) {
+              proxyReq.removeHeader(h);
+            }
+
+            // ① 注入真实身份（**在剥离之后**）+ 网关证明 X-Internal-Auth。
             //    后端因此不需要自己解析 JWT：它只要信任「这个头是网关加的」。
-            //    ⚠️ 这意味着后端**必须只在内网可达**（compose 里不暴露 8000 端口），
-            //    否则绕过网关直接调用就能伪造 X-User-Id。
+            //    ⚠️ 这意味着后端必须只在内网可达（compose 里不暴露 8000 端口），
+            //    否则绕过网关直接调用就能伪造 X-User-Id。12b 起还多一道：
+            //    后端会验 X-Internal-Auth（缺/错一律 401），所以拓扑被破坏时
+            //    伪造也伪造不成立 —— 但那依赖两边共享同一个密钥。
             //
-            // ⚠️⚠️ **这里只做了「注入」，没有做「剥离」—— 而剥离才是关键那一半。**
-            // 现在入站的 `x-user-id` 若被客户端带上，`if (incoming.user)` 为真时
-            // 会被覆盖（运气好），但**白名单路径**（`@Public()` 的两个健康检查）
-            // 上 `incoming.user` 是 undefined，注入整段被跳过 → 客户端自带的
-            // `X-User-Id: 999` / `X-Role: admin` **原样转发到后端**。
-            // 已用同版本代理库实测过（复现脚本 `gateway/scripts/probe-header-strip.cjs`）。
-            // 修法是**无条件剥离**（12b 的①）：先把所有身份头 delete 掉，
-            // 再按需注入 —— 本轮留给 12b，因为它是独立一格、可单独验收。
+            // ⚠️ **白名单路径也要注入 X-Internal-Auth**（见 identity-headers.ts
+            //    里的说明）：后端在 gateway 模式下要靠它判断「请求来自网关」，
+            //    少了它那两个探活接口会在后端全被 401。
             if (incoming.user) {
-              // P2-11c：`X-User-Id` 从「登录名」变成「整数 id」。
-              // 后端 core/identity.py 两条路都认（数字走 get、数字串也回落到
-              // get_by_username），所以这不是一个破坏性变更。
-              proxyReq.setHeader('X-User-Id', incoming.user.userId);
-              // 用户名可能含中文，HTTP 头只允许 ASCII，编码后再传（下游自行 decodeURIComponent）
-              proxyReq.setHeader('X-Username', encodeURIComponent(incoming.user.username));
-              // ↓ 11c 新增的三个头。**role** 让后端不必查库就知道权限（12b ② 用），
-              //   **token_version** 让后端能判断「这个 token 是不是改密前的」。
-              //   缺了 ver，改密后旧 token 在后端眼里仍然有效 —— 那是漏掉就
-              //   不会报错的失效，所以必须在这里给。
-              proxyReq.setHeader('X-User-Role', incoming.user.role || 'user');
-              proxyReq.setHeader('X-Token-Version', String(incoming.user.tokenVersion ?? 0));
-              proxyReq.setHeader('X-Identity-Source', incoming.user.source || 'legacy');
+              const identity = buildForwardIdentityHeaders(
+                {
+                  userId: incoming.user.userId,
+                  username: incoming.user.username,
+                  role: incoming.user.role,
+                  tokenVersion: incoming.user.tokenVersion,
+                  source: incoming.user.source,
+                },
+                this.config.internalToken,
+              );
+              for (const [k, v] of Object.entries(identity)) {
+                proxyReq.setHeader(k, v);
+              }
+            } else if (this.config.internalToken) {
+              proxyReq.setHeader('X-Internal-Auth', this.config.internalToken);
             }
             if (incoming.requestId) proxyReq.setHeader('X-Request-Id', incoming.requestId);
 
@@ -219,9 +235,49 @@ export class ProxyController {
    *
    * 只代理 `/api/v1/*` 而不是 `*`：登录（/api/auth/*）与网关自身健康检查
    * （/api/health）属于网关的职责，不能被转发到后端去。
+   *
+   * ---------------------------------------------------------------------
+   * 路径级授权（P2-12b）：为什么在这里做，以及为什么**不能**挪到别处
+   * ---------------------------------------------------------------------
+   * 能放的地方只有三个，本路由是唯一正确的那个：
+   *   · 中间件 → 跑在守卫之前，未登录请求拿到 403 而不是 401，
+   *     而前端对这两者的处理不同（403 不跳登录页，用户会卡在页面上）；
+   *   · 守卫 → 也可以，但守卫只回答「你是谁」，让它顺带管路径会把两件事
+   *     揉在一起，而白名单路径根本不经过它；
+   *   · **这里** → 已经过了守卫（身份已知）、还没转发（请求不进后端）。
+   *
+   * 它**不是**后端 `require_staff` 的替代：那一层是本条规则失效时的兜底
+   * （裸跑 8000、忘配路径规则）。详见 auth/path-authorization.ts 顶部。
    */
   @All('api/v1/*')
   handle(@Req() req: ProxiedRequest, @Res() res: Response, @Next() next: NextFunction): void {
+    const path = (req.originalUrl || req.url || '').split('?')[0];
+    const decision = decidePath(path, req.user?.role);
+    if (!decision.allowed) {
+      // 记 warn 而不是 error：这是**正常的**业务拒绝（有人点错了入口，
+      // 或探测内部接口），记 error 会让真正的转发故障淹没在噪声里。
+      this.logger.warn(
+        `路径级授权拒绝 | path=${path} role=${req.user?.role ?? '-'} code=${decision.code}`,
+      );
+      // ⚠️ 内部接口用 404 而不是 403：**不承认这条路径存在**。
+      // 用 403 等于告诉探测者「它在，只是你不许」，那本身就是信息。
+      if (decision.code === 'NOT_FOUND') {
+        throw new NotFoundException({
+          code: decision.code,
+          message: decision.message,
+          requestId: req.requestId ?? '',
+          timestamp: new Date().toISOString(),
+          path,
+        });
+      }
+      throw new ForbiddenException({
+        code: decision.code,
+        message: decision.message,
+        requestId: req.requestId ?? '',
+        timestamp: new Date().toISOString(),
+        path,
+      });
+    }
     req.proxyStartedAt = Date.now();
     this.proxy(req, res, next);
   }

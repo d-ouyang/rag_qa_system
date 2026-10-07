@@ -27,6 +27,7 @@ from fastapi import APIRouter
 
 from config.settings import settings
 from core import document_repo as repo
+from core.identity import MODE_DEV, MODE_GATEWAY
 from core.memory_manager import get_memory_manager
 from core.queue import queue_depth, worker_alive
 from core.vector_store import get_vector_store_manager
@@ -137,10 +138,28 @@ def get_system_settings() -> dict[str, Any]:
     description="轻量探活：只确认服务活着与版本号（链路级检查见 /api/v1/qa/health）。",
 )
 def system_health() -> dict[str, Any]:
+    #⚠️ `identity` 这一段（P2-12b）：**只报「配没配」，绝不报密钥本身**。
+    # 为什么放进探活：网关侧缺 `INTERNAL_SHARED_SECRET` 是「生产启动失败」，
+    # 而后端缺它是「运行期每个请求 401」—— 后者的症状（所有数据接口 401）
+    # 离病因（少配一个环境变量）隔着一个进程，排查会跑偏很久。
+    # 把「配没配」放进本来就有人盯的探活里，它就在部署当天被看见，
+    # 而不是等到第一个人登录失败才发现。
+    # `trust_enforced` 那一项是最该看的：它是 false 时，
+    # 「后端只认网关注入的身份」这句话**当下不成立**。
     return {
         "status": "ok",
         "name": settings.PROJECT_NAME,
         "version": settings.PROJECT_VERSION,
+        "identity": {
+            "mode": settings.IDENTITY_MODE,
+            # True = gateway 模式且密钥已配置（信任边界真的在生效）
+            "trust_enforced": settings.IDENTITY_MODE == MODE_GATEWAY
+            and bool(settings.INTERNAL_SHARED_SECRET),
+            "gateway_proof_configured": bool(settings.INTERNAL_SHARED_SECRET),
+            "dev_fallback_user": (
+                settings.IDENTITY_DEV_USERNAME if settings.IDENTITY_MODE == MODE_DEV else None
+            ),
+        },
     }
 
 
