@@ -55,6 +55,23 @@ v1.0.0 的 get_messages / get_history 会在会话不存在时顺手创建一个
 在会话列表里出现「点进去什么都没有」的幽灵条目）。
 现在统一为：读就是读，不存在就返回空；只有 add_exchange / add_usage
 这类真实写入才会创建会话。
+
+--------------------------------------------------------------------------
+P2-12c：每个会话级方法都多了 owner_id
+--------------------------------------------------------------------------
+12c 之前这里的方法只认 session_id，于是「任何登录用户都能读任何人的会话」。
+现在凡**碰某一条会话**的方法都必须带 `owner_id`（必填），语义由
+`SessionStore` 保证（`core/session_store.py` 类文档里那三条）。
+
+为什么 owner_id 一路透传、而不是在 MemoryManager 上设一个「当前用户」：
+    MemoryManager 是**全局单例**（get_memory_manager），FastAPI 每个请求
+    都拿到同一个实例。把owner_id 挂在实例上 = 上一次请求的归属会漏给
+    下一个请求 —— 这是典型的「用全局状态冒充上下文」事故。
+    挂在参数上，归属就是「这一次调用的事」。
+
+代价：`get_messages` 这类纯读方法现在也要多传一个参数，
+调用方（rag_chain / qa.py）比之前啰嗦。这条啰嗦是**刻意的** ——
+它让「漏传归属」在开发期就变成 TypeError，而不是变成线上泄漏。
 """
 
 from __future__ import annotations
@@ -103,12 +120,13 @@ class MemoryManager:
     """
     多轮对话记忆管理器（存储后端可插拔）。
 
-    对外接口（与 v1.0.0 完全一致，调用方零改动）：
-        · get_messages(session_id)       取历史消息（LangChain Message 列表）
-        · get_history(session_id)        取 BaseChatMessageHistory 对象
-        · add_exchange(session_id, q, a) 一轮问答结束后写入（user + ai 两条）
-        · clear_session(session_id)      清空某个会话
-        · session_count() / list_sessions()  运维/接口层用
+    对外接口（v1.0.0 的签名在 P2-12c 后多了一个必填 `owner_id`）：
+        · get_messages(session_id, owner_id=...)  取历史消息
+        · get_history(session_id, owner_id=...)   取 BaseChatMessageHistory 对象
+        · add_exchange(session_id, q, a, owner_id=...)  一轮问答结束后写入
+        · clear_session(session_id, owner_id=...) 清空某个会话
+        · list_sessions(owner_id=...)  当前用户的会话列表
+        · session_count() / memory_report()  运维口径，**不带** owner
 
     线程/进程模型：不同 session 并行；同一 session 串行（锁由存储层提供）。
     """
@@ -160,22 +178,31 @@ class MemoryManager:
     # ------------------------------------------------------------------ #
     # 存储层适配
     # ------------------------------------------------------------------ #
-    def _load(self, session_id: str, touch: bool = True) -> SessionSnapshot | None:
+    def _load(self, session_id: str, *, owner_id: int | None,
+              touch: bool = True) -> SessionSnapshot | None:
         """
-        读快照；不存在或已过期返回 None。
+        读快照；不存在 / 已过期 / **不属于 owner_id** 都返回 None。
 
+        :param owner_id: 会话归属。必填（`None` 是合法取值，含义见SessionStore）。
         :param touch: 是否把本次读取计为「活跃」（刷新 TTL）。
                       会话列表这类「扫一眼」的读传 False —— 否则有人反复刷新列表
                       就等于给所有会话无限续命，「闲置过期」彻底失效。
         """
-        return self.store.load(session_id, touch=touch)
+        return self.store.load(session_id, owner_id=owner_id, touch=touch)
 
-    def _save(self, session_id: str, snapshot: SessionSnapshot) -> bool:
+    def _save(self, session_id: str, snapshot: SessionSnapshot, *,
+              owner_id: int | None) -> bool:
         """
         写快照。返回是否真的写成功。
 
         写入前先问存储层「现在能写吗」：Redis 内存水位到 fatal 时会被拒，
         此时**不抛异常**——问答主链路继续，只是这一轮不进记忆。
+
+        ⚠️ 但 `SessionOwnershipError` 会**穿透**这个降级：
+        「被容量保护拒绝」是「这一轮没存上，问答照常」，
+        而「这条会话属于别人」是「这一轮问的根本不该发生」——
+        静默降级会让越权写入看起来成功，而它其实一个字节都没写。
+        这两类必须分开：前者返回 False，后者上抛让接口层报 403。
         """
         allowed, reason = self.store.write_allowed()
         if not allowed:
@@ -184,8 +211,19 @@ class MemoryManager:
                 self._readonly_warned = True
             return False
         self._readonly_warned = False
-        self.store.save(session_id, snapshot)
+        self.store.save(session_id, snapshot, owner_id=owner_id)
         return True
+
+    def is_foreign(self, session_id: str, *, owner_id: int | None) -> bool:
+        """
+        这条会话存在但不属于 owner_id（供接口层在 404 / 403 之间做选择）。
+
+        为什么要额外查一次：`_load` 把「不存在」和「不属于我」压成同一个
+        None，两者对逻辑层没区别；但用户拍板越权要报 **403** 而不是 404，
+        这个差别只能靠再问一次存储层拿到。
+        参见 `SessionStore.is_foreign_to` 的说明。
+        """
+        return self.store.is_foreign_to(session_id, owner_id=owner_id)
 
     # ------------------------------------------------------------------ #
     # 会话逻辑（与存储无关）
@@ -225,7 +263,7 @@ class MemoryManager:
     # ------------------------------------------------------------------ #
     # 对外接口：历史读写
     # ------------------------------------------------------------------ #
-    def get_history(self, session_id: str) -> BaseChatMessageHistory:
+    def get_history(self, session_id: str, *, owner_id: int | None) -> BaseChatMessageHistory:
         """
         返回会话的 ChatMessageHistory 对象（只读快照语义）。
 
@@ -234,24 +272,25 @@ class MemoryManager:
         注意：这里是**快照**，对它的改动不会写回存储 —— 写入统一走
         add_exchange / clear_session / truncate_session，避免绕过裁剪逻辑。
         """
-        snapshot = self._load(session_id)
+        snapshot = self._load(session_id, owner_id=owner_id)
         payload = snapshot.messages if snapshot is not None else []
         return InMemoryChatMessageHistory(messages=_payload_to_messages(payload))
 
-    def get_messages(self, session_id: str) -> list[BaseMessage]:
+    def get_messages(self, session_id: str, *, owner_id: int | None) -> list[BaseMessage]:
         """取某个会话的全部历史（新列表：外部改动不会写回存储）。"""
-        snapshot = self._load(session_id)
+        snapshot = self._load(session_id, owner_id=owner_id)
         if snapshot is None:
             return []
         return _payload_to_messages(snapshot.messages)
 
-    def get_recent_messages(self, session_id: str, turns: int | None = None) -> list[BaseMessage]:
+    def get_recent_messages(self, session_id: str, *, owner_id: int | None,
+                            turns: int | None = None) -> list[BaseMessage]:
         """
         取送进模型和问题重写的最近若干轮。
 
         库里的全文不动。默认轮数是 MEMORY_MAX_TURNS。
         """
-        messages = self.get_messages(session_id)
+        messages = self.get_messages(session_id, owner_id=owner_id)
         keep_turns = self.max_turns if turns is None else int(turns)
         keep = max(0, keep_turns) * 2
         if keep == 0 or len(messages) <= keep:
@@ -264,6 +303,8 @@ class MemoryManager:
         question: str,
         answer: str,
         meta: dict[str, Any] | None = None,
+        *,
+        owner_id: int | None,
     ) -> None:
         """
         一轮问答结束后写入记忆（用户问 + AI 答，两条一起，原子语义）。
@@ -276,9 +317,11 @@ class MemoryManager:
 
         :param meta: 本轮展示元数据（sources/intent/usage/elapsed_ms/ts 等），
                      与该轮消息一起存，历史接口按轮回填
+        :param owner_id: 会话归属。必填 —— 决定这条会话记在谁名下
+                         （新建 = 认领，见 SessionStore.save 的三态）
         """
         with self.store.session_lock(session_id):
-            snapshot = self._load(session_id) or SessionSnapshot()
+            snapshot = self._load(session_id, owner_id=owner_id) or SessionSnapshot()
             # ⚠️ 这一句必须在 append 消息**之前**（2026-09-24 修复，别再挪回去）。
             #
             # 放错位置的后果（p0.1 起潜伏，p0.4 才在真实会话里暴露）：
@@ -302,19 +345,21 @@ class MemoryManager:
             snapshot.exchange_meta.append(dict(meta) if meta is not None else {})
             self._trim(snapshot)
             snapshot.last_active = time.time()
-            ok = self._save(session_id, snapshot)
+            ok = self._save(session_id, snapshot, owner_id=owner_id)
         if ok:
             logger.info("记忆已更新 | session_id=%s 历史条数=%d", session_id, len(snapshot.messages))
 
-    def clear_session(self, session_id: str) -> bool:
+    def clear_session(self, session_id: str, *, owner_id: int | None) -> bool:
         """
         清空某个会话的全部记忆。
 
-        :return: 会话存在并清除成功返回 True；会话本就不存在返回 False
+        :return: 会话存在（且属于 owner_id）并清除成功返回 True；
+                 不存在或不属于 owner_id 返回 False
         """
-        return self.store.delete(session_id)
+        return self.store.delete(session_id, owner_id=owner_id)
 
-    def truncate_session(self, session_id: str, keep_messages: int) -> bool:
+    def truncate_session(self, session_id: str, keep_messages: int, *,
+                         owner_id: int | None) -> bool:
         """
         把会话历史截断到前 keep_messages 条消息（编辑重发用）。
 
@@ -327,7 +372,7 @@ class MemoryManager:
         :return: 会话存在返回 True（无论是否真裁了）；不存在返回 False
         """
         with self.store.session_lock(session_id):
-            snapshot = self._load(session_id)
+            snapshot = self._load(session_id, owner_id=owner_id)
             if snapshot is None:
                 return False
             keep = max(0, int(keep_messages))
@@ -337,13 +382,13 @@ class MemoryManager:
                 if snapshot.exchange_meta:
                     del snapshot.exchange_meta[keep // 2:]
                 snapshot.last_active = time.time()
-                self._save(session_id, snapshot)
+                self._save(session_id, snapshot, owner_id=owner_id)
         logger.info("会话已截断 | session_id=%s 保留 %d 条消息", session_id, keep)
         return True
 
-    def get_exchange_meta(self, session_id: str) -> list[dict[str, Any]]:
+    def get_exchange_meta(self, session_id: str, *, owner_id: int | None) -> list[dict[str, Any]]:
         """取某会话每轮问答的展示元数据（深拷贝语义：返回每轮 dict 的副本）。"""
-        snapshot = self._load(session_id)
+        snapshot = self._load(session_id, owner_id=owner_id)
         if snapshot is None:
             return []
         return [dict(m) for m in snapshot.exchange_meta]
@@ -356,15 +401,18 @@ class MemoryManager:
         session_id: str,
         title: str | None = None,
         pinned: bool | None = None,
+        *,
+        owner_id: int | None,
     ) -> dict[str, Any] | None:
         """
         更新会话管理元数据（重命名 / 置顶），返回更新后的元数据。
 
-        :return: 会话存在返回更新后的 meta dict；不存在返回 None
-                 （接口层据此返回 404，而不是悄悄造一个空会话出来）
+        :return: 会话存在（且属于 owner_id）返回更新后的 meta dict；
+                 不存在或不属于 owner_id 返回 None
+                 （接口层据此返回 404/ 403，而不是悄悄造一个空会话出来）
         """
         with self.store.session_lock(session_id):
-            snapshot = self._load(session_id)
+            snapshot = self._load(session_id, owner_id=owner_id)
             if snapshot is None:
                 return None
             meta = snapshot.session_meta or {"pinned": False}
@@ -374,12 +422,12 @@ class MemoryManager:
                 meta["pinned"] = bool(pinned)
             snapshot.session_meta = meta
             snapshot.last_active = time.time()
-            self._save(session_id, snapshot)
+            self._save(session_id, snapshot, owner_id=owner_id)
             return dict(meta)
 
-    def get_session_meta(self, session_id: str) -> dict[str, Any]:
+    def get_session_meta(self, session_id: str, *, owner_id: int | None) -> dict[str, Any]:
         """取会话管理元数据（无记录时返回默认值）。"""
-        snapshot = self._load(session_id)
+        snapshot = self._load(session_id, owner_id=owner_id)
         if snapshot is None or not snapshot.session_meta:
             return {"pinned": False}
         return dict(snapshot.session_meta)
@@ -396,10 +444,12 @@ class MemoryManager:
         input_tokens: int,
         output_tokens: int,
         cache_read_tokens: int = 0,
+        *,
+        owner_id: int | None,
     ) -> None:
         """累加一次问答的 token 用量（一次问答可能含多次 LLM 调用，由调用方合并后传入）。"""
         with self.store.session_lock(session_id):
-            snapshot = self._load(session_id) or SessionSnapshot()
+            snapshot = self._load(session_id, owner_id=owner_id) or SessionSnapshot()
             acc = dict(self._USAGE_ZERO)
             acc.update(snapshot.usage or {})
             acc["input_tokens"] += int(input_tokens)
@@ -407,11 +457,11 @@ class MemoryManager:
             acc["cache_read_tokens"] += int(cache_read_tokens)
             acc["requests"] += 1
             snapshot.usage = acc
-            self._save(session_id, snapshot)
+            self._save(session_id, snapshot, owner_id=owner_id)
 
-    def get_usage(self, session_id: str) -> dict[str, int]:
+    def get_usage(self, session_id: str, *, owner_id: int | None) -> dict[str, int]:
         """取某个会话的累计 token 用量（无记录时返回全零副本）。"""
-        snapshot = self._load(session_id)
+        snapshot = self._load(session_id, owner_id=owner_id)
         if snapshot is None or not snapshot.usage:
             return dict(self._USAGE_ZERO)
         merged = dict(self._USAGE_ZERO)
@@ -422,22 +472,35 @@ class MemoryManager:
     # 运维接口
     # ------------------------------------------------------------------ #
     def session_count(self) -> int:
-        """当前存活会话数（接口层/健康检查用）。"""
+        """当前存活会话数（接口层/健康检查用）。
+
+        ⚠️ 这是**运维口径**：数的是全部会话，不分归属（`stats()` 同理）。
+        它回答的是「后台攒了多少会话」，不是「谁有多少条」——
+        健康检查要的是前者，而前者天然会随用户数增长，
+        把它当成「某个用户的会话数」来报警就会误报。
+        要看某个用户的会话数，用 `len(list_sessions(owner_id=...))`。
+        """
         stats = self.store.stats()
         count = stats.get("session_count")
+        # 兜底用 list_ids() 而**不是** list_ids(owner_id=None)：
+        # 这里的语义就是「全部会话数」，而 owner_id=None 是「只认无主」。
+        # 两者恰好会重合在「全是无主会话」时，但那只是巧合，不是同一个意思 ——
+        # store 少实现 stats 时（测试里的假 store）这条兜底才是对的。
         return int(count) if isinstance(count, int) else len(self.store.list_ids())
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self, *, owner_id: int | None) -> list[dict[str, Any]]:
         """
-        列出全部会话及其基本信息（运维/接口层用，不含消息正文）。
+        列出**属于 owner_id 的**会话及其基本信息（不含消息正文）。
 
         注意这里用 touch=False 读：翻一下会话列表不应该把所有会话的 TTL 都续上，
         否则「闲置过期」在有人反复刷新列表的场景下形同虚设。
         """
         items: list[dict[str, Any]] = []
-        for session_id in self.store.list_ids():
-            snapshot = self._load(session_id, touch=False)
+        for session_id in self.store.list_ids(owner_id=owner_id):
+            snapshot = self._load(session_id, owner_id=owner_id, touch=False)
             if snapshot is None:
+                # 列表与逐条读之间可能已被并发删除/改归属。跳过而不是崩 ——
+                # 列表少一条不影响使用，硬读会 500。
                 continue
             items.append({
                 "session_id": session_id,

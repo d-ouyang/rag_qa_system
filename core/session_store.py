@@ -49,6 +49,12 @@ v2.0.0 拆开之后（分层见 docs/PLAN-v2.0.0.md §4）：
     session_meta  {"pinned": bool, "title": str}                    会话管理元数据
     usage         {"input_tokens": 0, ...}                          会话累计 token 用量
     last_active   float                                             最后活跃 Unix 时间戳
+
+⚠️ **归属（owner_id / user_id）刻意不在这个结构里**（P2-12c）：
+它是「这条会话归谁」的控制面信息，由存储层自己持有（内存版 = 并行字典，
+MySQL 版 = `session.user_id` 列），不参与逻辑层的数据交换。
+理由：快照一旦带上 user_id，任何一个调用方都能改写它，归属就成了
+「谁最后写谁说了算」；而归属必须是「只有存储层能定」。
 """
 
 from __future__ import annotations
@@ -65,6 +71,29 @@ from typing import Any, Iterator
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+class SessionOwnershipError(Exception):
+    """
+    「这条会话属于别人」——P2-12c 新增。
+
+    为什么用异常而不是返回 False / None：
+      · 返回 None 与「会话不存在」无法区分，接口层只能报404，
+        而用户看到的是「我明明在列表里看到它」→ 极难排查；
+      · 返回 False 同理，且更容易被写成 `if not ok: return` 而**吞掉**；
+    异常让「越权」这件事**必须**在某处被显式处理，漏了就变成 500，
+        而 500 是测试会红的那种失败。
+
+    携带 `owner_id` 与 `session_id` 是为了接口层能说清「谁的哪条」——
+    只说「无权限」的话，用户根本不知道是哪一条会话出的问题。
+    """
+
+    def __init__(self, session_id: str, owner_id: int | None) -> None:
+        self.session_id = session_id
+        self.owner_id = owner_id
+        super().__init__(
+            f"会话 {session_id!r} 不属于当前用户（owner_id={owner_id}），拒绝访问"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -155,41 +184,110 @@ class SessionStore(ABC):
     会话存储接口。
 
     实现约定（两个实现都必须满足，测试里也是按这套断言）：
-    1. load 返回 None 表示「不存在**或**已过期」——调用方无需区分，语义都是「开新会话」；
+    1. load 返回 None 表示「不存在**或**已过期**或不属于该owner**」——调用方无需区分，
+       语义都是「开新会话」；
     2. load 命中即视为「一次活跃」，需要刷新 TTL（与 v1.0.0 内存版语义一致）；
     3. save 是整条覆盖写，且刷新 TTL；不存在的会话会被创建；
     4. delete 幂等：删不存在的会话不报错，返回值表示「是否真的删掉了」；
     5. list_ids 按最后活跃时间倒序（前端会话列表直接用这个顺序）。
+
+    ---------------------------------------------------------------------------
+    会话归属：`owner_id` 为什么是**必填**而不是可选（P2-12c）
+    ---------------------------------------------------------------------------
+    `session.user_id` 这一列从 P0-1b 就建好了，但一直没人写 —— 12c 之前
+    「这条会话属于谁」这个问题在代码里**没有答案**，于是任何人都能读任何人的会话。
+
+    现在归属判据下沉到存储层：读、写、删、列表四个操作**都要带 `owner_id`**。
+    做成**必填**而不是「可选、默认 None = 不过滤」，理由是 fail-closed：
+
+        def load(self, sid, *, owner_id=None)   ← 可选 = 危险
+        def load(self, sid, *, owner_id: int)   ← 必填 = 安全
+
+    可选版本下，某个调用点忘了传 owner_id → 静默返回**全部**会话 →
+    「A 看到了 B 的问答记录」而没有任何报错。必填版本下同样的疏漏
+    在第一次调用时就 `TypeError`，开发期立刻暴露。
+
+    ⚠️ **`owner_id=None` 的语义是「只认无主会话」，不是「不过滤」**（用户已拍板）：
+        · 已存在的会话，其 `user_id IS NULL`（12c 之前建的）→ 任何人都能认领它
+        · 已存在的会话，其 `user_id = 440` → 只有 440 能读/写它
+        · 新建的会话 → 归属写死为传入的 owner_id
+    这样「存量会话归谁」有了确定答案：**第一个打开它的人**。
+    反过来，**不存在「不过滤」这个取值** —— 这是刻意的，
+    因为「不过滤」意味着「泄漏给所有人」。
     """
 
     #: 后端名字，用于日志和健康检查展示（memory / mysql / redis，redis 已退役）
     name: str = "unknown"
 
     @abstractmethod
-    def load(self, session_id: str, touch: bool = True) -> SessionSnapshot | None:
+    def load(self, session_id: str, *, owner_id: int | None,
+             touch: bool = True) -> SessionSnapshot | None:
         """
-        读取会话快照；不存在或已过期返回 None。
+        读取会话快照；不存在 / 已过期 / **不属于 owner_id** 都返回 None。
 
+        :param owner_id: 会话归属。`None` 表示「只认无主会话」（详见类文档）。
         :param touch: 是否把本次读取记为「活跃」（刷新 TTL / last_active）。
                       会话列表、统计这类「扫一眼」的读必须传 False，
                       否则频繁刷新列表就等于给所有会话无限续命。
         """
 
     @abstractmethod
-    def save(self, session_id: str, snapshot: SessionSnapshot) -> None:
-        """整条覆盖写入并刷新 TTL。"""
+    def save(self, session_id: str, snapshot: SessionSnapshot, *,
+             owner_id: int | None) -> None:
+        """
+        整条覆盖写入并刷新 TTL。
+
+        归属规则（详见类文档）：
+          · 新建 → `user_id = owner_id`
+          · 命中无主会话 → **认领**它（`user_id = owner_id`）
+          · 命中他人会话 → **不写**并抛 `SessionOwnershipError`
+        最后一条是安全边界：认领只对「无主」生效，
+        否则 A 传一个属于 B 的 session_id 就能把 B 的会话改写掉。
+        """
 
     @abstractmethod
-    def delete(self, session_id: str) -> bool:
-        """删除会话；返回是否真实删除（不存在返回 False）。"""
+    def delete(self, session_id: str, *, owner_id: int | None) -> bool:
+        """
+        删除会话及其数据；返回是否真实删除（不存在或不属于 owner 返回 False）。
+        幂等。
+        """
 
     @abstractmethod
-    def exists(self, session_id: str) -> bool:
-        """会话是否存在且未过期。"""
+    def exists(self, session_id: str, *, owner_id: int | None = None) -> bool:
+        """会话是否存在、未过期、且属于 `owner_id`。
+
+        ⚠️ `owner_id` 默认 `None`（=只认无主）**只给运维/测试用**：
+        业务调用点必须显式传，否则「查存在性」会漏掉别人的会话。
+        唯一把它当默认值也安全的地方是 module8 的契约测试（那里测的就是无主语义）。
+        """
 
     @abstractmethod
-    def list_ids(self) -> list[str]:
-        """列出全部会话 id，按最后活跃时间倒序。"""
+    def list_ids(self, *, owner_id: int | None = None) -> list[str]:
+        """列出属于 `owner_id` 的会话 id，按最后活跃时间倒序。
+
+        ⚠️ 与 `exists` 同理：默认值 `None` = 只列无主会话，**不是「列出全部」**。
+        """
+
+    @abstractmethod
+    def is_foreign_to(self, session_id: str, *, owner_id: int | None) -> bool:
+        """
+        这条会话**存在，但不属于** `owner_id` → True。
+
+        为什么必须有这个方法（而不是让接口层看 `load` 的返回值）：
+            load / exists / list_ids 都把「不存在」和「不属于我」压成同一个 False ——
+            这是**故意**的，因为对调用方而言两者都是「开不了这条会话」。
+            但用户拍板的是**403 越权**而不是 404，理由是：
+            他拿着一个自己列表里没有、但确实存在的 session_id，
+            404 会让他反复以为自己记错了 id，而 403 直接告诉他「这条是别人的」。
+            差别只有这一个错误码，却需要知道「到底存不存在」——
+            而这个信息在`load` 的返回值里已经丢了，只能另外问一次。
+
+        为什么不用「先查归属再判」拼在接口层：
+            归属是存储层的知识（列 / 并行字典 / hash field），
+            泄漏到接口层就等于每个后端都要在接口层写一遍自己的查法。
+
+        ⚠️ 无主会话（`user_id IS NULL`）**不算foreign**：它对所有人可认领。
+        """
 
     @abstractmethod
     def purge_expired(self) -> int:
@@ -240,6 +338,11 @@ class MemorySessionStore(SessionStore):
     · 本地不装 MySQL 也能跑测试（CI 友好）；
     · 是 MySQL 版的「行为基准」——两边跑同一套断言，能第一时间发现 MySQL 版
       语义漂移。
+
+    ⚠️ 归属存**并行的字典**而不是塞进 SessionSnapshot：
+    快照是「业务交换格式」，把 `user_id` 塞进去会让每个调用方
+    （add_exchange / update_session_meta / add_usage…）都有机会改写它 ——
+    而归属**只应该**由存储层在 save 时决定。放在外面就没有这个面。
     """
 
     name = "memory"
@@ -249,6 +352,9 @@ class MemorySessionStore(SessionStore):
             ttl_seconds if ttl_seconds is not None else settings.MEMORY_SESSION_TTL_SECONDS
         )
         self._data: dict[str, SessionSnapshot] = {}
+        # session_id → 归属 uid。None 表示「无主」（12c 之前建的会话）。
+        # ⚠️ 用**单独**字典而不是 snapshot 里的字段，理由见类文档。
+        self._owners: dict[str, int | None] = {}
         # 会话级锁 + 保护字典结构的元锁（与原实现同构：元锁只做结构变更，短持有）
         self._session_locks: dict[str, threading.Lock] = {}
         self._meta_lock = threading.RLock()
@@ -259,40 +365,85 @@ class MemorySessionStore(SessionStore):
         """last_active 超过 TTL。只给统计用，不再据此删会话或把它从列表拿掉。"""
         return (time.time() - snapshot.last_active) > self.ttl_seconds
 
+    def _owns(self, session_id: str, owner_id: int | None) -> bool:
+        """
+        这条会话是不是该 owner 的。
+
+        ⚠️ 注意「无主会话对**所有人**可见」这条：它是「认领」的前提。
+        若读侧看不见，用户第一次打开 12c 之前留下的会话时load 返回 None，
+        逻辑层会当成「会话不存在」而从零重建，随后 save 把原有内容覆盖掉——
+        存量内容静默丢失，而且丢得没有任何日志。
+        所以三个实现的这条语义必须**逐条一致**，共享契约测试也断言它。
+
+        ⚠️ 本方法**不判断会话是否存在**：不在 `_owners` 里的 sid，
+        `_owners.get` 返回 None，会被判成「无主 → 可见」。
+        所以每个调用方都必须**先确认存在**再问归属
+        （load / exists / delete 都先查 `_data` / `_owners` 成员）。
+        不这么做的后果：查一个根本不存在的会话时，`delete` 会当成
+        「无主会话可删」而返回 True，接口层据此回200，用户以为删掉了。
+        """
+        actual = self._owners.get(session_id)
+        return actual is None or actual == owner_id
+
     # -------- 接口实现 -------- #
-    def load(self, session_id: str, touch: bool = True) -> SessionSnapshot | None:
+    def load(self, session_id: str, *, owner_id: int | None,
+             touch: bool = True) -> SessionSnapshot | None:
         with self._meta_lock:
+            # 先取快照再判归属：不存在就是不存在，与归属无关。
             snapshot = self._data.get(session_id)
             if snapshot is None:
+                return None
+            if not self._owns(session_id, owner_id):
                 return None
             if touch:
                 # 打开会话或接着问，记一次活跃。刷新左侧列表走 touch=False，不算打开。
                 snapshot.last_active = time.time()
             return snapshot
 
-    def save(self, session_id: str, snapshot: SessionSnapshot) -> None:
+    def save(self, session_id: str, snapshot: SessionSnapshot, *,
+             owner_id: int | None) -> None:
         with self._meta_lock:
+            if session_id in self._owners and not self._owns(session_id, owner_id):
+                # 与 MySQL 版同一条边界：认领只对「无主」生效。
+                raise SessionOwnershipError(session_id, owner_id)
             snapshot.last_active = time.time()
             self._data[session_id] = snapshot
+            self._owners[session_id] = owner_id
             self._session_locks.setdefault(session_id, threading.Lock())
 
-    def delete(self, session_id: str) -> bool:
+    def delete(self, session_id: str, *, owner_id: int | None) -> bool:
         with self._meta_lock:
+            # 顺序要紧：先判存在，再判归属。反过来的话，不存在的会话会被
+            # 当成「无主 → 可删」，返回 True（见 `_owns` 的注释）。
+            if session_id not in self._data or not self._owns(session_id, owner_id):
+                return False
             existed = self._data.pop(session_id, None) is not None
+            self._owners.pop(session_id, None)
             self._session_locks.pop(session_id, None)
         if existed:
             logger.info("会话已删除 | session_id=%s", session_id)
         return existed
 
-    def exists(self, session_id: str) -> bool:
+    def exists(self, session_id: str, *, owner_id: int | None = None) -> bool:
         with self._meta_lock:
-            return session_id in self._data
+            return session_id in self._data and self._owns(session_id, owner_id)
 
-    def list_ids(self) -> list[str]:
+    def list_ids(self, *, owner_id: int | None = None) -> list[str]:
         with self._meta_lock:
-            alive = list(self._data.items())
+            alive = [
+                (sid, snap) for sid, snap in self._data.items()
+                if self._owns(sid, owner_id)
+            ]
         alive.sort(key=lambda item: item[1].last_active, reverse=True)
         return [sid for sid, _ in alive]
+
+    def is_foreign_to(self, session_id: str, *, owner_id: int | None) -> bool:
+        with self._meta_lock:
+            if session_id not in self._data:
+                return False
+            actual = self._owners.get(session_id)
+            # 无主不是 foreign —— 认领的前提就是它对所有人可见
+            return actual is not None and actual != owner_id
 
     def purge_expired(self) -> int:
         """不再按闲置时间删除会话。保留方法是因为监控回调还在调它。"""
@@ -305,6 +456,10 @@ class MemorySessionStore(SessionStore):
         体积用采样估算（最近 20 个会话求均值后外推）：全量序列化所有会话是
         O(总字节) 的操作，而 stats 会被健康检查、内存预警接口反复调用，
         不能让一个「看看情况」的接口把 CPU 吃掉。抽样在量级判断上完全够用。
+
+        ⚠️ `session_count` 是**全部**会话数（不带 owner 过滤），因为它是
+        「内存/连接池用了多少」这类运维口径，与「谁看得见什么」无关。
+        要看某个用户的会话数，用 `list_ids(owner_id=...)`。
         """
         with self._meta_lock:
             count = len(self._data)
@@ -350,6 +505,11 @@ def build_session_store(ttl_seconds: int | None = None) -> SessionStore:
                         会各说各话，过期行为对不上）。
 
     取值非法时**抛 ValueError，不回退**（理由见函数体里的注释）。
+
+    ⚠️ 工厂**只负责选实现**，不管归属：各 Store 怎么存user_id、怎么判越权，
+    是各自的责任（实现细节差异很大：内存版是并行字典，MySQL 版是一列 + 索引）。
+    唯一的共同约定是 `SessionStore` 类文档里那三条 —— 工厂换实现时它不成立，
+    就说明实现没遵守契约。
     """
     backend = (settings.MEMORY_BACKEND or "memory").strip().lower()
     if backend == "mysql":

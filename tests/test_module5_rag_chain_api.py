@@ -58,38 +58,38 @@ from core.session_store import MemorySessionStore
 mm = MemoryManager(max_turns=3, ttl_seconds=3600, store=MemorySessionStore(ttl_seconds=3600))
 
 # 多会话隔离
-mm.add_exchange("s1", "问题A1", "回答A1")
-mm.add_exchange("s2", "问题B1", "回答B1")
-check("会话隔离：s1 只有自己消息", len(mm.get_messages("s1")) == 2)
-check("会话隔离：s2 只有自己消息", len(mm.get_messages("s2")) == 2)
+mm.add_exchange("s1", "问题A1", "回答A1", owner_id=None)
+mm.add_exchange("s2", "问题B1", "回答B1", owner_id=None)
+check("会话隔离：s1 只有自己消息", len(mm.get_messages("s1", owner_id=None)) == 2)
+check("会话隔离：s2 只有自己消息", len(mm.get_messages("s2", owner_id=None)) == 2)
 check("会话计数正确", mm.session_count() == 2)
 
 # 窗口：库里保留全部轮次，送进模型的只有最近 max_turns 轮
 for i in range(2, 5):
-    mm.add_exchange("s1", f"问题A{i}", f"回答A{i}")
-messages = mm.get_messages("s1")
+    mm.add_exchange("s1", f"问题A{i}", f"回答A{i}", owner_id=None)
+messages = mm.get_messages("s1", owner_id=None)
 check("历史全部保留（4 轮 8 条）", len(messages) == 8, f"实际 {len(messages)} 条")
 check("最早一轮仍是 A1", messages[0].content == "问题A1", f"实际 {messages[0].content}")
-recent = mm.get_recent_messages("s1")
+recent = mm.get_recent_messages("s1", owner_id=None)
 check("模型窗口只取最近 3 轮（6 条）", len(recent) == 6, f"实际 {len(recent)} 条")
 check("窗口里最早的一轮是 A2", recent[0].content == "问题A2", f"实际 {recent[0].content}")
 
 # 角色顺序：human/ai 交替
-types = [m.type for m in mm.get_messages("s2")]
+types = [m.type for m in mm.get_messages("s2", owner_id=None)]
 check("消息角色交替", types == ["human", "ai"], f"实际 {types}")
 
 # 清空会话
-check("清空存在的会话返回 True", mm.clear_session("s2") is True)
-check("清空不存在的会话返回 False", mm.clear_session("s2") is False)
+check("清空存在的会话返回 True", mm.clear_session("s2", owner_id=None) is True)
+check("清空不存在的会话返回 False", mm.clear_session("s2", owner_id=None) is False)
 check("清空后计数减少", mm.session_count() == 1)
 
 # 闲置超过 TTL 仍能读到历史，清理也不会把它删掉
 mm_ttl = MemoryManager(max_turns=3, ttl_seconds=0, store=MemorySessionStore(ttl_seconds=0))
-mm_ttl.add_exchange("old", "q", "a")
+mm_ttl.add_exchange("old", "q", "a", owner_id=None)
 time.sleep(0.01)
-check("闲置超 TTL 仍保留历史", mm_ttl.get_messages("old") != [])
+check("闲置超 TTL 仍保留历史", mm_ttl.get_messages("old", owner_id=None) != [])
 check("清理不再删除会话", mm_ttl.cleanup_expired() == 0)
-check("清理后历史还在", len(mm_ttl.get_messages("old")) == 2)
+check("清理后历史还在", len(mm_ttl.get_messages("old", owner_id=None)) == 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -191,7 +191,10 @@ client = TestClient(app)
 class _StubChain:
     """桩链：替换真实 RAGChain，验证接口层的协议转换，不调 LLM。"""
 
-    def query(self, question: str, session_id: str) -> dict:
+    # P2-12c：接口层现在必须传 owner_id 下来。桩照收不误 ——
+    # 若这里不声明 **kwargs，签名一变就是 TypeError，
+    # 而这类测试的价值恰恰是「接口层签名变了要有人红」。
+    def query(self, question: str, session_id: str, **kwargs) -> dict:
         return {
             "session_id": session_id,
             "answer": f"桩回答：{question}",
@@ -305,11 +308,11 @@ def _probe_chain(pieces: list[str]) -> tuple[RAGChain, MemoryManager]:
 
 # 场景一：首帧整包就是 "\n\n"（现场症状：气泡第一行是空行）
 probe, probe_memory = _probe_chain(["\n\n", "你好，这是答案。", "第二段。"])
-chunks = [f["content"] for f in probe.stream("探针问题一", "p1") if f["type"] == "chunk"]
+chunks = [f["content"] for f in probe.stream("探针问题一", "p1", owner_id=None) if f["type"] == "chunk"]
 check("整包空白的首帧不会下发", len(chunks) == 2, f"实际 {len(chunks)} 帧：{chunks!r}")
 check("首帧不以换行开头", bool(chunks) and not chunks[0].startswith("\n"), f"实际 {chunks[0]!r}")
 check("正文一帧没少", chunks == ["你好，这是答案。", "第二段。"], f"实际 {chunks!r}")
-stored_answer = [m.content for m in probe_memory.get_messages("p1") if m.type == "ai"]
+stored_answer = [m.content for m in probe_memory.get_messages("p1", owner_id=None) if m.type == "ai"]
 check(
     "落库正文同样无前导换行",
     stored_answer == ["你好，这是答案。第二段。"],
@@ -318,13 +321,13 @@ check(
 
 # 场景二：空白与正文同包 —— 只裁开头，正文中间的换行必须原样保留
 probe2, _ = _probe_chain(["\n\n你好，这是答案。", "第一段\n\n第二段"])
-chunks2 = [f["content"] for f in probe2.stream("探针问题二", "p2") if f["type"] == "chunk"]
+chunks2 = [f["content"] for f in probe2.stream("探针问题二", "p2", owner_id=None) if f["type"] == "chunk"]
 check("同包前导空白被裁掉", chunks2[0] == "你好，这是答案。", f"实际 {chunks2[0]!r}")
 check("正文中间的换行原样保留", chunks2[-1] == "第一段\n\n第二段", f"实际 {chunks2[-1]!r}")
 
 # 场景三：同步 query() 与流式同口径（否则接口返回干净、历史里冒空行）
 probe3, _ = _probe_chain(["\n\n  ", "同步答案"])
-check("同步返回无前导空白", probe3.query("探针问题三", "p3")["answer"] == "同步答案")
+check("同步返回无前导空白", probe3.query("探针问题三", "p3", owner_id=None)["answer"] == "同步答案")
 
 # 场景四：缓存回放路径（旧缓存条目里可能就存着带空白的答案）
 replayed = probe3._finish_cached(
@@ -332,6 +335,7 @@ replayed = probe3._finish_cached(
     "p4",
     0.0,
     {"answer": "\n\n缓存里的答案", "sources": [], "intent": "knowledge_query", "route": "rag_qa"},
+    owner_id=None,
 )
 check("缓存回放不留前导空白", replayed["answer"] == "缓存里的答案", f"实际 {replayed['answer']!r}")
 

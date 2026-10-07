@@ -67,6 +67,15 @@ help:
 	@echo "                   收起 / 只展开一条 / 不重复请求 / 后端说查不到时展示后端文案）"
 	@echo "                   前置：make infra + 三端在跑（api / gateway / frontend）+ 知识库有已解析文档"
 	@echo ""
+	@echo "—— 多用户隔离验收（P2-12）——"
+	@echo "make accept-12c        真HTTP + 真登录 token：两个**平级**员工各自提问，验会话互不可见、"
+	@echo "                      拿对方的 session_id 读/改/删/追加全403 且内容一字未变"
+	@echo "make accept-12c-ui    **真浏览器**：同一浏览器不刷新页面换账号，验 Pinia 内存有没有泄漏"
+	@echo "                      （两个 context 等于两个浏览器，验不到任何东西）"
+	@echo "make accept-12c-reverse 反向验证：拆掉归属守卫后断言必须转红（会临时改生产源码再还原）"
+	@echo "                      ⚠️ 这三条都不进 make test：前两条要求进程已起着，reverse 要求「必须红」"
+	@echo "⚠️ 这三条都会临时改 chen.jie / zhao.min 的密码（真 token 只能真登录），收尾换随机临时密码 + 强制改密"
+	@echo ""
 	@echo "—— 知识库重建（P0-4a）——"
 	@echo "make reindex       干跑：报告「要补登记哪些文件 / 要重灌几篇 / 有多少孤儿切片」"
 	@echo "                   一句话都不改数据。这个脚本会重灌整库，所以默认是干跑"
@@ -171,6 +180,7 @@ test:
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_audit.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module13_login.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_trust_boundary.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module15_session_isolation.py
 
 # ---------- P2-12b 反向验证（**不进 make test**）----------
 # 它会临时改生产源码（core/identity.py + 两个 .ts）再跑主测试看断言转红，
@@ -194,6 +204,36 @@ accept-12b-reverse:
 #    收尾换成新随机临时密码 + 强制改密。别在这两个账号正被使用时报。
 accept-12b:
 	@$(PY) tests/acceptance_p2_12b.py
+
+# ---------- P2-12c 反向验证（**不进 make test**，理由同 accept-12b-reverse）----------
+# 它临时改 core/mysql_store.py / core/memory_manager.py / api/routes/qa.py
+# 再跑 test_module15 看断言转红，跑完还原。
+# ⚠️ 它的判据是「必须红」，与 make test 的「必须全绿」相反，绝不能混进一条命令。
+accept-12c-reverse:
+	@echo "  注意：会临时改 core/mysql_store.py、core/memory_manager.py、api/routes/qa.py，跑完自动还原"
+	@$(PY) tests/test_module15_session_isolation_reverse.py
+
+# ---------- P2-12c 真链路验收（**也不进 make test**，理由同 accept-12b）----------
+# 要求后端 8000 + 网关 3000 **已经起着**，走真 HTTP + 真登录 token。
+# ⚠️ 它会临时改 wu.jing / chen.jie 的密码，收尾换成新随机临时密码 + 强制改密。
+accept-12c:
+	@$(PY) tests/acceptance_p2_12c.py
+
+# ---------- P2-12c 浏览器验收（真浏览器里登两个账号）----------
+# 为什么必须有这一层，而 accept-12c（真 HTTP）不够：
+# 真 HTTP 验的是**接口层**。而用户能亲手复现的形态是**界面**——
+# 「我登 chen.jie 看到的是我的会话，换 zhao.min 登进去看到的是他的」。
+# 这条链路上还隔着两件事：① Pinia 里的内存数据有没有在登出时清掉
+#（**同一浏览器不刷新页面换账号**才验得到；两个 context 等于两个浏览器，验不到任何东西）；
+# ② 列表与历史渲染是不是真按后端返回的画（后端隔离了但前端 merge 两个 store，等于没隔离）。
+# ⚠️ 它是 .mjs 不是 .py：跑在 node 里，靠 playwright 驱动真 Chromium。
+#   改任何东西前先看文件头「唯一的两处桩」—— 只桩掉 ask/stream 的返回体，
+#   放行真请求（整个mock 掉的话后端不建会话，就没东西可验了）。
+# ⚠️ 它会临时改 chen.jie / zhao.min 的密码（要拿真 token 只能真登录），
+#   收尾换成新随机临时密码 + 强制改密。收尾三步各自独立 try，崩在一步不影响后面。
+accept-12c-ui:
+	@NODE_PATH=$$HOME/.workbuddy/binaries/node/workspace/node_modules \
+		node tests/acceptance_p2_12c_ui.mjs
 
 # ---------- 异步解析 Worker（P0-3a）----------
 # 池、并发、超时、投递语义**全部在 worker/app.py 里按 settings 配置**，

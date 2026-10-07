@@ -622,15 +622,17 @@ class RAGChain:
     # ------------------------------------------------------------------ #
     # 相同问题缓存
     # ------------------------------------------------------------------ #
-    def _replay_cache(self, question: str, session_id: str, start: float) -> dict[str, Any] | None:
+    def _replay_cache(self, question: str, session_id: str, start: float, *,
+                       owner_id: int | None) -> dict[str, Any] | None:
         """命中则写进当前会话并返回完整结果。未命中返回 None。"""
         hit = lookup_answer(question)
         if hit is None:
             return None
-        return self._finish_cached(question, session_id, start, hit)
+        return self._finish_cached(question, session_id, start, hit, owner_id=owner_id)
 
     def _finish_cached(
-        self, question: str, session_id: str, start: float, hit: dict[str, Any]
+        self, question: str, session_id: str, start: float, hit: dict[str, Any], *,
+        owner_id: int | None,
     ) -> dict[str, Any]:
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
         usage = _usage_zero()
@@ -648,7 +650,7 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
             "cache_hit": True,
-        })
+        }, owner_id=owner_id)
         logger.info(
             "问答缓存复用 | session_id=%s 耗时=%.0fms | query=%.24s",
             session_id, elapsed_ms, question,
@@ -667,9 +669,10 @@ class RAGChain:
         }
 
     def _stream_cached(
-        self, question: str, session_id: str, start: float, hit: dict[str, Any]
+        self, question: str, session_id: str, start: float, hit: dict[str, Any], *,
+        owner_id: int | None,
     ) -> Iterator[dict[str, Any]]:
-        result = self._finish_cached(question, session_id, start, hit)
+        result = self._finish_cached(question, session_id, start, hit, owner_id=owner_id)
         yield {
             "type": "meta",
             "intent": result["intent"],
@@ -684,7 +687,7 @@ class RAGChain:
             "type": "done",
             "elapsed_ms": result["elapsed_ms"],
             "usage": result["usage"],
-            "session_usage": self.memory.get_usage(session_id),
+            "session_usage": self.memory.get_usage(session_id, owner_id=owner_id),
             "cache_hit": True,
         }
 
@@ -717,17 +720,23 @@ class RAGChain:
     # ------------------------------------------------------------------ #
     # 对外：同步问答
     # ------------------------------------------------------------------ #
-    def query(self, question: str, session_id: str) -> dict[str, Any]:
+    def query(self, question: str, session_id: str, *,
+             owner_id: int | None) -> dict[str, Any]:
         """
         执行一次完整问答。
 
         :param question: 用户问题
         :param session_id: 会话 id（多轮记忆的隔离键）
+        :param owner_id: 提问者归属（P2-12c）。决定这段历史记在谁名下；
+                         与session_id **一起**构成隔离 —— session_id 只是
+                         一个随机串，光有它不构成任何权限。
         :return: {
             answer, intent, route, intent_source, session_id,
             standalone_question, sources, elapsed_ms
         }
         :raises ValueError: 问题为空
+        :raises SessionOwnershipError: session_id 属于别人（写了半截会被接口层拦下，
+                                        所以这里是干净失败 —— 记忆层一个字节都没写）
         :raises Exception:  LLM 调用失败（接口层转成 502）
         """
         if not question or not question.strip():
@@ -735,12 +744,12 @@ class RAGChain:
 
         start = time.perf_counter()
 
-        cached = self._replay_cache(question, session_id, start)
+        cached = self._replay_cache(question, session_id, start, owner_id=owner_id)
         if cached is not None:
             return cached
 
         # ①②③④ 并行前段：意图识别 ∥ 投机检索 ∥ 问题重写（有历史时），见 _prepare_parallel
-        chat_history = self.memory.get_recent_messages(session_id)
+        chat_history = self.memory.get_recent_messages(session_id, owner_id=owner_id)
         intent_result, prepared = self._prepare_parallel(question, chat_history)
         llm = self.llm_client.get_llm()
         usage = _usage_zero()
@@ -801,11 +810,13 @@ class RAGChain:
             "ts": time.time(),
             "cache_hit": False,
         }
-        self.memory.add_exchange(session_id, question, answer, meta=exchange_meta)
+        self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
+                                 owner_id=owner_id)
         self._maybe_store_cache(question, result, bool(chat_history))
         # token 用量：本次问答（重写 + 主回答）累加进会话
         self.memory.add_usage(
-            session_id, usage["input_tokens"], usage["output_tokens"], usage["cache_read_tokens"]
+            session_id, usage["input_tokens"], usage["output_tokens"],
+            usage["cache_read_tokens"], owner_id=owner_id,
         )
 
         result["session_id"] = session_id
@@ -828,7 +839,8 @@ class RAGChain:
     # ------------------------------------------------------------------ #
     # 对外：流式问答
     # ------------------------------------------------------------------ #
-    def stream(self, question: str, session_id: str) -> Iterator[dict[str, Any]]:
+    def stream(self, question: str, session_id: str, *,
+              owner_id: int | None) -> Iterator[dict[str, Any]]:
         """
         流式问答：逐段产出，最后产出一次完成事件。
 
@@ -840,6 +852,10 @@ class RAGChain:
         记忆在流结束后写回：必须等答案拼完整再写，
         半途写入会把「残缺答案」存进历史，污染下一轮。
         客户端断开时生成器在 yield 处退出，不写记忆、不再往下拉 token。
+
+        :param owner_id: 见 query()。归属越权会在**吐字之前**（读历史那一次
+                         load）就抛 `SessionOwnershipError`，所以不会出现
+                         「已经吐了半屏才告诉你是别人的会话」。
         """
         if not question or not question.strip():
             raise ValueError("问题不能为空")
@@ -847,10 +863,11 @@ class RAGChain:
         start = time.perf_counter()
         cached = lookup_answer(question)
         if cached is not None:
-            yield from self._stream_cached(question, session_id, start, cached)
+            yield from self._stream_cached(question, session_id, start, cached,
+                                           owner_id=owner_id)
             return
 
-        chat_history = self.memory.get_recent_messages(session_id)
+        chat_history = self.memory.get_recent_messages(session_id, owner_id=owner_id)
         # 并行前段：意图识别 ∥ 投机检索 ∥ 问题重写（有历史时）
         intent_result, prepared = self._prepare_parallel(question, chat_history)
         llm = self.llm_client.get_llm()
@@ -922,7 +939,7 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
             "cache_hit": False,
-        })
+        }, owner_id=owner_id)
         self._maybe_store_cache(
             question,
             {
@@ -935,9 +952,10 @@ class RAGChain:
             bool(chat_history),
         )
         self.memory.add_usage(
-            session_id, usage["input_tokens"], usage["output_tokens"], usage["cache_read_tokens"]
+            session_id, usage["input_tokens"], usage["output_tokens"],
+            usage["cache_read_tokens"], owner_id=owner_id,
         )
-        session_usage = self.memory.get_usage(session_id)
+        session_usage = self.memory.get_usage(session_id, owner_id=owner_id)
         logger.info(
             "流式问答完成 | session_id=%s 意图=%s 耗时=%.0fms tokens=%d+%d | query=%.24s",
             session_id,

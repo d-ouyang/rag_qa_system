@@ -173,7 +173,7 @@ store.save("m1", SessionSnapshot(
     messages=msgs, exchange_meta=metas,
     session_meta={"pinned": True, "title": "行级验证"},
     usage={"input_tokens": 6, "output_tokens": 9, "cache_read_tokens": 2, "requests": 3},
-))
+), owner_id=None)
 
 check("3 轮 = 6 行消息（不是整条塞一个字段）", count_messages("m1") == 6, f"实际 {count_messages('m1')}")
 with get_engine().connect() as conn:
@@ -202,13 +202,13 @@ with get_engine().connect() as conn:
 check("last_active_at 精度为微秒（DATETIME(6)）", _fsp == 6, f"实际 DATETIME_PRECISION={_fsp}")
 
 # 截断：库里真的少了行，而不是留一堆「逻辑已删」的脏数据
-store.save("m1", SessionSnapshot(messages=msgs[:4], exchange_meta=metas[:2]))
+store.save("m1", SessionSnapshot(messages=msgs[:4], exchange_meta=metas[:2]), owner_id=None)
 check("截断后库里只剩 4 行（DELETE 真的执行了）", count_messages("m1") == 4, f"实际 {count_messages('m1')}")
 # 编辑重发：中间的 user 消息被 UPDATE
 edited = list(msgs[:4])
 edited[2] = {"role": "user", "content": "问题1-改"}
-store.save("m1", SessionSnapshot(messages=edited, exchange_meta=metas[:2]))
-check("编辑重发后内容已 UPDATE", (store.load("m1") or SessionSnapshot()).messages[2]["content"] == "问题1-改")
+store.save("m1", SessionSnapshot(messages=edited, exchange_meta=metas[:2]), owner_id=None)
+check("编辑重发后内容已 UPDATE", (store.load("m1", owner_id=None) or SessionSnapshot()).messages[2]["content"] == "问题1-改")
 
 # --------------------------------------------------------------------------- #
 # 第 4 组：重启不丢（换连接池 + 换 Manager 实例）
@@ -216,25 +216,25 @@ check("编辑重发后内容已 UPDATE", (store.load("m1") or SessionSnapshot())
 print("\n== 第 4 组：重启不丢 ==")
 wipe()
 mm = MemoryManager(max_turns=10, ttl_seconds=3600, store=MySQLSessionStore(ttl_seconds=3600))
-mm.add_exchange("boot", "重启前的提问", "重启前的回答", meta={"intent": "before", "elapsed_ms": 42.5})
-mm.add_usage("boot", 11, 22, 3)
-mm.update_session_meta("boot", title="重启验证", pinned=True)
+mm.add_exchange("boot", "重启前的提问", "重启前的回答", meta={"intent": "before", "elapsed_ms": 42.5}, owner_id=None)
+mm.add_usage("boot", 11, 22, 3, owner_id=None)
+mm.update_session_meta("boot", title="重启验证", pinned=True, owner_id=None)
 
 # 销毁连接池 + 重置单例：等价于「换一个进程」
 db_module.dispose_engine()
 reset_memory_manager()
 mm2 = MemoryManager(max_turns=10, ttl_seconds=3600, store=MySQLSessionStore(ttl_seconds=3600))
 
-check("重启后历史消息还在", [m.content for m in mm2.get_messages("boot")] == ["重启前的提问", "重启前的回答"])
-check("重启后轮元数据还在", mm2.get_exchange_meta("boot")[0].get("intent") == "before",
-      f"实际 {mm2.get_exchange_meta('boot')}")
-check("重启后耗时（浮点）无损", mm2.get_exchange_meta("boot")[0].get("elapsed_ms") == 42.5)
-check("重启后置顶/标题还在", mm2.get_session_meta("boot") == {"pinned": True, "title": "重启验证"},
-      f"实际 {mm2.get_session_meta('boot')}")
-check("重启后用量还在", mm2.get_usage("boot") ==
+check("重启后历史消息还在", [m.content for m in mm2.get_messages("boot", owner_id=None)] == ["重启前的提问", "重启前的回答"])
+check("重启后轮元数据还在", mm2.get_exchange_meta("boot", owner_id=None)[0].get("intent") == "before",
+      f"实际 {mm2.get_exchange_meta('boot', owner_id=None)}")
+check("重启后耗时（浮点）无损", mm2.get_exchange_meta("boot", owner_id=None)[0].get("elapsed_ms") == 42.5)
+check("重启后置顶/标题还在", mm2.get_session_meta("boot", owner_id=None) == {"pinned": True, "title": "重启验证"},
+      f"实际 {mm2.get_session_meta('boot', owner_id=None)}")
+check("重启后用量还在", mm2.get_usage("boot", owner_id=None) ==
       {"input_tokens": 11, "output_tokens": 22, "cache_read_tokens": 3, "requests": 1},
-      f"实际 {mm2.get_usage('boot')}")
-check("重启后会话列表还能列出来", [i["session_id"] for i in mm2.list_sessions()] == ["boot"])
+      f"实际 {mm2.get_usage('boot', owner_id=None)}")
+check("重启后会话列表还能列出来", [i["session_id"] for i in mm2.list_sessions(owner_id=None)] == ["boot"])
 
 # --------------------------------------------------------------------------- #
 # 第 5 组：并发不丢轮（SELECT ... FOR UPDATE）
@@ -242,17 +242,17 @@ check("重启后会话列表还能列出来", [i["session_id"] for i in mm2.list
 print("\n== 第 5 组：并发不丢轮（FOR UPDATE）==")
 wipe()
 cc = MySQLSessionStore(ttl_seconds=3600)
-cc.save("cc", SessionSnapshot(messages=[]))
+cc.save("cc", SessionSnapshot(messages=[]), owner_id=None)
 ROUNDS = 12
 
 
 def _hammer(i: int) -> None:
     with cc.session_lock("cc"):
-        snap = cc.load("cc") or SessionSnapshot()
+        snap = cc.load("cc", owner_id=None) or SessionSnapshot()
         snap.messages.append({"role": "user", "content": f"t{i}"})
         snap.messages.append({"role": "assistant", "content": f"r{i}"})
         snap.last_active = time.time()
-        cc.save("cc", snap)
+        cc.save("cc", snap, owner_id=None)
 
 
 _threads = [threading.Thread(target=_hammer, args=(i,)) for i in range(ROUNDS)]
@@ -260,7 +260,7 @@ for t in _threads:
     t.start()
 for t in _threads:
     t.join()
-final = cc.load("cc")
+final = cc.load("cc", owner_id=None)
 check(f"并发 {ROUNDS} 轮一轮不丢", final is not None and len(final.messages) == ROUNDS * 2,
       f"实际 {len(final.messages) if final else None}")
 check("并发下标无重复（没有两次写入互相覆盖）",
@@ -272,12 +272,12 @@ check("并发下标无重复（没有两次写入互相覆盖）",
 print("\n== 第 6 组：闲置后会话仍在 ==")
 wipe()
 ttl_store = MySQLSessionStore(ttl_seconds=1)
-ttl_store.save("exp", SessionSnapshot(messages=[{"role": "user", "content": "x"}]))
+ttl_store.save("exp", SessionSnapshot(messages=[{"role": "user", "content": "x"}]), owner_id=None)
 time.sleep(1.3)
-loaded = ttl_store.load("exp", touch=False)
+loaded = ttl_store.load("exp", touch=False, owner_id=None)
 check("闲置超 TTL 后 load 仍返回历史", loaded is not None and loaded.messages[0]["content"] == "x")
-check("闲置超 TTL 后 exists 仍为 True", ttl_store.exists("exp") is True)
-check("闲置超 TTL 后仍在列表里", "exp" in ttl_store.list_ids())
+check("闲置超 TTL 后 exists 仍为 True", ttl_store.exists("exp", owner_id=None) is True)
+check("闲置超 TTL 后仍在列表里", "exp" in ttl_store.list_ids(owner_id=None))
 check("行仍在库里", session_row("exp") is not None)
 check("purge_expired 不再归档", ttl_store.purge_expired() == 0)
 row = session_row("exp")
@@ -292,11 +292,11 @@ print("\n== 第 7 组：删除不留孤儿行 ==")
 wipe()
 dd = MySQLSessionStore(ttl_seconds=3600)
 dd.save("d1", SessionSnapshot(messages=[{"role": "user", "content": "a"},
-                                        {"role": "assistant", "content": "b"}]))
+                                        {"role": "assistant", "content": "b"}]), owner_id=None)
 check("删除前有 2 行消息", count_messages("d1") == 2)
-check("delete 返回 True", dd.delete("d1") is True)
+check("delete 返回 True", dd.delete("d1", owner_id=None) is True)
 check("删除后消息 0 行（无孤儿）", count_messages("d1") == 0, f"实际 {count_messages('d1')}")
-check("delete 幂等（第二次返回 False）", dd.delete("d1") is False)
+check("delete 幂等（第二次返回 False）", dd.delete("d1", owner_id=None) is False)
 
 # --------------------------------------------------------------------------- #
 # 第 8 组：与 memory 后端行为 parity
@@ -306,23 +306,23 @@ print("\n== 第 8 组：与 memory 后端 parity ==")
 
 def run_scenario(manager: MemoryManager) -> dict:
     """同一串操作。两个后端跑完必须逐字段相等 —— 否则「换后端 = 换了个 bug」。"""
-    manager.add_exchange("p", "q1", "a1", meta={"intent": "i1"})
-    manager.add_usage("p", 1, 2, 0)
-    manager.add_exchange("p", "q2", "a2", meta={"intent": "i2"})
-    manager.add_usage("p", 3, 4, 1)
-    manager.update_session_meta("p", title="T", pinned=True)
-    manager.add_exchange("p2", "x", "y")
-    manager.truncate_session("p", keep_messages=3)
+    manager.add_exchange("p", "q1", "a1", meta={"intent": "i1"}, owner_id=None)
+    manager.add_usage("p", 1, 2, 0, owner_id=None)
+    manager.add_exchange("p", "q2", "a2", meta={"intent": "i2"}, owner_id=None)
+    manager.add_usage("p", 3, 4, 1, owner_id=None)
+    manager.update_session_meta("p", title="T", pinned=True, owner_id=None)
+    manager.add_exchange("p2", "x", "y", owner_id=None)
+    manager.truncate_session("p", keep_messages=3, owner_id=None)
     return {
-        "msgs": [m.content for m in manager.get_messages("p")],
-        "metas": manager.get_exchange_meta("p"),
-        "meta": manager.get_session_meta("p"),
-        "usage": manager.get_usage("p"),
+        "msgs": [m.content for m in manager.get_messages("p", owner_id=None)],
+        "metas": manager.get_exchange_meta("p", owner_id=None),
+        "meta": manager.get_session_meta("p", owner_id=None),
+        "usage": manager.get_usage("p", owner_id=None),
         # last_active 是时间戳、两后端必然不同，不参与比对；只比顺序语义
-        "ids": manager.store.list_ids(),
+        "ids": manager.store.list_ids(owner_id=None),
         "count": manager.session_count(),
-        "session_ids": sorted(i["session_id"] for i in manager.list_sessions()),
-        "message_count": sorted(i["message_count"] for i in manager.list_sessions()),
+        "session_ids": sorted(i["session_id"] for i in manager.list_sessions(owner_id=None)),
+        "message_count": sorted(i["message_count"] for i in manager.list_sessions(owner_id=None)),
     }
 
 

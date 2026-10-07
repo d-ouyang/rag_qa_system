@@ -147,10 +147,10 @@ store_a.save(
         exchange_meta=[{"intent": "policy_consult", "elapsed_ms": 88.5}],
         session_meta={"pinned": True, "title": "社保"},
         usage={"input_tokens": 12, "output_tokens": 34, "cache_read_tokens": 0, "requests": 1},
-    ),
+    ), owner_id=None
 )
 
-loaded = store_a.load("tcp-1")
+loaded = store_a.load("tcp-1", owner_id=None)
 check("经 TCP 写入后能读回", loaded is not None)
 check(
     "中文内容经 TCP 往返无乱码",
@@ -178,7 +178,7 @@ check("索引 ZSET 存在于服务端", client_a.exists(index_key) == 1)
 
 # 索引残留清理
 client_a.zadd(index_key, {"ghost-tcp": time.time()})
-ids = store_a.list_ids()
+ids = store_a.list_ids(owner_id=None)
 check("list_ids 摘除索引中的幽灵成员", "ghost-tcp" not in ids, f"实际 {ids}")
 check("幽灵成员被顺手从 ZSET 删除", client_a.zscore(index_key, "ghost-tcp") is None)
 
@@ -191,15 +191,15 @@ print("\n== 第 2 组：换一个客户端实例 == 换一个进程（重启不�
 client_b = new_client()
 store_b = RedisSessionStore(client=client_b, ttl_seconds=TTL)
 
-check("新进程（新客户端 + 新连接池）能读到旧数据", store_b.exists("tcp-1") is True)
-survived = store_b.load("tcp-1")
+check("新进程（新客户端 + 新连接池）能读到旧数据", store_b.exists("tcp-1", owner_id=None) is True)
+survived = store_b.load("tcp-1", owner_id=None)
 check(
     "新进程读回的历史内容与服务端一致",
     survived is not None and survived.messages[1]["content"].startswith("以上年度全口径"),
     f"实际 {survived.messages if survived else None}",
 )
 check("新进程读回的用量统计一致", survived is not None and survived.usage["requests"] == 1)
-check("新进程也能列出会话索引", store_b.list_ids()[:1] == ["tcp-1"], f"实际 {store_b.list_ids()}")
+check("新进程也能列出会话索引", store_b.list_ids(owner_id=None)[:1] == ["tcp-1"], f"实际 {store_b.list_ids(owner_id=None)}")
 
 
 # --------------------------------------------------------------------------- #
@@ -209,13 +209,13 @@ from core.memory_manager import MemoryManager  # noqa: E402
 
 # ① 第一个 Manager：显式注入走 TCP 的 Store
 manager_1 = MemoryManager(max_turns=10, ttl_seconds=TTL, store=RedisSessionStore(client=new_client(), ttl_seconds=TTL))
-manager_1.add_exchange("mm-1", "公司年假怎么算？", "入职满一年可享 5 天带薪年假。", meta={"intent": "policy_consult"})
-manager_1.add_exchange("mm-1", "那病假呢？", "病假按当地最低工资标准的 80% 计发。")
-manager_1.update_session_meta("mm-1", title="假期制度", pinned=True)
+manager_1.add_exchange("mm-1", "公司年假怎么算？", "入职满一年可享 5 天带薪年假。", meta={"intent": "policy_consult"}, owner_id=None)
+manager_1.add_exchange("mm-1", "那病假呢？", "病假按当地最低工资标准的 80% 计发。", owner_id=None)
+manager_1.update_session_meta("mm-1", title="假期制度", pinned=True, owner_id=None)
 # 用量由独立入口累加（add_exchange 不管 token 统计，这是接口分层，不是 bug）
-manager_1.add_usage("mm-1", input_tokens=12, output_tokens=34)
+manager_1.add_usage("mm-1", input_tokens=12, output_tokens=34, owner_id=None)
 
-check("第一个 Manager 写入后能读到 4 条消息", len(manager_1.get_messages("mm-1")) == 4)
+check("第一个 Manager 写入后能读到 4 条消息", len(manager_1.get_messages("mm-1", owner_id=None)) == 4)
 
 # ② 模拟「后端重启」：全新 Manager、全新 Store、全新客户端
 #
@@ -233,14 +233,14 @@ manager_2 = MemoryManager(
 )
 
 check("重启后新的 Manager 报出 redis 后端", manager_2.store.name == "redis", f"实际 {manager_2.store.name}")
-msgs = manager_2.get_messages("mm-1")
+msgs = manager_2.get_messages("mm-1", owner_id=None)
 check("★ 重启后历史会话仍在（4 条消息）", len(msgs) == 4, f"实际 {len(msgs)}")
 check(
     "★ 重启后历史内容正确",
     len(msgs) == 4 and msgs[0].content == "公司年假怎么算？" and msgs[2].content == "那病假呢？",
     f"实际 {[m.content for m in msgs]}",
 )
-sessions = {s["session_id"]: s for s in manager_2.list_sessions()}
+sessions = {s["session_id"]: s for s in manager_2.list_sessions(owner_id=None)}
 check("★ 重启后置顶与标题仍在", sessions.get("mm-1", {}).get("pinned") is True, f"实际 {sessions.get('mm-1')}")
 check("★ 重启后标题仍在", sessions.get("mm-1", {}).get("title") == "假期制度")
 check(
@@ -250,8 +250,8 @@ check(
 )
 check(
     "★ 重启后 token 明细仍在",
-    manager_2.get_usage("mm-1").get("output_tokens") == 34,
-    f"实际 {manager_2.get_usage('mm-1')}",
+    manager_2.get_usage("mm-1", owner_id=None).get("output_tokens") == 34,
+    f"实际 {manager_2.get_usage('mm-1', owner_id=None)}",
 )
 
 report = manager_2.memory_report()
@@ -265,15 +265,15 @@ print("\n== 第 4 组：分布式锁的 Lua 释放在真实连接下可用（并
 from core.session_store import SessionSnapshot as _Snap  # noqa: E402
 
 concurrent_store = RedisSessionStore(client=new_client(), ttl_seconds=3600)
-concurrent_store.save("tcp-concurrent", _Snap(messages=[]))
+concurrent_store.save("tcp-concurrent", _Snap(messages=[]), owner_id=None)
 
 
 def _worker(tag: str) -> None:
     """一轮「读 → 改 → 写」，没锁就会互相覆盖。"""
     with concurrent_store.session_lock("tcp-concurrent"):
-        snap = concurrent_store.load("tcp-concurrent")
+        snap = concurrent_store.load("tcp-concurrent", owner_id=None)
         snap.messages.append({"role": "user", "content": tag})
-        concurrent_store.save("tcp-concurrent", snap)
+        concurrent_store.save("tcp-concurrent", snap, owner_id=None)
 
 
 threads = [threading.Thread(target=_worker, args=(f"w{i}",)) for i in range(5)]
@@ -282,7 +282,7 @@ for t in threads:
 for t in threads:
     t.join()
 
-final = concurrent_store.load("tcp-concurrent")
+final = concurrent_store.load("tcp-concurrent", owner_id=None)
 check(
     "5 个线程并发读改写，5 条一条不丢（Lua 锁在真连接下生效）",
     final is not None and len(final.messages) == 5,
@@ -322,7 +322,7 @@ if status.get("level") == "unknown":
     check("★ INFO 不可读时**不**进入只读保护（监控失效不等于拒绝服务）", get_runtime_state().is_write_blocked()[0] is False)
     check(
         "★ unknown 状态下 MemoryManager 仍能正常写入",
-        manager_2.add_exchange("mm-unknown", "q", "a") is None,
+        manager_2.add_exchange("mm-unknown", "q", "a", owner_id=None) is None,
     )
     # 契约：字段形状不随连通性变化（level / reason / thresholds / advice / checked_at 恒在）
     check("★ unknown 时 thresholds 仍在（纯配置，不依赖 Redis）", isinstance(status.get("thresholds"), dict))
@@ -346,13 +346,13 @@ print("\n== 第 6 组：连接不可达时的降级（问答链路不中断） =
 dead_store = RedisSessionStore(client=new_client(), ttl_seconds=TTL)
 dead_store._client = redis.Redis(host=HOST, port=1, socket_timeout=0.3, socket_connect_timeout=0.3)  # type: ignore[assignment]
 
-degraded = dead_store.load("anything")
+degraded = dead_store.load("anything", owner_id=None)
 check("连接不可达时读返回 None（按无历史处理，不抛异常）", degraded is None)
-check("连接不可达时 exists 返回 False", dead_store.exists("anything") is False)
+check("连接不可达时 exists 返回 False", dead_store.exists("anything", owner_id=None) is False)
 check("连接不可达时 health 报 ok=False", dead_store.health().get("ok") is False, f"实际 {dead_store.health()}")
 
 try:
-    dead_store.save("anything", _Snap(messages=[{"role": "user", "content": "x"}]))
+    dead_store.save("anything", _Snap(messages=[{"role": "user", "content": "x"}]), owner_id=None)
     check("连接不可达时 save 不抛异常（degrade_on_error，默认吞掉）", True)
 except Exception as exc:  # pragma: no cover
     check("连接不可达时 save 不抛异常（degrade_on_error，默认吞掉）", False, f"抛出 {type(exc).__name__}: {exc}")

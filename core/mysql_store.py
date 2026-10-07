@@ -20,16 +20,23 @@ MySQL 会话存储实现 —— 会话 / 消息 / 用量的**真相源**。
 --------------------------------------------------------------------------
 「业务侧零改动」是怎么做到的
 --------------------------------------------------------------------------
-`MemoryManager`、`rag_chain`、`qa.py` **一行未改**。靠的是 `SessionStore` 抽象：
-本模块只实现 load/save/delete/exists/list_ids/purge_expired/stats/health/
-session_lock/write_allowed 这一组方法，把「快照 ↔ 数据行」的翻译关在内部。
+`MemoryManager`、`rag_chain`、`qa.py` **在 P2-12c 之前一行未改**。靠的是
+`SessionStore` 抽象：本模块只实现 load/save/delete/exists/list_ids/purge_expired/
+stats/health/session_lock/write_allowed 这一组方法，
+把「快照 ↔ 数据行」的翻译关在内部。
+
+> P2-12c 修订：抽象层为了加 `owner_id`，五个读写方法的签名变了，
+> 于是 `MemoryManager` 与 `qa.py` 也跟着改了 —— **零改动的前提是接口不变**，
+> 接口一改，抽象层就要在调用侧「补齐」这个新维度。
+> 但「翻译」仍然关在存储层内：调用方传的是 `owner_id: int | None`，
+> 完全不知道底下是 `user_id` 列还是并行字典，也不需要知道。
 
 能做到这一点，是因为抽象层当初选对了粒度 —— 接口是**整条会话快照**，
 不是「单条消息的 CRUD」。于是存储层有空间把「一次覆盖写」自由地翻译成
 行级 INSERT / UPDATE / DELETE，而逻辑层完全不必知道。
 
 --------------------------------------------------------------------------
-两条容易写错的语义（都对齐 MemorySessionStore，两边跑同一套断言）
+三条容易写错的语义（都对齐 MemorySessionStore，两边跑同一套断言）
 --------------------------------------------------------------------------
 1. **`save` 会改写 `last_active`**：不是「存调用方传进来的值」，而是「记为当前时刻」。
    只要发生一次真实写入，就说明这个会话是活跃的。两个后端必须一致，
@@ -37,6 +44,26 @@ session_lock/write_allowed 这一组方法，把「快照 ↔ 数据行」的翻
 2. **`load(touch=True)` 续期，`touch=False` 不续期**。会话列表这种「扫一眼」的读
    必须传 False —— 刷新列表不算「打开了这条会话」，否则「多久没打开」
    会被刷列表这个动作冲掉。
+3. **`session.user_id` 是归属的唯一判据，且由本层独家写入**（P2-12c）。
+   列和索引 `idx_session_user_active` 从 P0-1b 就建好了，但直到12c 才有人写它 ——
+   在此之前这一列恒为 NULL，而任何地方都没在查询里用它，于是
+   「任何登录用户都能读任何人的会话」。
+   本版起：五个读写方法全部带 `owner_id`，谓词是统一的 `_owner_match()`
+   （`user_id = :owner OR (user_id IS NULL AND :owner IS NOT NULL)`）；
+   `save()` 负责三态（新建 / 认领无主 / 拒绝他人，详见其注释）。
+
+   代价与遗留：
+     · **无主会话对所有登录用户可见**（直到第一个人写入并认领它）。
+       这是为「存量会话归谁」选的确定答案 —— 归第一个打开它的人，
+       而不是永远躺在列表里没人认领。当前库里 `session` 表 0 行，
+       所以这个窗口在真实数据上不存在；将来若有历史数据要处理，
+       应写一次性脚本按业务键回填，而不是靠「谁先点谁认领」。
+     · **认领后 `last_active_at` 会被刷新**：认领本身就是一次写入，
+       所以行为与Memory 版一致（那边也是 save 时无条件刷）。
+     · 谓词里的 `OR user_id IS NULL` 用不上 `idx_session_user_active`
+       的最左前缀优化，实测会话量级（个人部署几千条内）不需要拆。
+       真要优化，正确做法是给 `list_ids` 分两支查再在内存里合，
+       而不是去掉 OR —— 去掉 OR 就没有「认领」了。
 
 --------------------------------------------------------------------------
 刻意的取舍
@@ -67,14 +94,16 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Iterator, Mapping
 
+from sqlalchemy import and_ as sa_and  # noqa: F401  (保留给后续分支条件用)
 from sqlalchemy import delete, func, insert, select, text, update
+from sqlalchemy import or_ as sa_or
 from sqlalchemy.orm import Session
 
 from config.settings import settings
 from core import db as db_module
 from core.schema import chat_message_table as MSG
 from core.schema import session_table as SESS
-from core.session_store import SessionSnapshot, SessionStore
+from core.session_store import SessionOwnershipError, SessionSnapshot, SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +125,36 @@ def _to_db_time(ts: float) -> datetime:
 def _to_ts(dt: datetime) -> float:
     """无时区 datetime → Unix 时间戳（float）。"""
     return dt.timestamp()
+
+
+# --------------------------------------------------------------------------- #
+# 归属谓词（P2-12c）
+# --------------------------------------------------------------------------- #
+def _owner_match(owner_id: int | None) -> Any:
+    """
+    「这条会话属于 owner_id」的 SQL 条件，返回可直接进 `where()` 的表达式。
+
+    ⚠️ **不是** `user_id = :owner`，因为那条对无主会话全是 NULL 判定
+    （`user_id = NULL` → NULL → WHERE 不成立 → 一条无主会话都查不出来）。
+
+    两条分支：
+        owner_id=None    → `user_id IS NULL`（只认无主；运维/测试口径）
+        owner_id=440     → `user_id = 440 OR user_id IS NULL`（我的 + 无主的）
+
+    ⚠️ 第二种形态里那个 `OR user_id IS NULL` 是**功能性的**，不是偷懒：
+    「认领」要求无主会话对所有人**可见**。若读侧看不见，用户第一次打开
+    12c 之前留下的会话时 load 返回 None，逻辑层会当成「会话不存在」而
+    从零重建，随后 save 覆盖掉原有内容 —— 存量内容静默丢失。
+    「认领」最终只在 `save()` 里落定（那里显式处理三态），读侧只负责让路。
+
+    取舍：这条 OR 用不上 `idx_session_user_active` 的最左前缀，
+    实测会话量级（个人部署几千条内）不需要拆。真要优化，
+    正确做法是分两支查再在内存里合，而不是去掉 OR ——
+    去掉 OR 就没有「认领」了。
+    """
+    if owner_id is None:
+        return SESS.c.user_id.is_(None)
+    return sa_or(SESS.c.user_id == owner_id, SESS.c.user_id.is_(None))
 
 
 class MySQLSessionStore(SessionStore):
@@ -322,16 +381,25 @@ class MySQLSessionStore(SessionStore):
     # ------------------------------------------------------------------ #
     # SessionStore 接口实现
     # ------------------------------------------------------------------ #
-    def load(self, session_id: str, touch: bool = True) -> SessionSnapshot | None:
+    def load(self, session_id: str, *, owner_id: int | None,
+             touch: bool = True) -> SessionSnapshot | None:
+        """
+        读会话快照；不存在 / **不属于 owner_id** 都返回 None。
+
+        ⚠️ 归属条件与 `SELECT ... FOR UPDATE` 的锁在**同一条 where**里：
+        先按 id 锁行、再按归属过滤的话，锁的是别人的行、判的是自己的条件，
+        中间一旦有并发 save 就会读到不该读的东西。合成一条最简单。
+        """
         now = time.time()
         with self._tx(session_id) as session:
             row = session.execute(
-                select(SESS).where(SESS.c.id == session_id)
+                select(SESS).where(SESS.c.id == session_id, _owner_match(owner_id))
             ).mappings().first()
             if row is None:
                 return None
 
             if touch:
+                # 按 id 即可：上面已经确认这条会话属于 owner_id 了。
                 session.execute(
                     update(SESS).where(SESS.c.id == session_id).values(last_active_at=_to_db_time(now))
                 )
@@ -358,9 +426,18 @@ class MySQLSessionStore(SessionStore):
                 last_active=now if touch else _to_ts(row["last_active_at"]),
             )
 
-    def save(self, session_id: str, snapshot: SessionSnapshot) -> None:
+    def save(self, session_id: str, snapshot: SessionSnapshot, *,
+             owner_id: int | None) -> None:
         """
         整条覆盖写入（存在即覆盖，不存在即创建），并刷新 last_active。
+
+        归属三态（P2-12c 的安全边界都在这里）：
+            库里没有                → 新建，`user_id = owner_id`
+            库里有且 user_id IS NULL → **认领**（`user_id` 写成 owner_id）
+            库里有且属于别人        → **抛 SessionOwnershipError**，一个字都不写
+        第三条为什么必须在写之前判：一旦先写了 messages 再发现越权，
+        对方的会话已经被污染（而且是在同一个事务里，不 rollback 就留在库里）。
+        反过来，先判归属再写，就不存在「写到一半才拒绝」。
 
         行级 diff 规则（按 `seq` 对齐，而不是按自增 id）：
             目标有 / 库里没有 → INSERT
@@ -373,6 +450,18 @@ class MySQLSessionStore(SessionStore):
             session_meta = snapshot.session_meta or {}
             usage = snapshot.usage or {}
 
+            # 先查归属（拿 user_id 本体，不用 _owner_match —— 这里要区分
+            # 「不存在 / 无主 / 属于别人」三种，而谓词把它们压成了两个）
+            current_owner = session.execute(
+                select(SESS.c.user_id).where(SESS.c.id == session_id)
+            ).scalar_one_or_none()
+
+            if current_owner is not None and current_owner != owner_id:
+                # 属于别人。抛异常而不是静默忽略 ——
+                # 静默忽略的话，调用方（rag_chain）会以为「写成功了」，
+                # 而这轮问答根本没存下来，用户刷新页面才发现自己的话没了。
+                raise SessionOwnershipError(session_id, owner_id)
+
             session_values: dict[str, Any] = {
                 "title": str(session_meta.get("title") or ""),
                 "is_pinned": bool(session_meta.get("pinned", False)),
@@ -383,6 +472,9 @@ class MySQLSessionStore(SessionStore):
                 "last_active_at": _to_db_time(now),
                 # 一次成功写入即视为「重新活跃」：会话可能刚从归档态被写回来
                 "is_archived": False,
+                # 归属落库：新建或认领都写 owner_id；owner_id=None 时写 NULL
+                #（这正是「owner_id=None 只认无主、写入仍保持无主」的循环关系）
+                "user_id": owner_id,
             }
 
             exists = session.execute(
@@ -390,9 +482,11 @@ class MySQLSessionStore(SessionStore):
             ).scalar() is not None
             if exists:
                 session.execute(update(SESS).where(SESS.c.id == session_id).values(**session_values))
+                if current_owner is None and owner_id is not None:
+                    logger.info("认领无主会话 | session_id=%s新主人=%s", session_id, owner_id)
             else:
                 session.execute(insert(SESS).values(id=session_id, **session_values))
-                logger.debug("新建会话 | session_id=%s", session_id)
+                logger.debug("新建会话 | session_id=%s owner=%s", session_id, owner_id)
 
             target_rows = self._build_rows(session_id, snapshot)
             target_seqs = {row["seq"] for row in target_rows}
@@ -427,34 +521,65 @@ class MySQLSessionStore(SessionStore):
                         .values(**{k: v for k, v in row.items() if k not in ("session_id", "seq")})
                     )
 
-    def delete(self, session_id: str) -> bool:
-        """删除会话及其全部消息；返回「原本是否存在」。幂等。"""
+    def delete(self, session_id: str, *, owner_id: int | None) -> bool:
+        """
+        删除会话及其全部消息；返回是否真实删除。幂等。
+
+        ⚠️ 两条 delete 都**必须带归属条件**，不只是 SESS 那条：
+        消息表是按 session_id 筛的，若先删消息、后发现会话不属于自己，
+        对方的聊天记录已经没了（而且 delete 的 rowcount 不会帮你撤销）。
+        所以先用带归属的 SESS delete 拿到 rowcount，>0 才动消息；
+        顺序反过来也安全（消息删了但 SESS 没删干净 → 返回 False 且残留会话）。
+        这里选「先 SESS 后MSG」，因为 SESS 的 rowcount 是「是否真的属于我且删掉了」
+        这个唯一可信的判据。
+        """
         with self.session_lock(session_id):
             session = self._require_held(session_id)
-            # 没有 FK 级联，所以消息必须显式删 —— 否则留下的是永远查不到、也永远删不掉的孤儿行
-            removed = session.execute(
-                delete(MSG).where(MSG.c.session_id == session_id)
-            ).rowcount or 0
             existed = (session.execute(
-                delete(SESS).where(SESS.c.id == session_id)
+                delete(SESS).where(SESS.c.id == session_id, _owner_match(owner_id))
             ).rowcount or 0) > 0
+            removed = 0
+            if existed:
+                # 没有 FK 级联，所以消息必须显式删 —— 否则留下的是永远查不到、
+                # 也永远删不掉的孤儿行
+                removed = session.execute(
+                    delete(MSG).where(MSG.c.session_id == session_id)
+                ).rowcount or 0
         if existed:
-            logger.info("会话已删除 | session_id=%s 消息=%d 行", session_id, removed)
+            logger.info("会话已删除 | session_id=%s owner=%s 消息=%d 行",
+                        session_id, owner_id, removed)
         return existed
 
-    def exists(self, session_id: str) -> bool:
+    def exists(self, session_id: str, *, owner_id: int | None = None) -> bool:
         with self._tx(session_id) as session:
             found = session.execute(
-                select(SESS.c.id).where(SESS.c.id == session_id)
+                select(SESS.c.id).where(SESS.c.id == session_id, _owner_match(owner_id))
             ).first()
         return found is not None
 
-    def list_ids(self) -> list[str]:
+    def list_ids(self, *, owner_id: int | None = None) -> list[str]:
+        """列出会话 id（**只有** owner_id 本人的 + 无主的），按最后活跃倒序。"""
         with self._tx() as session:
             rows = session.execute(
-                select(SESS.c.id).order_by(SESS.c.last_active_at.desc())
+                select(SESS.c.id).where(_owner_match(owner_id)).order_by(SESS.c.last_active_at.desc())
             ).scalars().all()
         return [str(r) for r in rows]
+
+    def is_foreign_to(self, session_id: str, *, owner_id: int | None) -> bool:
+        """只查 user_id 这一列（不 SELECT *），存在且非空且不是我 → True。"""
+        with self._tx(session_id) as session:
+            actual = session.execute(
+                select(SESS.c.user_id).where(SESS.c.id == session_id)
+            ).scalar_one_or_none()
+        if actual is None:
+            # 「不存在」与「无主」在这里被压成同一个 None。
+            # 对这个方法而言**恰好是对的**：两者都不是 foreign ——
+            # 无主会话对所有人可认领，不该被判成「别人的」。
+            # 代价是「不存在」也要查一次，但调用方本来就已经查过了，
+            # 这条只是把「403 还是 200+空」的判断收敛到一个方法里。
+            return False
+        # owner_id=None 时任何已归属会话都不是自己的（它是别人的，只是我不知道是谁）
+        return True if owner_id is None else int(actual) != int(owner_id)
 
     def purge_expired(self) -> int:
         """不再按闲置时间归档。会话留在列表里，直到用户删除。"""

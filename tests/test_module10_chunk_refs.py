@@ -395,6 +395,7 @@ mysql_store.save(
              "ts": 1.0, "usage": {}},
         ],
     ),
+    owner_id=None,
 )
 
 with session_scope() as s:

@@ -65,7 +65,11 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from config.settings import settings
-from core.session_store import SessionSnapshot, SessionStore
+from core.session_store import (
+    SessionOwnershipError,
+    SessionSnapshot,
+    SessionStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -290,9 +294,69 @@ class RedisSessionStore(SessionStore):
             raise e
 
     # ------------------------------------------------------------------ #
+    # 归属（P2-12c）
+    # ------------------------------------------------------------------ #
+    #⚠️ 本实现**已退役**（生产真相源是 MySQL），但共享契约测试
+    #   tests/store_contract.py 对三个实现跑同一套断言，所以这里也得实现归属。
+    #   它顺带是一个有用的「第三份实现」：如果三个实现的归属语义对不上，
+    #   说明是契约本身写漏了，而不是某一边写错。
+    #   Redis 没有 MySQL 的 `session.user_id` 列，归属存会话 hash 里的
+    #   一个独立 field `owner`，用 HGET 单字段读（不反序列化整条会话）。
+    _OWNER_FIELD = "owner"
+    #: 「这条 key 根本不存在」的哨兵。与 `None`（无主）必须能区分，
+    #: 理由见 `_owner_of` 的返回说明。
+    _MISSING: Any = object()
+
+    def _owner_of(self, session_id: str) -> int | None | object:
+        """
+        读这条会话的归属。
+
+        返回三态：具体 uid / None（无主）/ `_MISSING`（会话不存在）。
+        必须区分「无主」与「不存在」——两者的处理完全不同：
+        无主可以认领，不存在则该新建。
+
+        用哨兵对象而不是 (value, exists) 元组：哨兵无法被误当成合法 uid，
+        而 `if owner is None` 会被真·无主和不存在同时命中。
+        """
+        try:
+            raw = self._client.hget(self._session_key(session_id), self._OWNER_FIELD)
+        except Exception as e:  # pragma: no cover - 读失败按不存在处理（fail-closed）
+            logger.error("Redis 读取会话归属失败 | session_id=%s err=%s", session_id, e)
+            return self._MISSING
+        if raw is None:
+            # 区分「字段没写」（key 存在但没owner field = 老数据=无主）
+            # 与「key 不存在」：EXISTS 一次即可，代价 O(1)。
+            try:
+                if not self._client.exists(self._session_key(session_id)):
+                    return self._MISSING
+            except Exception as e:  # pragma: no cover
+                logger.error("Redis exists 失败 | session_id=%s err=%s", session_id, e)
+                return self._MISSING
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):  # pragma: no cover - 脏数据
+            return None
+
+    def _owns(self, session_id: str, owner_id: int | None) -> bool:
+        """
+        这条会话是不是该 owner 的 —— 与 Memory / MySQL 版**逐条一致**：
+        「不存在」返回 False，「无主」对所有人返回 True。
+
+        所以必须先比 `_MISSING`：`None == owner_id` 在 owner_id=440 时为假，
+        但 owner_id=None 时为真 —— 直接把 `_owner_of` 的返回值拿去比，
+        就会在 owner_id=None 时把**不存在的会话**判成「无主可见」。
+        """
+        actual = self._owner_of(session_id)
+        if actual is self._MISSING:
+            return False
+        return actual is None or actual == owner_id
+
+    # ------------------------------------------------------------------ #
     # 读写
     # ------------------------------------------------------------------ #
-    def load(self, session_id: str, touch: bool = True) -> SessionSnapshot | None:
+    def load(self, session_id: str, *, owner_id: int | None,
+             touch: bool = True) -> SessionSnapshot | None:
         """
         读会话快照。touch=True 时命中即刷新 TTL（与内存版「读也算活跃」语义对齐）。
 
@@ -304,6 +368,9 @@ class RedisSessionStore(SessionStore):
         touch=False 的场景（会话列表 / 统计）必须走这条路：否则有人反复刷新
         会话列表就等于给全部会话续命，「闲置过期」会彻底失效。
         """
+        # ⚠️ 归属先判，且判在 HGETALL 之前：越权就不该把数据读进内存。
+        if not self._owns(session_id, owner_id):
+            return None
         key = self._session_key(session_id)
         try:
             raw = self._client.hgetall(key)
@@ -332,25 +399,49 @@ class RedisSessionStore(SessionStore):
             logger.warning("会话 TTL 续期失败（不影响本次读取） | session_id=%s err=%s", session_id, e)
         return snapshot
 
-    def save(self, session_id: str, snapshot: SessionSnapshot) -> None:
+    def save(self, session_id: str, snapshot: SessionSnapshot, *,
+             owner_id: int | None) -> None:
         """
         整条覆盖写 + 刷新 TTL + 更新索引，一次 pipeline 搞定。
 
         用 transaction=True（MULTI/EXEC）：三个命令要么都生效要么都不生效，
         避免「数据写了但 TTL 没设」→ key 永不过期 → 内存缓慢泄漏。
+
+        归属三态与 MySQL 版逐条一致（新建 / 认领无主 / 拒绝他人），
+        拒绝时抛 `SessionOwnershipError` 而不是静默忽略 ——
+        静默忽略等于告诉调用方「写成功了」，而这轮问答根本没存下来。
         """
+        current_owner = self._owner_of(session_id)
+        # 三态：不存在（_MISSING）/ 无主（None）/ 属于某个 uid。
+        # ⚠️ 中间那个分支的 `is not None` 很容易漏 —— 漏了就会把「无主会话」
+        # 也判成越权，于是认领永远触发不了（而症状看起来像「读得到但写不进」，
+        # 极难定位）。与 MySQL 版 `current_owner is not None and != owner_id` 同构。
+        if current_owner is not self._MISSING and current_owner is not None \
+                and current_owner != owner_id:
+            raise SessionOwnershipError(session_id, owner_id)
+
         snapshot.last_active = time.time()
         key = self._session_key(session_id)
         try:
             pipe = self._client.pipeline(transaction=True)
             pipe.hset(key, mapping=snapshot.to_json_map())
+            # owner=None 时不写这个 field（HSET 删字段）：语义上「无主」就是没有归属，
+            # 而写一个字符串 "None" 会让下一次读把它 int() 失败后当无主 ——
+            # 结果对，但脏数据会掩盖真正的归属 bug。
+            if owner_id is not None:
+                pipe.hset(key, self._OWNER_FIELD, str(owner_id))
+            else:
+                pipe.hdel(key, self._OWNER_FIELD)
             pipe.expire(key, self.ttl_seconds)
             pipe.zadd(self._index_key, {session_id: snapshot.last_active})
             pipe.execute()
         except Exception as e:
             self._on_write_error(e, session_id)
 
-    def delete(self, session_id: str) -> bool:
+    def delete(self, session_id: str, *, owner_id: int | None) -> bool:
+        # ⚠️ 归属先判：删别人的会话是比读更严重的事故，不可依赖「下一个人会发现」。
+        if not self._owns(session_id, owner_id):
+            return False
         key = self._session_key(session_id)
         try:
             pipe = self._client.pipeline(transaction=True)
@@ -366,20 +457,24 @@ class RedisSessionStore(SessionStore):
             logger.info("会话已删除 | session_id=%s", session_id)
         return deleted
 
-    def exists(self, session_id: str) -> bool:
+    def exists(self, session_id: str, *, owner_id: int | None = None) -> bool:
+        if not self._owns(session_id, owner_id):
+            return False
         try:
             return bool(self._client.exists(self._session_key(session_id)))
         except Exception as e:
             logger.error("Redis exists 失败 | session_id=%s err=%s", session_id, e)
             return False
 
-    def list_ids(self) -> list[str]:
+    def list_ids(self, *, owner_id: int | None = None) -> list[str]:
         """
-        列出全部会话（按活跃度倒序）。
+        列出属于 `owner_id` 的会话（按活跃度倒序）。
 
         索引 ZSET 里可能残留已过期的 member（Redis 过期 key 不会自动从 ZSET 摘除），
-        所以拿到的候选要逐个 EXISTS 校验，顺手把死成员 ZREM 掉。
+        所以拿到的候选要逐个校验，顺手把死成员 ZREM 掉。
         校验走一条 pipeline，N 个会话也只有 1 个 RTT。
+        归属过滤与存活校验**合并在同一条 pipeline** 里（EXISTS + HGET owner），
+        分成两条要多一个 RTT，而候选列表可能有几十条。
         """
         try:
             ids = self._client.zrevrange(self._index_key, 0, -1)
@@ -396,9 +491,27 @@ class RedisSessionStore(SessionStore):
             pipe = self._client.pipeline(transaction=False)
             for sid in ids:
                 pipe.exists(self._session_key(sid))
+                pipe.hget(self._session_key(sid), self._OWNER_FIELD)
             flags = pipe.execute()
-            for sid, flag in zip(ids, flags):
-                (alive if flag else dead).append(sid)
+            # pipeline 的返回顺序是「每个 sid 的 exists、hget」两两交替
+            for idx, sid in enumerate(ids):
+                flag = flags[idx * 2]
+                raw_owner = flags[idx * 2 + 1]
+                if not flag:
+                    dead.append(sid)
+                    continue
+                if raw_owner is None:
+                    # 无主会话对所有人可见 —— 这是「认领」的前提：
+                    # 若读不到，第一次打开它的人会以为「会话不存在」，
+                    # 逻辑层从零重建并save，把别人（12c 之前）留下的内容覆盖掉。
+                    belongs = True
+                else:
+                    try:
+                        belongs = int(raw_owner) == owner_id
+                    except (TypeError, ValueError):  # pragma: no cover - 脏数据按无主处理
+                        belongs = owner_id is None
+                if belongs:
+                    alive.append(sid)
             if dead:
                 # 清残留（顺手做，不用等 purge_expired）
                 self._client.zrem(self._index_key, *dead)
@@ -407,6 +520,12 @@ class RedisSessionStore(SessionStore):
             logger.warning("会话索引校验失败，返回原始索引：%s", e)
             return ids
         return alive
+
+    def is_foreign_to(self, session_id: str, *, owner_id: int | None) -> bool:
+        actual = self._owner_of(session_id)
+        if actual is self._MISSING or actual is None:
+            return False
+        return actual != owner_id
 
     def purge_expired(self) -> int:
         """

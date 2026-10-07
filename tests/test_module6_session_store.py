@@ -81,13 +81,13 @@ redis_store = RedisSessionStore(client=fake_client, ttl_seconds=TEST_TTL)
 exercise_store(redis_store, "redis", check)
 
 # 闲置不再把会话藏起来。Redis 会话库仍靠 key TTL 回收（该后端已退出生产路径）。
-memory_store.save("exp", SessionSnapshot(messages=[{"role": "user", "content": "x"}]))
-redis_store.save("exp", SessionSnapshot(messages=[{"role": "user", "content": "x"}]))
+memory_store.save("exp", SessionSnapshot(messages=[{"role": "user", "content": "x"}]), owner_id=None)
+redis_store.save("exp", SessionSnapshot(messages=[{"role": "user", "content": "x"}]), owner_id=None)
 time.sleep(TEST_TTL + 0.2)
-check("[memory] 闲置超 TTL 仍能读到", memory_store.load("exp") is not None)
-check("[redis] TTL 过期后读不到（由 Redis 自动回收）", redis_store.load("exp") is None)
+check("[memory] 闲置超 TTL 仍能读到", memory_store.load("exp", owner_id=None) is not None)
+check("[redis] TTL 过期后读不到（由 Redis 自动回收）", redis_store.load("exp", owner_id=None) is None)
 check("[memory] purge_expired 不再删除会话", memory_store.purge_expired() == 0)
-check("[memory] 清理后会话还在", memory_store.load("exp") is not None)
+check("[memory] 清理后会话还在", memory_store.load("exp", owner_id=None) is not None)
 
 
 # --------------------------------------------------------------------------- #
@@ -97,7 +97,7 @@ print("\n== 第 2 组：Redis 特有行为 ==")
 
 client2 = make_fake_redis()
 store2 = RedisSessionStore(client=client2, ttl_seconds=3600)
-store2.save("key-check", SessionSnapshot(messages=[{"role": "user", "content": "hello"}]))
+store2.save("key-check", SessionSnapshot(messages=[{"role": "user", "content": "hello"}]), owner_id=None)
 
 # key 设计：会话 key 与索引 key 都带统一前缀，便于运维识别归属
 check(
@@ -121,19 +121,19 @@ check(
 
 # 读命中会续期（touch=True），读列表式调用不续期（touch=False）
 client2.expire(f"{settings.REDIS_KEY_PREFIX}:session:key-check", 5)
-store2.load("key-check")
+store2.load("key-check", owner_id=None)
 check("读命中会刷新 TTL（touch=True）", client2.ttl(f"{settings.REDIS_KEY_PREFIX}:session:key-check") > 5)
 
 # 只读式读取：把 TTL 压到很短，touch=False 读取后不应续期
 client2.expire(f"{settings.REDIS_KEY_PREFIX}:session:key-check", 5)
 before = client2.ttl(f"{settings.REDIS_KEY_PREFIX}:session:key-check")
-snap = store2.load("key-check", touch=False)
+snap = store2.load("key-check", touch=False, owner_id=None)
 after = client2.ttl(f"{settings.REDIS_KEY_PREFIX}:session:key-check")
 check("touch=False 的读不续期（会话列表不刷 TTL）", snap is not None and after <= before, f"{before}→{after}")
 
 # 索引残留清理：手动往索引里塞一个不存在的成员，list_ids 应该把它摘掉
 client2.zadd(f"{settings.REDIS_KEY_PREFIX}:sessions", {"ghost": time.time()})
-ids = store2.list_ids()
+ids = store2.list_ids(owner_id=None)
 check("list_ids 过滤索引里的幽灵成员", "ghost" not in ids, f"实际 {ids}")
 check(
     "幽灵成员被顺手从索引摘除",
@@ -145,16 +145,16 @@ from core.session_store import SessionSnapshot as _Snap
 
 lock_client = make_fake_redis()
 lock_store = RedisSessionStore(client=lock_client, ttl_seconds=3600)
-lock_store.save("concurrent", _Snap(messages=[]))
+lock_store.save("concurrent", _Snap(messages=[]), owner_id=None)
 
 
 def _worker(tag: str) -> None:
     with lock_store.session_lock("concurrent"):
-        snapshot = lock_store.load("concurrent")
+        snapshot = lock_store.load("concurrent", owner_id=None)
         snapshot.messages.append({"role": "user", "content": tag})
         # 放大竞争窗口：没有锁的话这里必然互相覆盖
         time.sleep(0.03)
-        lock_store.save("concurrent", snapshot)
+        lock_store.save("concurrent", snapshot, owner_id=None)
 
 
 threads = [threading.Thread(target=_worker, args=(f"q{i}",)) for i in range(5)]
@@ -162,7 +162,7 @@ for t in threads:
     t.start()
 for t in threads:
     t.join()
-final = lock_store.load("concurrent")
+final = lock_store.load("concurrent", owner_id=None)
 check(
     "并发写入不丢数据（分布式锁生效）",
     final is not None and len(final.messages) == 5,
@@ -214,7 +214,7 @@ oom_err = _redis_mod.exceptions.ResponseError(
 oom_store = RedisSessionStore(client=_OomRedis(oom_err), ttl_seconds=3600)
 raised = False
 try:
-    oom_store.save("x", SessionSnapshot(messages=[{"role": "user", "content": "y"}]))
+    oom_store.save("x", SessionSnapshot(messages=[{"role": "user", "content": "y"}]), owner_id=None)
 except Exception:
     raised = True
 check("OOM 写入失败不抛异常（降级，可用性优先）", raised is False)
@@ -237,56 +237,56 @@ mm_client = make_fake_redis()
 mm_store = RedisSessionStore(client=mm_client, ttl_seconds=3600)
 mm = MemoryManager(max_turns=3, ttl_seconds=3600, store=mm_store)
 
-mm.add_exchange("s1", "问题A1", "回答A1", meta={"intent": "knowledge_query", "ts": 1.0})
-mm.add_exchange("s2", "问题B1", "回答B1")
-check("会话隔离：s1 只有自己消息", len(mm.get_messages("s1")) == 2)
+mm.add_exchange("s1", "问题A1", "回答A1", meta={"intent": "knowledge_query", "ts": 1.0}, owner_id=None)
+mm.add_exchange("s2", "问题B1", "回答B1", owner_id=None)
+check("会话隔离：s1 只有自己消息", len(mm.get_messages("s1", owner_id=None)) == 2)
 check("会话计数正确", mm.session_count() == 2)
-check("消息角色交替", [m.type for m in mm.get_messages("s1")] == ["human", "ai"])
-check("历史消息是 LangChain Message 对象", mm.get_messages("s1")[0].content == "问题A1")
+check("消息角色交替", [m.type for m in mm.get_messages("s1", owner_id=None)] == ["human", "ai"])
+check("历史消息是 LangChain Message 对象", mm.get_messages("s1", owner_id=None)[0].content == "问题A1")
 
 # 窗口：库里保留全部，模型窗口另取
 for i in range(2, 5):
-    mm.add_exchange("s1", f"问题A{i}", f"回答A{i}")
-messages = mm.get_messages("s1")
+    mm.add_exchange("s1", f"问题A{i}", f"回答A{i}", owner_id=None)
+messages = mm.get_messages("s1", owner_id=None)
 check("历史全部保留（4 轮 8 条）", len(messages) == 8, f"实际 {len(messages)} 条")
 check("最早一轮仍是 A1", messages[0].content == "问题A1", f"实际 {messages[0].content}")
-recent = mm.get_recent_messages("s1")
+recent = mm.get_recent_messages("s1", owner_id=None)
 check("模型窗口只取最近 3 轮（6 条）", len(recent) == 6, f"实际 {len(recent)} 条")
 check("窗口里最早的一轮是 A2", recent[0].content == "问题A2", f"实际 {recent[0].content}")
-check("元数据与全部轮次对齐", len(mm.get_exchange_meta("s1")) == 4, f"实际 {len(mm.get_exchange_meta('s1'))}")
+check("元数据与全部轮次对齐", len(mm.get_exchange_meta("s1", owner_id=None)) == 4, f"实际 {len(mm.get_exchange_meta('s1', owner_id=None))}")
 
 # 读不存在的会话不再隐式创建（v2.0.0 修正：避免幽灵会话）
 before_count = mm.session_count()
-check("读不存在的会话返回空列表", mm.get_messages("ghost-session") == [])
+check("读不存在的会话返回空列表", mm.get_messages("ghost-session", owner_id=None) == [])
 check("读不存在的会话不会创建它", mm.session_count() == before_count)
-check("对不存在的会话 update_session_meta 返回 None", mm.update_session_meta("ghost-session") is None)
-check("get_session_meta 无记录返回默认值", mm.get_session_meta("ghost-session") == {"pinned": False})
+check("对不存在的会话 update_session_meta 返回 None", mm.update_session_meta("ghost-session", owner_id=None) is None)
+check("get_session_meta 无记录返回默认值", mm.get_session_meta("ghost-session", owner_id=None) == {"pinned": False})
 
 # 元数据 / 截断 / 用量
-meta = mm.update_session_meta("s1", title="报销流程", pinned=True)
+meta = mm.update_session_meta("s1", title="报销流程", pinned=True, owner_id=None)
 check("更新元数据返回最新值", meta is not None and meta["pinned"] is True and meta["title"] == "报销流程")
-check("元数据持久化能读回", mm.get_session_meta("s1")["title"] == "报销流程")
+check("元数据持久化能读回", mm.get_session_meta("s1", owner_id=None)["title"] == "报销流程")
 
-mm.truncate_session("s1", 2)
-check("截断到 2 条消息", len(mm.get_messages("s1")) == 2, f"实际 {len(mm.get_messages('s1'))}")
-check("截断同步裁元数据", len(mm.get_exchange_meta("s1")) == 1)
-check("截断不存在的会话返回 False", mm.truncate_session("ghost-session", 0) is False)
+mm.truncate_session("s1", 2, owner_id=None)
+check("截断到 2 条消息", len(mm.get_messages("s1", owner_id=None)) == 2, f"实际 {len(mm.get_messages('s1', owner_id=None))}")
+check("截断同步裁元数据", len(mm.get_exchange_meta("s1", owner_id=None)) == 1)
+check("截断不存在的会话返回 False", mm.truncate_session("ghost-session", 0, owner_id=None) is False)
 
-mm.add_usage("s1", input_tokens=10, output_tokens=20, cache_read_tokens=5)
-mm.add_usage("s1", input_tokens=1, output_tokens=2)
-usage = mm.get_usage("s1")
+mm.add_usage("s1", input_tokens=10, output_tokens=20, cache_read_tokens=5, owner_id=None)
+mm.add_usage("s1", input_tokens=1, output_tokens=2, owner_id=None)
+usage = mm.get_usage("s1", owner_id=None)
 check("token 用量累加正确", usage["input_tokens"] == 11 and usage["requests"] == 2, f"实际 {usage}")
-check("用量读到的是副本（外部改动不写回）", (usage.update({"requests": 99}) or mm.get_usage("s1")["requests"] == 2))
+check("用量读到的是副本（外部改动不写回）", (usage.update({"requests": 99}) or mm.get_usage("s1", owner_id=None)["requests"] == 2))
 
 # 会话列表：不因「翻列表」而给全部会话续命
-listed = mm.list_sessions()
+listed = mm.list_sessions(owner_id=None)
 check("list_sessions 返回全部会话", len(listed) == 2, f"实际 {len(listed)}")
 check("list_sessions 带置顶与标题", any(i["pinned"] for i in listed))
 check("会话列表按活跃倒序", listed[0]["session_id"] in ("s1", "s2"))
 
 # 清空会话
-check("清空存在的会话返回 True", mm.clear_session("s2") is True)
-check("清空不存在的会话返回 False", mm.clear_session("s2") is False)
+check("清空存在的会话返回 True", mm.clear_session("s2", owner_id=None) is True)
+check("清空不存在的会话返回 False", mm.clear_session("s2", owner_id=None) is False)
 check("清空后 Redis key 已删除", mm_client.exists(f"{settings.REDIS_KEY_PREFIX}:session:s2") == 0)
 check("清空后索引里也没有它", mm_client.zscore(f"{settings.REDIS_KEY_PREFIX}:sessions", "s2") is None)
 
@@ -303,8 +303,8 @@ broken_store = RedisSessionStore(client=_BrokenRedis(), ttl_seconds=3600)
 broken_mm = MemoryManager(max_turns=3, ttl_seconds=3600, store=broken_store)
 crashed = False
 try:
-    check("Redis 断开时读历史返回空（不炸问答）", broken_mm.get_messages("any") == [])
-    check("Redis 断开时 list_sessions 返回空", broken_mm.list_sessions() == [])
+    check("Redis 断开时读历史返回空（不炸问答）", broken_mm.get_messages("any", owner_id=None) == [])
+    check("Redis 断开时 list_sessions 返回空", broken_mm.list_sessions(owner_id=None) == [])
 except Exception as e:  # pragma: no cover
     crashed = True
     print(f"    异常：{type(e).__name__}: {e}")
@@ -337,12 +337,12 @@ def _run_meta_alignment(store, label: str) -> None:
     """
     m = MemoryManager(max_turns=10, ttl_seconds=3600, store=store)
     sid = f"align-{label}"
-    m.add_exchange(sid, "q1", "a1", meta={"intent": "i1", "sources": ["c1"]})
-    m.add_exchange(sid, "q2", "a2")                 # 中间轮故意不带 meta
-    m.add_exchange(sid, "q3", "a3", meta={"intent": "i3", "sources": ["c3"]})
+    m.add_exchange(sid, "q1", "a1", meta={"intent": "i1", "sources": ["c1"]}, owner_id=None)
+    m.add_exchange(sid, "q2", "a2", owner_id=None)                 # 中间轮故意不带 meta
+    m.add_exchange(sid, "q3", "a3", meta={"intent": "i3", "sources": ["c3"]}, owner_id=None)
 
-    metas = m.get_exchange_meta(sid)
-    msgs = m.get_messages(sid)
+    metas = m.get_exchange_meta(sid, owner_id=None)
+    msgs = m.get_messages(sid, owner_id=None)
     check(f"[{label}] 消息条数 == 6（3 轮）", len(msgs) == 6, f"实际 {len(msgs)} 条")
     check(f"[{label}] 元数据条数 == 轮数", len(metas) == 3, f"实际 {len(metas)} 条：{metas}")
     check(
@@ -382,9 +382,9 @@ def _run_meta_alignment(store, label: str) -> None:
     )
 
     # 连续更多轮也不该漂移：再写两轮，前 3 轮的元数据必须原地不动
-    m.add_exchange(sid, "q4", "a4", meta={"intent": "i4"})
-    m.add_exchange(sid, "q5", "a5", meta={"intent": "i5"})
-    metas5 = m.get_exchange_meta(sid)
+    m.add_exchange(sid, "q4", "a4", meta={"intent": "i4"}, owner_id=None)
+    m.add_exchange(sid, "q5", "a5", meta={"intent": "i5"}, owner_id=None)
+    metas5 = m.get_exchange_meta(sid, owner_id=None)
     check(
         f"[{label}] 续写 2 轮后前 3 轮元数据原地不动",
         [d.get("intent") for d in metas5[:3]] == ["i1", None, "i3"],
@@ -392,7 +392,7 @@ def _run_meta_alignment(store, label: str) -> None:
     )
     check(
         f"[{label}] 续写后仍严格等长",
-        len(metas5) == len(m.get_messages(sid)) // 2 == 5,
+        len(metas5) == len(m.get_messages(sid, owner_id=None)) // 2 == 5,
         f"实际元数据 {len(metas5)} 条",
     )
 
