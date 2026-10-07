@@ -418,14 +418,21 @@ def resolve_actor(
         claimed = token_version_header.strip()
         if claimed.isdigit():
             if int(claimed) != int(actor.record.token_version):
+                # ⚠️ 这条 warn **必须在 raise 之前**（14e 顺手修的真 bug）：
+                # 它原来写在 `raise` 的下一行，于是「不匹配被拒」与
+                # 「匹配但正常放行」打的是同一句话。真链路实测抓到的实录：
+                #     token_version 不匹配（token 已失效）| uid=wu.jing 持有=3 库里=3
+                # 两边都是 3、请求照常 200/404 通过，却打了一句「已失效」。
+                # 一条与事实相反的日志比没有日志更糟 —— 排障时会先信它，
+                # 于是往「token 版本对不上」这个方向查半天，而真问题在别处。
+                logger.warning(
+                    "token_version 不匹配（token 已失效）| uid=%s 持有=%s 库里=%s",
+                    actor.record.username, claimed, actor.record.token_version,
+                )
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="登录状态已失效（密码或权限已变更），请重新登录",
                 )
-            logger.warning(
-                "token_version 不匹配（token 已失效）| uid=%s 持有=%s 库里=%s",
-                actor.record.username, claimed, actor.record.token_version,
-            )
         # 不是纯数字 = 网关发来的东西不对，**不拦但记一条**：
         # 它要么是伪造（但 8000 不对外可达），要么是网关的 bug。
         # 两种都不该让请求失败，但都要留下痕迹。

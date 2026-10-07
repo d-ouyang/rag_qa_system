@@ -236,6 +236,7 @@ test: kb-guard
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module11_account.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_admin.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_audit.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_write_acl.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module13_login.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_trust_boundary.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module15_session_isolation.py
