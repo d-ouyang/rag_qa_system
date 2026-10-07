@@ -117,6 +117,12 @@ IDENTITY_HEADERS = (
     "x-role",
     "x-dept-id",
     "x-token-version",
+    # ⚠️ P2-14b 新增：知识库写权限。**剥离但不注入** ——
+    # 注入它会造出第二个真相源（JWT 快照 vs 库里当前值），
+    # 而权限系统里两个真相源意味着「在某些时刻它就是错的，且不报错」。
+    # 后端的 `kb_role` 从 MySQL 实时读，所以改授权立刻生效。
+    # 详见 `gateway/src/auth/identity-headers.ts` 里 ForwardedIdentity 的注释。
+    "x-user-kb-role",
     "x-identity-source",
     "x-internal-auth",
 )

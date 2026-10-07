@@ -30,6 +30,57 @@ export const STAFF_ROLES = ['admin', 'hr'] as const;
 /** 需要 `STAFF_ROLES` 之一的前缀（**精确前缀匹配**，不是子串匹配）。 */
 export const STAFF_PATH_PREFIXES = ['/api/v1/admin/'] as const;
 
+/**
+ * ⚠️ **P2-14b 的一个刻意选择**：网关上 `kb_role` 的粗筛**只看 `none`**。
+ *
+ * 网关答的是「你**可能**有权限吗」，后端答「你**到底**有什么权限」。
+ * 所以这一层**必须比后端更宽，不能更窄**（12b 已经踩过一次反面教材：
+ * 网关只放 `admin` 会让 `hr` 在网关被拒，而后端那条 hr 分支永远走不到，
+ * 症状是「只有 admin 账号能进管理端」—— 一个只在特定账号下才现形的 bug）。
+ *
+ * 于是这里的判据是 `kbRole !== 'none'` 就放行去打后端。
+ * **代价**：一个 `kb_role` 是 `ops` 的人会顺利通过网关、然后被后端以
+ * `reindex` 拒掉（`ops` 刻意不给重灌）。这是**误拒一次**，
+ * 而漏放的代价是全公司知识库被改 —— 两害相权取轻。
+ *
+ * `unknown`（后端给了不认识的档位）在这里**当 none 处理**：
+ * 网关不该比后端更懂 `kb_role`，它只负责「不是 none 就去问后端」。
+ */
+export function isKbRoleNone(kbRole: string | undefined): boolean {
+  if (!kbRole) return true; // 老 token 没有这个字段 → fail-closed
+  return kbRole === 'none' || kbRole === 'unknown';
+}
+
+/**
+ * 知识库**写**路径（`kb_role` 管的那四条）。与后端
+ * `api/routes/documents.py` 的四条写路由一一对应。
+ *
+ * ⚠️ 匹配的是**路径 + 方法**：同一个 `/api/v1/documents/upload` 用 GET 调
+ * 不存在（但万一将来加了 `GET /documents/upload` 的预检接口），
+ * 而 `DELETE /api/v1/documents/{doc_id}` 与 `GET /api/v1/documents/{doc_id}`
+ * 共用路径前缀 —— 只看路径的话，一个 `kb_role=none` 的人连**看**文档列表都不行，
+ * 而共用知识库是刻意的业务决策。
+ *
+ * 路径匹配用**正则**而不是前缀：前缀 `/api/v1/documents/upload` 会顺带
+ * 匹配到 `upload/batch`（那确实也要拦，没问题），但
+ * 前缀 `/api/v1/documents/` 会**误伤所有读接口**。所以只列四条精确的。
+ */
+const KB_WRITE_ROUTES: ReadonlyArray<{ method: string; pattern: RegExp }> = [
+  { method: 'POST', pattern: /^\/api\/v1\/documents\/upload$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/documents\/upload\/batch$/ },
+  // `{doc_id}` 是数字：只匹配数字段，避免将来出现
+  // `/api/v1/documents/import` 这种路径被误判成「带 id 的文档」。
+  { method: 'POST', pattern: /^\/api\/v1\/documents\/\d+\/reparse$/ },
+  { method: 'DELETE', pattern: /^\/api\/v1\/documents\/\d+$/ },
+];
+
+/** 这条请求是不是一条「知识库写操作」。方法 + 路径都匹配才算。 */
+export function isKbWriteRequest(path: string, method: string | undefined): boolean {
+  if (!method) return false; // 没有方法（理论上不该发生）→ 当成读，放行给后端判
+  const m = method.toUpperCase();
+  return KB_WRITE_ROUTES.some((r) => r.method === m && r.pattern.test(path));
+}
+
 /** 无需 token 即可访问的上游探活路径 —— 与 `proxy.controller.ts` 的白名单同一份。 */
 export const PUBLIC_PATHS = ['/api/v1/system/health', '/api/v1/qa/health'] as const;
 
@@ -81,9 +132,17 @@ export function isInternalPath(path: string): boolean {
  * 而前端对这两者的处理不同（403 不会跳登录页，用户会卡在页面上）。
  *
  * @param path   请求路径（含 query 无妨，只按 pathname 语义匹配前缀）
- * @param role   登录者角色；未登录传空字符串
+ * @param user   登录者身份（未登录传undefined）。**刻意传整个对象而不是
+ *               `role` / `kbRole` 两个字符串** —— 13d 踩过「两边各自传自己
+ *               需要的字段」的后果：加第三个维度时（`kb_role` 就是），
+ *               少传一个不会编译报错，只表现为「那道门忘了看这个字段」。
+ *               传对象的话，调用点必须把整个 user 交出来。
  */
-export function decidePath(path: string, role: string | undefined): PathDecision {
+export function decidePath(
+  path: string,
+  user: { role?: string; kbRole?: string } | undefined,
+  method?: string,
+): PathDecision {
   // ⚠️ 内部接口**排在 staff 之前**：它对所有身份都拒绝，
   // 所以哪怕是 admin 也不该看到「需要管理员权限」这种提示。
   if (isInternalPath(path)) {
@@ -95,9 +154,22 @@ export function decidePath(path: string, role: string | undefined): PathDecision
     };
   }
 
+  // ---- 知识库写路径（P2-14b）：在 staff 之前 ----
+  // ⚠️ 排在 staff 之前是刻意的：一条 `POST /api/v1/documents/upload`
+  // 对任何人都不是「管理端路径」，所以它永远不会走到下面的 staff 分支；
+  // 反过来放后面则要靠「它恰好不是 admin 路径」这个巧合，脆弱。
+  if (isKbWriteRequest(path, method) && isKbRoleNone(user?.kbRole)) {
+    return {
+      allowed: false,
+      code: 'FORBIDDEN_KB_WRITE',
+      // ⚠️ 文案**不含「你的 kb_role 是什么」** —— 与后端 11b 的防枚举同源。
+      message: '没有权限修改知识库，请联系管理员开通',
+    };
+  }
+
   if (!requiresStaff(path)) return { allowed: true };
 
-  if (role && (STAFF_ROLES as readonly string[]).includes(role)) {
+  if (user?.role && (STAFF_ROLES as readonly string[]).includes(user.role)) {
     return { allowed: true };
   }
   // ⚠️ 文案**不区分「不是 admin」与「不是 hr」**：那等于把角色体系

@@ -53,6 +53,12 @@ export const INBOUND_IDENTITY_HEADERS = [
   // ↓ 规格 §5.1.2 与复现脚本里写的那个名字。**不注入，但照样要剥**（见上）。
   'x-dept-id',
   'x-token-version',
+  // ↓ P2-14b 新增：知识库写权限。与 `x-role` 同理 —— **不注入也可以，
+  //   但必须剥**，因为客户端能自己填一个 `superadmin`。
+  //   ⚠️ 后端目前**不读**这个头（它的 `kb_role` 从库里实时读，见
+  //   `core/identity.py`），但「后端将来会不会读它」是会变的
+  //   —— 与 `x-dept-id` 当初的理由一模一样。剥的代价是零。
+  'x-user-kb-role',
   'x-identity-source',
   'x-internal-auth',
 ] as const;
@@ -64,6 +70,25 @@ export interface ForwardedIdentity {
   role: string;
   tokenVersion: number;
   source: string;
+  /**
+   * ⚠️ **刻意没有 `kbRole`**（P2-14b 的决定），尽管 `INBOUND_IDENTITY_HEADERS`
+   * 里剥了 `x-user-kb-role`。理由：**会造出第二个真相源**。
+   *
+   * 后端的 `kb_role` 从 **MySQL 实时读**（`core/identity.py::_make_actor`），
+   * 所以改授权**立刻生效**、不需要重登（14a 实测已确认）。
+   * 若这里再注入一个来自 JWT 的 `kb_role`，同一个字段就有两个来源：
+   * JWT 里是签发时的快照、库里是当前值。两者不一致时，
+   * 「谁说了算」会变成一个需要回答的问题 —— 而权限系统里
+   * 「两个真相源」意味着**在某些时刻它就是错的，且不报错**。
+   *
+   * 代价要说清：**网关的粗筛用的是 JWT 里的快照**，所以
+   * 「管理员降级某人的 `kb_role`」之后，那个人手里的旧 token
+   * 仍能在网关过这道门，直到 token 过期（最长 12h）。
+   * 但**后端会拒**（它读的是库里的当前值）—— 两层都在，粗筛那道只是
+   * 「省一次后端往返」，不是唯一防线。
+   * 要让网关立刻知道，改授权时 `token_version+1` 强制重登即可
+   * （`user_repo.set_kb_role()` 已经这么做了，14f 接上管理端后即生效）。
+   */
 }
 
 /**

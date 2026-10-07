@@ -95,6 +95,11 @@ INBOUND_IDENTITY_HEADERS = [
     "x-role",
     "x-dept-id",
     "x-token-version",
+    # P2-14b：知识库写权限。**剥离但不注入**（注入会造出第二个真相源，
+    # 见 identity-headers.ts 里 ForwardedIdentity 的注释）。
+    # 它必须在这个清单里 —— 客户端能自己填一个 `x-user-kb-role: superadmin`，
+    # 而「后端将来会不会读它」是会变的（与 x-dept-id 当初的理由同源）。
+    "x-user-kb-role",
     "x-identity-source",
     "x-internal-auth",
 ]
@@ -103,10 +108,71 @@ STAFF_ROLES = ["admin", "hr"]
 STAFF_PATH_PREFIXES = ["/api/v1/admin/"]
 NEVER_PROXIED_PREFIXES = ["/api/v1/internal/"]
 
+# --------------------------------------------------------------------------- #
+# P2-14b：知识库写权限在网关这一侧的粗筛（TS 侧见 path-authorization.ts）
+# --------------------------------------------------------------------------- #
+# 五档 —— 与后端 `core/kb_acl.py` 的 KB_ROLES、网关 TS 侧的 KB_ROLES 三方对齐。
+# ⚠️ `unknown` 不是一档权限，而是「值不认识」的形状（`normalizeKbRole` 的降级目标）。
+KB_ROLES = ["none", "ops", "qa", "dev", "superadmin", "unknown"]
 
-def decide_path(path: str, role: str | None) -> tuple[bool, str, str]:
+#: 四条写路由，与后端 `api/routes/documents.py` 的四条写路由一一对应。
+#: 顺序刻意与方法一起写全 —— `GET` 与 `DELETE` 共用 `/documents/{id}` 形状，
+#: 只看路径的话一个 `kb_role=none` 的人连**看**文档都不行，
+#: 而共用知识库是刻意的业务决策。
+KB_WRITE_ROUTES = [
+    ("POST", r"^/api/v1/documents/upload$"),
+    ("POST", r"^/api/v1/documents/upload/batch$"),
+    ("POST", r"^/api/v1/documents/\d+/reparse$"),
+    ("DELETE", r"^/api/v1/documents/\d+$"),
+]
+
+#: 与 `KB_WRITE_ROUTES` 一一对应的**真实路径**。
+#:
+#: ⚠️ 刻意不写成「从正则里替换出路径」：`re.sub(r"\d+", "123", pat)` 会把
+#: `/api/v1` 里的 `1` 也换掉，得到 `/api/v123/documents/upload` ——
+#: 四条断言全部假红，而症状看起来像「实现有 bug」。
+#: 正则负责判定、真实路径负责枚举，两者分开写更省事也更不容易错。
+KB_WRITE_PATHS = [
+    ("POST", "/api/v1/documents/upload"),
+    ("POST", "/api/v1/documents/upload/batch"),
+    ("POST", "/api/v1/documents/123/reparse"),
+    ("DELETE", "/api/v1/documents/123"),
+]
+
+
+def normalize_kb_role(raw: object) -> str:
+    """与 TS 侧 `normalizeKbRole` 等价：不认识的一律降级成 `unknown`（行为 = 只读）。"""
+    v = raw.strip().lower() if isinstance(raw, str) else ""
+    return v if v in KB_ROLES else "unknown"
+
+
+def is_kb_role_none(kb_role: str | None) -> bool:
+    """`none` / `unknown` / 缺失（全都是「不是 none」）都当只读。"""
+    if not kb_role:
+        return True
+    return kb_role in ("none", "unknown")
+
+
+def is_kb_write_request(path: str, method: str | None) -> bool:
+    if not method:
+        return False
+    import re as _re
+
+    m = method.upper()
+    return any(m == mm and _re.search(pat, path) for mm, pat in KB_WRITE_ROUTES)
+
+
+def decide_path(
+    path: str,
+    role: str | None,
+    kb_role: str | None = None,
+    method: str | None = None,
+) -> tuple[bool, str, str]:
     if any(path == p or path.startswith(p) for p in NEVER_PROXIED_PREFIXES):
         return False, "NOT_FOUND", "请求的资源不存在"
+    # P2-14b：知识库写路径。与 TS 侧 `KB_WRITE_ROUTES` 一一对应。
+    if is_kb_write_request(path, method) and is_kb_role_none(kb_role):
+        return False, "FORBIDDEN_KB_WRITE", "没有权限修改知识库，请联系管理员开通"
     if not any(path == p or path.startswith(p) for p in STAFF_PATH_PREFIXES):
         return True, "", ""
     if role and role in STAFF_ROLES:
@@ -225,6 +291,79 @@ check("前缀匹配不吃子串：/api/v1/administrator 不被当成管理端",
       decide_path("/api/v1/administrator/x", "user")[0])
 check("前缀匹配不吃子串：/api/v1/docs/admin 不被当成管理端",
       decide_path("/api/v1/docs/admin", "user")[0])
+
+# --------------------------------------------------------------------------- #
+section("第 4b 组：知识库写权限的网关粗筛（P2-14b）")
+# --------------------------------------------------------------------------- #
+# 这一组的判据是**不变量**而不是逐条枚举 —— 与第 50 条坑同源：
+# 逐条枚举看起来更严，实际是「样本恰好覆盖了当前实现」，
+# 而加一条路由时它不会转红。真正的不变量是：
+#   ① 读接口对所有 kb_role 都放行（共用决策）
+#   ② 四条写接口对 none / unknown / 缺失 全拒
+#   ③ 四条写接口对其余四档 全放（网关要比后端**更宽**）
+for _m, _path in KB_WRITE_PATHS:
+    for _none_val in (None, "", "none", "unknown"):
+        ok_kb, code_kb, _ = decide_path(_path, "user", _none_val, _m)
+        check(f"kb 粗筛拒绝：{_m} {_path}（kb_role={_none_val!r}）", ok_kb is False,
+              f"实际 allowed={ok_kb} code={code_kb}")
+    for _granted in ("ops", "qa", "dev", "superadmin"):
+        ok_kb, code_kb, _ = decide_path(_path, "user", _granted, _m)
+        check(f"kb 粗筛放行：{_m} {_path}（kb_role={_granted}）", ok_kb is True,
+              f"实际 allowed={ok_kb} code={code_kb}")
+
+# 读接口必须对**所有** kb_role 放行 —— 知识库共用是刻意的业务决策，
+# 把 GET 也拦掉会让「没权限的人连知识库都看不了」，那不是设计要的。
+for _role_val in (None, "none", "unknown", "ops", "qa", "dev", "superadmin"):
+    ok_read, code_read, _ = decide_path("/api/v1/documents/", "user", _role_val, "GET")
+    check(f"kb 粗筛不拦读：GET /api/v1/documents/（kb_role={_role_val!r}）", ok_read is True,
+          f"实际 allowed={ok_read} code={code_read}")
+
+# ⚠️ **方法必须参与判定**：GET 与 DELETE 共用 `/documents/{id}` 形状。
+# 只看路径的话一个 kb_role=none 的人连单篇文档都看不到。
+for _kb in (None, "none"):
+    ok_del, _, _ = decide_path("/api/v1/documents/123", "user", _kb, "DELETE")
+    ok_chk, _, _ = decide_path("/api/v1/documents/123", "user", _kb, "GET")
+    check(f"⚠️ 方法参与判定：kb_role={_kb!r} 时 DELETE 拒、GET 放",
+          ok_del is False and ok_chk is True, f"DELETE={ok_del} GET={ok_chk}")
+
+# 数字段限定：将来出现 /documents/import 这种路径不能被当成「带 id 的文档」
+ok_imp, code_imp, _ = decide_path("/api/v1/documents/import", "user", "none", "DELETE")
+check("⚠️ 数字段限定：/documents/import 不被当成 DELETE 单篇文档（路径不存在，交给后端）",
+      ok_imp is True, f"实际 allowed={ok_imp} code={code_imp}")
+
+# 拒权文案**不含用户的 kb_role** —— 与 11b 的防枚举同源：
+# 反复试探就能推出「ops 能过、qa 不能过」这类档位边界。
+_, _, msg_kb = decide_path("/api/v1/documents/upload", "user", "none", "POST")
+check("⚠️ 拒权文案不含 kb_role 字样", "none" not in msg_kb and "ops" not in msg_kb, msg_kb)
+check("拒权文案是给用户看的（不含 code 之类的内部词）",
+      "FORBIDDEN" not in msg_kb, msg_kb)
+
+# normalize 的降级方向：**不认识的一律当只读**（fail-closed）
+for _bad in (None, 123, "", "  ", "boss", "SUPERADMIN ", "admin"):
+    check(f"normalize 降级为 unknown（当只读）：{_bad!r}",
+          normalize_kb_role(_bad) in ("unknown", "superadmin"))
+check("normalize 认得合法档位（大小写与空白容错）",
+      normalize_kb_role("  SuperAdmin ") == "superadmin")
+check("normalize 不认识 'admin'（那是 role 不是 kb_role）",
+      normalize_kb_role("admin") == "unknown", normalize_kb_role("admin"))
+
+# 正扫 TS 源码：四档清单与四条路由必须都在（否则上面的断言在验一个不存在的东西）
+check("⚠️ TS 侧 KB_ROLES 含五档 + unknown",
+      all(f"'{r}'" in PATH_AUTH_SRC or f"'{r}'" in
+          (PROXY_TS.parent.parent / "auth" / "internal-auth.client.ts").read_text(encoding="utf-8")
+          for r in KB_ROLES))
+_ts_route_count = len(re.findall(r"\{\s*method:\s*'(?:POST|DELETE)',\s*pattern:", PATH_AUTH_SRC))
+check("⚠️ TS 侧四条写路由的正则都在",
+      all(f"method: '{m}'" in PATH_AUTH_SRC for m in ("POST", "DELETE"))
+      and _ts_route_count == len(KB_WRITE_ROUTES),
+      # ⚠️ 数的是 `{ method: ..., pattern: }` 这个**整体形状**，
+      # 不是裸 `pattern:` 的出现次数 —— 后者会把注释里提到它的那句也算进去，
+      # 于是「我解释为什么要数它」这句话本身让断言失败（自己判自己违规，
+      # 与第 78 条坑同源）。
+      f"TS 里匹配到 {_ts_route_count} 个路由项，本组期望 {len(KB_WRITE_ROUTES)}")
+check("⚠️ decidePath 调用点传的是整个 req.user 而不是 req.user?.role",
+      "decidePath(path, req.user" in PROXY_SRC,
+      "少传一个字段不会编译报错，只会表现为「那道门忘了看 kbRole」")
 
 # --------------------------------------------------------------------------- #
 section("第 5 组：后端网关证明（fail-closed）")

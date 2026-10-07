@@ -41,7 +41,7 @@ import { JwtService } from '@nestjs/jwt';
 import { gatewayConfig, GatewayConfig } from '../config/configuration';
 import { LoginDto } from './dto/login.dto';
 import { AuthenticatedUser } from './strategies/jwt.strategy';
-import { InternalAuthClient, InternalAuthResult } from './internal-auth.client';
+import { InternalAuthClient, InternalAuthResult, KbRole } from './internal-auth.client';
 
 /**
  * 一次判定的结果 —— 「后端说成」或「.env 兜底」二者之一。
@@ -71,6 +71,16 @@ interface BreakglassSuccess {
   username: string;
   uid: null;
   role: 'admin';
+  /**
+   * 恒为 `'none'`（P2-14b）—— `.env` 里的人在 MySQL `user` 表里**没有行**，
+   * 也就没有任何人给他授权过知识库写权限。
+   *
+   * ⚠️ 刻意**不给 `superadmin`**：它是 `role: 'admin'` 所以能进管理端
+   * （`STAFF_ROLES` 看的是 `role`），但「能删掉全公司共用的知识库」
+   * 是另一件事。真要这个能力该往库里补一行并授权，
+   * 而不是让一个不在库里的身份天然持有它。
+   */
+  kbRole: KbRole;
   displayName: string;
   employeeNo: null;
   tokenVersion: 0;
@@ -95,6 +105,12 @@ export interface LoginResult {
     username: string;
     display_name: string;
     role: string;
+    /**
+     * 知识库写权限（P2-14b）。**前端要读它做入口收敛**（14d：
+     * 上传区 / 删除按钮按它显示或禁用），而前端除了这个登录响应
+     * 拿不到该值 —— 后端的 `/api/v1/admin/me` 只给**自己**的。
+     */
+    kb_role: KbRole;
     employee_no: string | null;
   };
   /** P2-11c：管理员重置过密码，前端必须把他拦到改密页 */
@@ -132,22 +148,26 @@ export class AuthService {
       });
     }
 
-    // `uid` / `role` / `ver` 进 JWT（P2-11c）：
-    //   uid  → 后端不必再按登录名反查一次，且断点的 `X-User-Id` 变成整数
-    //   role → 网关可做路径级粗筛（12b）
-    //   ver  → 后端比对 token_version，改密/停用/改角色后旧 token 立刻失效
+    // `uid` / `role` / `kbRole` / `ver` 进 JWT（P2-11c，14b 补 kbRole）：
+    //   uid    → 后端不必再按登录名反查一次，且断点的 `X-User-Id` 变成整数
+    //   role   → 网关可做路径级粗筛（12b）
+    //   kbRole → 网关可对知识库写路径做粗筛（14b）。⚠️ 它的失效方向是
+    //            「最长 12h 内要重登」而不是「越权」，因为缺它时
+    //            `validate()` 会按 `none` 处理（fail-closed）
+    //   ver    → 后端比对 token_version，改密/停用/改角色后旧 token 立刻失效
     const payload = {
       sub: String(verdict.uid ?? verdict.username),
       uid: verdict.uid ?? null,
       username: verdict.username,
       role: verdict.role,
+      kbRole: verdict.kbRole,
       ver: verdict.tokenVersion,
       src: verdict.source,
     };
     const accessToken = await this.jwtService.signAsync(payload);
     this.logger.log(
       `登录成功 | username=${verdict.username} uid=${verdict.uid ?? '-'} ` +
-        `role=${verdict.role} source=${verdict.source}`,
+        `role=${verdict.role} kbRole=${verdict.kbRole} source=${verdict.source}`,
     );
 
     return {
@@ -158,6 +178,11 @@ export class AuthService {
         username: verdict.username,
         display_name: verdict.displayName || verdict.username,
         role: verdict.role,
+        // ⚠️ 把 kbRole 一并回给前端：**14d 的前端入口收敛（上传区 / 删除按钮
+        // 显隐）要读它**，而前端除了登录响应拿不到这个值。
+        // 它不是敏感信息 —— 「谁能改知识库」不是秘密，而「谁不能」才是
+        // （而那恰恰是默认档none）。
+        kb_role: verdict.kbRole,
         employee_no: verdict.employeeNo,
       },
       must_change_password: verdict.mustChange,
@@ -229,6 +254,9 @@ export class AuthService {
       // 这个人登不进来 —— 这正是「回落只是本机后门」的含义。
       uid: null,
       role: 'admin',
+      // P2-14b：`.env` 里的这个人不在 `user` 表里 → 没有任何人给他授权过
+      // 知识库写权限 → `none`。理由见 BreakglassSuccess.kbRole 的注释。
+      kbRole: 'none',
       displayName: username,
       employeeNo: null,
       tokenVersion: 0,

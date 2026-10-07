@@ -252,12 +252,17 @@ export class ProxyController {
   @All('api/v1/*')
   handle(@Req() req: ProxiedRequest, @Res() res: Response, @Next() next: NextFunction): void {
     const path = (req.originalUrl || req.url || '').split('?')[0];
-    const decision = decidePath(path, req.user?.role);
+    // ⚠️ **传整个 `req.user`，不传 `req.user?.role`**（P2-14b）：`decidePath`
+    // 现在要看两个维度（`role` 管管理端、`kbRole` 管知识库写）。
+    // 传两个字符串参数的话，加第三个维度时少传一个不会报错 ——
+    // 而那种失效的表现是「那道门忘了看这个字段」，不报错。
+    const decision = decidePath(path, req.user, req.method);
     if (!decision.allowed) {
       // 记 warn 而不是 error：这是**正常的**业务拒绝（有人点错了入口，
       // 或探测内部接口），记 error 会让真正的转发故障淹没在噪声里。
       this.logger.warn(
-        `路径级授权拒绝 | path=${path} role=${req.user?.role ?? '-'} code=${decision.code}`,
+        `路径级授权拒绝 | path=${path} method=${req.method} role=${req.user?.role ?? '-'} `
+        + `kbRole=${req.user?.kbRole ?? '-'} code=${decision.code}`,
       );
       // ⚠️ 内部接口用 404 而不是 403：**不承认这条路径存在**。
       // 用 403 等于告诉探测者「它在，只是你不许」，那本身就是信息。

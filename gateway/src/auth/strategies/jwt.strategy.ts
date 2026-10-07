@@ -15,6 +15,10 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { Inject } from '@nestjs/common';
 import { gatewayConfig, GatewayConfig } from '../../config/configuration';
+// ⚠️ 从 internal-auth.client 引入 KbRole / normalizeKbRole，而不是在 jwt.strategy
+// 里重写一份五档清单 —— 与 `INBOUND_IDENTITY_HEADERS` 同一个理由（跨语言
+// 清单要单一出处；跨文件清单要单一模块）。
+import { KbRole, normalizeKbRole } from '../internal-auth.client';
 
 export interface JwtPayload {
   /**
@@ -36,6 +40,17 @@ export interface JwtPayload {
   username: string;
   /** `user.role`（admin / hr / user）。11c 之前没有。 */
   role?: string;
+  /**
+   * `user.kb_role`（none / ops / qa / dev / superadmin）。**P2-14b 起才有**，
+   * 之前签发的 token 里没有这个字段。
+   *
+   * ⚠️ 缺失时**必须当`none` 处理**（fail-closed），不能当放行：
+   * 一个 `kb_role=ops` 的人在他 token 签发后被降级成 `none`，
+   * 他手里的旧 token 仍带着 `ops`。反过来按 `none` 处理只损失
+   * 「最长 12 小时内要重登一次」，而按 `ops` 处理是真漏洞。
+   * 兜底在 `core/kb_acl.normalize()` 与 `isKbRoleNone()` 两处各做一次。
+   */
+  kbRole?: string;
   /** `token_version` —— 改密 / 停用 / 改角色会让它 +1，后端据此判旧 token 失效。 */
   ver?: number;
   /** 身份来源：mysql（正常）| breakglass（.env 回落）。 */
@@ -57,6 +72,14 @@ export interface AuthenticatedUser {
   /** 11c 起：整数 id；break-glass 或旧 token 时为 null。 */
   uid: number | null;
   role: string;
+  /**
+   * 知识库写权限（P2-14b）。**必填**（不是可选）——
+   * 缺失时 `validate()` 会填 `'none'`，所以下游读它不用判空。
+   * 做成必填而不是 `kbRole?: string`：可选字段会逼每个调用点写
+   * `user.kbRole ?? 'none'`，而那行一旦漏掉就是「undefined 被当成有权限」
+   * 或「undefined 让判据整个失效」，两种都不报错。
+   */
+  kbRole: KbRole;
   /** token_version；后端比对它判断这个 token 是否已被改密/停用作废。 */
   tokenVersion: number;
   source: string;
@@ -97,6 +120,9 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       username: payload.username ?? payload.sub,
       uid,
       role: payload.role ?? '',
+      // ⚠️ 缺失（P2-14b 之前签发的 token）或不认识 → **一律none**。
+      // 见 JwtPayload.kbRole 的注释：fail-closed 方向必须是「进不去」。
+      kbRole: normalizeKbRole(payload.kbRole),
       tokenVersion: typeof payload.ver === 'number' ? payload.ver : 0,
       source: payload.src ?? 'legacy',
     };

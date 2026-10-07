@@ -44,6 +44,34 @@ export type AuthFailureCode =
   | 'ACCOUNT_INACTIVE';
 
 /**
+ * 知识库写权限的五档 —— **与后端 `core/kb_acl.py` 的 `KB_ROLES` 一一对应**。
+ *
+ * ⚠️ 两份清单分别在两个语言里，**没有任何东西会校验它们是否还对得上**
+ * —— 与 `INBOUND_IDENTITY_HEADERS` 面临完全一样的问题（见那个文件的文件头）。
+ * `tests/test_module14_trust_boundary.py` 会读后端 `core/kb_acl.py` 的源码比对，
+ * 少一档就红。往两边加档时**两边都要改**。
+ *
+ * `unknown` 不是一档权限，而是「值不认识」的形状：后端给了
+ * `normalize()` 不认识的东西时落到这里，而它的行为是**当只读**。
+ * 单独设一个值而不是收窄成 `never`，是为了让「不认识」在类型上可见 ——
+ * `switch` 里漏掉它会编译报错（`noFallthroughCasesInSwitch` 之外再加一条断言）。
+ */
+export const KB_ROLES = ['none', 'ops', 'qa', 'dev', 'superadmin', 'unknown'] as const;
+export type KbRole = (typeof KB_ROLES)[number];
+
+/**
+ * 把后端给的 `kb_role` 规整成 `KbRole`。
+ *
+ * **不认识的一律降级成 `unknown`（其行为 = 只读）**，与后端 `kb_acl.normalize()`
+ * 的方向一致。两端都fail-closed 是刻意的：**任何一端的解析出意外值，
+ * 结果都是「谁也进不去」而不是「谁都能进」**。
+ */
+export function normalizeKbRole(raw: unknown): KbRole {
+  const v = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return (KB_ROLES as readonly string[]).includes(v) ? (v as KbRole) : 'unknown';
+}
+
+/**
  * 判定**通过**。
  *
  * ⚠️ 刻意做成「通过」与「不通过」两个不同形状（而不是一个 `ok: boolean` + 全字段）——
@@ -60,6 +88,15 @@ export interface InternalAuthSuccess {
   username: string;
   uid: number;
   role: string;
+  /**
+   * 知识库写权限（P2-14b）。**五档之一**，由后端归一化后给出。
+   *
+   * ⚠️ 类型是**字面联合**而不是 `string`：它会一路进 JWT 并被
+   * `decideKbWritePath()` 用来做放行判断，写成 `string` 的话
+   * 任何拼错的档位都编得过 —— 而那等于「网关误放行」。
+   * 取不到时后端给的是 `'none'`（fail-closed）。
+   */
+  kbRole: KbRole;
   displayName: string;
   employeeNo: string | null;
   tokenVersion: number;
@@ -276,6 +313,7 @@ export class InternalAuthClient {
       username,
       uid,
       role: String(user.role ?? 'user'),
+      kbRole: normalizeKbRole(user.kb_role),
       displayName: String(user.display_name ?? username),
       employeeNo: typeof user.employee_no === 'string' ? user.employee_no : null,
       tokenVersion: typeof user.token_version === 'number' ? user.token_version : 0,

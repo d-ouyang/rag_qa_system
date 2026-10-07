@@ -54,6 +54,7 @@ from datetime import datetime
 from typing import Any
 
 from core import audit_repo
+from core import kb_acl
 from core import password_policy as policy
 from core import user_repo as repo
 from core.db import now_db
@@ -345,6 +346,12 @@ def _public_user(record: UserRecord) -> dict[str, Any]:
         "username": record.username,
         "display_name": record.display_name or record.username,
         "role": record.role,
+        # P2-14b：kb_role 要进 JWT 才能让网关做路径粗筛（设计规格 §11.3 D15）。
+        # ⚠️ 归一化成合法值再给（kb_acl.normalize）—— 这一份数据会变成
+        # 「网关据此决定放不放行」，所以**绝不能让一个非法值变成放行**。
+        # 库里若有脏值（手工 SQL 灌进来的 'Ops '），归一化后是合法的 ops，
+        # 而 `normalize` 对**不认识**的值一律降级 none（fail-closed）。
+        "kb_role": kb_acl.normalize(record.kb_role),
         "employee_no": record.employee_no,
         "department_id": record.department_id,
         "position_id": record.position_id,
