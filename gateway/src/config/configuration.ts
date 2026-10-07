@@ -36,6 +36,14 @@ export interface GatewayConfig {
   throttleLimit: number;
   proxyTimeoutMs: number;
   isProduction: boolean;
+  /**
+   * P2-11c：登录判定的真相源是 MySQL，网关**不再自己判密码**。
+   * 这三个是网关调后端内部接口要用的东西。
+   */
+  internalAuthPath: string;
+  internalToken: string;
+  /** 内部接口的判定结果拿不到时，网关是否回落到 `.env` 的 GATEWAY_USERS。 */
+  internalAuthFallbackAllowed: boolean;
 }
 
 function list(value: string | undefined, fallback: string[]): string[] {
@@ -129,7 +137,51 @@ export function loadGatewayConfig(): GatewayConfig {
     throttleLimit: Number(process.env.GATEWAY_THROTTLE_LIMIT ?? 120),
     proxyTimeoutMs: Number(process.env.GATEWAY_PROXY_TIMEOUT_MS ?? 180_000),
     isProduction,
+    // ---- P2-11c：登录判定走后端内部接口 ----
+    // 判定规则（防枚举文案 / 耗时对齐 / 到期边界 / 锁定 / 强制改密）在
+    // Python 侧只有一份，带 141 条断言。让网关再写一份 TypeScript 等于
+    // 把这三条各复制到一个没有测试守着的地方，半年后必然静默漂移。
+    // 代价是登录多一次内网 HTTP（实测 < 5ms），认下来。
+    internalAuthPath: process.env.GATEWAY_INTERNAL_AUTH_PATH ?? '/api/v1/internal/auth/login',
+    // 与后端的 INTERNAL_SHARED_SECRET 必须是同一个值。
+    // 缺失时**不做兜底默认值**（见 loadInternalToken 的注释）。
+    internalToken: loadInternalToken(isProduction),
+    // 内部接口不可用时，是否允许回落到 .env 的 GATEWAY_USERS。
+    //
+    // ⚠️ 默认 false，生产也建议 false。回落看着「提高可用性」，实际是开了一条
+    // 绕过 MySQL 的登录通道 —— 万一内部接口配错，回落会让**所有**账号都改用
+    // .env 里那份陈旧数据判定，而且没有任何日志提示「我正走在回落路径上」。
+    // 真正需要它的是 D9 的 break-glass 超管，那一条走 `users` 表而不是这里。
+    internalAuthFallbackAllowed: process.env.GATEWAY_INTERNAL_FALLBACK === 'true',
   };
+}
+
+/**
+ * 读内部共享密钥。
+ *
+ * 生产缺失直接抛错（fail-closed）：网关拿不到它就**没法做登录判定**，
+ * 而「用空密钥去调内部接口」只会被后端 401 —— 症状是「登录全挂」，
+ * 原因却是「这里少配了一个环境变量」，排查要跨两个进程。
+ * 启动就失败能让这件事在第一眼解决。
+ *
+ * 开发环境允许为空：此时网关仍然启动，但 `internalAuthFallbackAllowed`
+ * 默认 false，于是登录会明确报「认证服务不可用」而不是默默用陈旧数据。
+ */
+function loadInternalToken(isProduction: boolean): string {
+  const token = process.env.INTERNAL_SHARED_SECRET ?? '';
+  if (!token && isProduction) {
+    throw new Error(
+      '生产环境必须配置 INTERNAL_SHARED_SECRET（与后端同一个值）。' +
+        '生成：python -c "import secrets; print(secrets.token_urlsafe(48))"',
+    );
+  }
+  if (!token) {
+    logger.warn(
+      '未配置 INTERNAL_SHARED_SECRET：登录判定将不可用（这是开发环境的预期行为，' +
+        '内部接口需要它）。如需回落请显式设 GATEWAY_INTERNAL_FALLBACK=true。',
+    );
+  }
+  return token;
 }
 
 export const gatewayConfig = registerAs('gateway', loadGatewayConfig);

@@ -167,6 +167,28 @@ class Settings(BaseSettings):
     # dev 模式的回落登录名（应与 `.env` 里 GATEWAY_USERS 的账号一致）
     IDENTITY_DEV_USERNAME : str = "admin"
 
+    # ---------- 内部接口共享密钥（P2-11c）----------
+    # `/api/v1/internal/*` 下是「替网关做登录判定」的接口：它能验证密码、
+    # 能改 failed_login_count、能写 last_login_at、能落审计。拿到它 ≈ 半个登录系统。
+    #
+    # 为什么不用「内网可达就行」：容器网络里同网段**任意服务**都能连到 8000，
+    # 将来多起一个容器（监控、日志、二次开发）就是一条绕过网关的路径。
+    # 密钥是第二道防线 —— 第一道是拓扑（compose 里 backend 不映射端口）。
+    #
+    # ⚠️ 缺失的处理与网关那侧**刻意不同**：网关是「生产缺 JWT 密钥直接启动失败」，
+    # 这里却是「运行期返回 503 拒绝一切请求」（见 api/routes/internal.py）。
+    #
+    # 理由：网关那个决定是对的，但搬过来会连累两个场景 ——
+    #   ① `make test` 与 module1 的配置断言（要不起一个 FastAPI 进程就要有密钥）；
+    #   ② `make api` 裸跑（本机开发，没人想先配一个 48 字节随机串）。
+    # 而「拒绝一切请求」已经拿到了与「启动失败」**等价的安全结果**：
+    # 配错密钥的表现是登录全挂（立刻发现），不是「悄悄放行」。
+    # 真要更早发现，`docker-compose` 里给 backend 显式注入该变量即可
+    # （compose 的 `environment` 缺项会在容器启动时一眼看到）。
+    #
+    # 生成：python -c "import secrets; print(secrets.token_urlsafe(48))"
+    INTERNAL_SHARED_SECRET : str = ""
+
     # ---------- 密码策略（P2-11b，账号体系）----------
     # 这一组是「判定规则」的唯一出处，core/password_policy.py 只从这里取值，
     # 任何地方都不许再写死 12 / 90 / 5 / 15 这几个数字 ——

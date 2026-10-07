@@ -343,6 +343,24 @@ def create_user(
     if not password_hash:
         raise ValueError("password_hash 不能为空")
 
+    # ⚠️ password_changed_at 缺省**补成 now**，而不是接受 NULL（P2-11c 踩出来的）。
+    #
+    # 11b 定了「`password_changed_at` 为 NULL 时按已过期处理」（fail-closed）——
+    # 那是对「迁移前的老行」与「11a 遗留的空行」的正确处置。
+    # 但 create_user 传进来一个哈希、**不传时间**时，语义上显然是「这个人刚建、
+    # 密码刚定」，落成 NULL 等于建出一个**一登录就报「密码已过期」**的账号。
+    #
+    # 现状：两条真实路径（admin_service 建号、seed_users 种子）都显式传了时间，
+    # 所以没出过事 —— 是本模块的测试写漏了才发现。留着的风险是：将来第三个
+    # 调用方（数据迁移？批量导入？）忘了传，就是一个静默的「所有人都登不进去」。
+    # 兜底放在这一层，是因为它是唯一能让「漏传」不可能出错的地方。
+    #
+    # 真要表达「这个密码从一开始就没有有效日期」（比如导入一个只知哈希、
+    # 不知何时设的外部账号），仍然可以显式传 password_changed_at=None 吗？
+    # **不行** —— 分不清「显式要 NULL」与「忘了传」。所以这里把两种都补成 now，
+    # 要造过期账号请用 update_password() 传一个过去的时间，那才是明确的表达。
+    password_changed_at = password_changed_at or now_db()
+
     now = now_db()
     values = {
         "username": username.strip(),
@@ -617,6 +635,36 @@ def set_must_change_password(
             updated_by=updated_by,
             update_time=now_db(),
         )
+    )
+    with session_scope() as session:
+        return session.execute(stmt).rowcount > 0
+
+
+def update_password_hash_only(
+    user_id: int,
+    password_hash: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """
+    **只**替换 `password_hash` 一列 —— 登录时的 cost 升级专用（P2-11c）。
+
+    为什么不能走 `update_password()`：那个函数是「换密码」语义，会连带
+    `token_version + 1`（改密后其他设备全部失效）、`password_changed_at = now`
+    （给密码续了 90 天）、清强制改密标志。把「只是把 cost 补上去」做成
+    一次换密码，等于**用户每次登录都被踢下线、每次登录都续一次有效期** ——
+    90 天到期这个策略就永远不会触发了。
+
+    所以这里刻意只动一列。`password_changed_at` 不动是有意的：改的是
+    哈希的**表示形式**（cost 参数），不是密码本身。
+    """
+    if not password_hash:
+        raise ValueError("password_hash 不能为空")
+    stamp = now or now_db()
+    stmt = (
+        update(user_table)
+        .where(user_table.c.id == user_id)
+        .values(password_hash=password_hash, update_time=stamp)
     )
     with session_scope() as session:
         return session.execute(stmt).rowcount > 0

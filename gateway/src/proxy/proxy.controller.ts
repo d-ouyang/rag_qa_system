@@ -106,10 +106,29 @@ export class ProxyController {
             //    后端因此不需要自己解析 JWT：它只要信任「这个头是网关加的」。
             //    ⚠️ 这意味着后端**必须只在内网可达**（compose 里不暴露 8000 端口），
             //    否则绕过网关直接调用就能伪造 X-User-Id。
+            //
+            // ⚠️⚠️ **这里只做了「注入」，没有做「剥离」—— 而剥离才是关键那一半。**
+            // 现在入站的 `x-user-id` 若被客户端带上，`if (incoming.user)` 为真时
+            // 会被覆盖（运气好），但**白名单路径**（`@Public()` 的两个健康检查）
+            // 上 `incoming.user` 是 undefined，注入整段被跳过 → 客户端自带的
+            // `X-User-Id: 999` / `X-Role: admin` **原样转发到后端**。
+            // 已用同版本代理库实测过（复现脚本 `gateway/scripts/probe-header-strip.cjs`）。
+            // 修法是**无条件剥离**（12b 的①）：先把所有身份头 delete 掉，
+            // 再按需注入 —— 本轮留给 12b，因为它是独立一格、可单独验收。
             if (incoming.user) {
+              // P2-11c：`X-User-Id` 从「登录名」变成「整数 id」。
+              // 后端 core/identity.py 两条路都认（数字走 get、数字串也回落到
+              // get_by_username），所以这不是一个破坏性变更。
               proxyReq.setHeader('X-User-Id', incoming.user.userId);
               // 用户名可能含中文，HTTP 头只允许 ASCII，编码后再传（下游自行 decodeURIComponent）
               proxyReq.setHeader('X-Username', encodeURIComponent(incoming.user.username));
+              // ↓ 11c 新增的三个头。**role** 让后端不必查库就知道权限（12b ② 用），
+              //   **token_version** 让后端能判断「这个 token 是不是改密前的」。
+              //   缺了 ver，改密后旧 token 在后端眼里仍然有效 —— 那是漏掉就
+              //   不会报错的失效，所以必须在这里给。
+              proxyReq.setHeader('X-User-Role', incoming.user.role || 'user');
+              proxyReq.setHeader('X-Token-Version', String(incoming.user.tokenVersion ?? 0));
+              proxyReq.setHeader('X-Identity-Source', incoming.user.source || 'legacy');
             }
             if (incoming.requestId) proxyReq.setHeader('X-Request-Id', incoming.requestId);
 

@@ -93,13 +93,14 @@
 | **v2.0.0-p1.6e** | 2026-10-06 | **修「气泡第一行是空行」**：模型偶尔以 `\n\n` 开头，链路里没有任何一处裁它 —— 前端气泡是 `white-space: pre-wrap` 纯文本容器，前导换行渲染成空首行；首帧整包是 `\n\n` 时更是一个空气泡。两层取证（后端打桩 LLM 实测首帧与落库正文都带脏前缀；渲染层用真实 CSS 数行盒 1 → 3）后修：新增 `_strip_leading_blank()`，让**流式增量 / 缓存回放 / 同步返回 / 落库正文**四个出口口径一致；整包空白不发帧（前端继续显示"正在思考"，不出现空气泡）。module5 新增第 5 组 8 项（55/0），**反向验证**还原修复后 7 条转红。历史脏数据未清（给出 SQL，交人确认后执行） | `iterations/v2.0.0-p1.6e-answer-leading-blank.md` |
 | **v2.0.0-p2.11d** | 2026-10-07 | **模拟员工种子（P2-11d）**：新增 `scripts/seed_users.py`（`make seed-users`）—— 3 部门 / 6 职位 / 10 员工（含 1 名已离职，留给管理端做「离职≠删行」的样本），每人一个**随机**临时密码 + `must_change_password=1` + 一条改密历史（所以首次改密不能用同一个）。**默认干跑**（沿用 reindex 的规矩：会写库的命令不该在敲错时直接生效）。**重跑只同步资料，绝不重置密码、绝不改 `status`** —— 员工自己改过的密码不该被脚本打回，管理员停用的员工不该被悄悄恢复（已实测）。凭据**只显示一次**且脚本走 print 不走 logging，实测 4MB 的 app.log 里搜三个临时密码命中 **0** 次；`--credentials-file` 会先判 git 是否跟踪，被跟踪则拒写。⚠️ **修正了已 tag 的迁移 0003**：加一步 `UPDATE user SET employee_no=CONCAT('LEGACY-',id) WHERE employee_no=''`。起因是 11a 留下的「重放需要空表」限制—— 种子数据把 10 个员工灌进去后，往返验收立刻报 `1062 Duplicate entry ''`。**没有绕开，而是把迁移改对**；代价（改了已tag 的迁移、已跑旧版的库需手工补）在迭代文档 §3.1 写明。连带把验收脚本改成**无损往返**（快照/还原工号 + 三张新表数据，否则 downgrade 会 DROP 掉它们，员工的 department_id 变悬空引用且不报错）。module11 141/0、验收 34/0（均连跑两遍），存量 35 文档/90 切片零损失 | `iterations/v2.0.0-p2.11d-seed-users.md` |
 | **v2.0.0-p2.11b** | 2026-10-06 | **密码策略（P2-11b）**：新增 `core/password_policy.py` —— **判定规则的唯一出处，且刻意不做任何数据库查询**（要判重就把哈希列表取出来传进去，于是边界与文案都能不起库地钉死）。规则：bcrypt cost 12、有效期 90 天（判据 `now - changed_at > 天数`，**边界正好到期仍算有效**）、最近 5 条不可复用、连错 5 次锁 15 分钟、临时密码一次性生成。三个容易被做错的地方刻意做对了：① **「账号不存在 / 密码错 / 已锁定」对外文案逐字相同**（防用户名枚举），但内部 code 仍区分给日志用；② 四条失败路径都跑一次真实 bcrypt 比对把**耗时**也对齐（实测比值 1.00~1.11，否则响应时间就是枚举器）；③ `password_changed_at` 为 NULL 时**按已过期处理**（fail-closed）。新增 `user_password_history` 表（迁移 0004）与 8 项可配策略。module11 由 73 项扩到 **141 项**（**连跑 20 遍 0 失败**），`compare_metadata` diff=0。**反向验证**：到期判据 `>` 改 `>=` → 边界断言红；删掉耗时对齐 → 耗时比红到 5.7 万倍。⚠️ 顺带抓到一个 15 遍漏 13 遍的 bug：临时密码的强制位只过滤了数字，小写位能抽到 `l`、大写位能抽到 `I`/`O` —— 已改为「所有抽取都从过滤后的池子取」+ 生产代码里加兜底自检 + 断言改为验「候选池」这个不变量而非抽样 | `iterations/v2.0.0-p2.11b-password-policy.md` |
+| **v2.0.0-p2.11c** | 2026-10-08 | **账号真相源从 `.env` 迁到 MySQL（P2-11c，P2-11 整格完成）**：种子员工第一次能真的登录 RAG 主应用。⚠️ **偏离设计规格 §8 D11 的字面表述** —— 规格写「网关直连 MySQL」，实际改为**后端出 `/api/v1/internal/auth/{login,logout}`、网关调它**：11b 立的铁律是 `core/password_policy.py` 为判定唯一出处（141 条断言守着：防枚举文案逐字相同、四条失败路径耗时等长、到期判据是 `>` 不是 `>=`），网关是 TypeScript，重写一遍就是两份没测试的副本。**落地前实测 `bcryptjs` 确能验 passlib 哈希**（205ms vs 200ms 比值 1.02）—— 技术上可行，但可行不等于该做。代价：登录多一次内网 HTTP（纯 HTTP 开销实测 0.7~1.1ms；整个登录判定 172~179ms 是 bcrypt cost 12 的成本，判定放在 Python 还是 TS 都一样）+ 多一个必须保护好的内部接口。新增 `core/auth_service.py`（编排登录：判定委托 `policy.verify()`，自己只负责副作用 —— 失败计数 / 锁定 / 解锁 / `last_login_at` / rehash）与 `api/routes/internal.py`（`X-Internal-Token` 用 `hmac.compare_digest` 防时序攻击、`include_in_schema=False` 不进 `/docs`、缺密钥 **503 fail-closed**）。⚠️ **不用网关那套「生产缺 JWT 密钥直接启动失败」** —— 那会连累 `make test` 与 `make api` 裸跑；**也不解决「8000 被映射出去」**，那靠 compose 里 backend 不映射端口（拓扑保证，不靠代码）。**「判定没跑成」与「判定不通过」必须可区分**：`InternalAuthClient.verify()` 返回 `InternalAuthResult | null`，null = 后端不可达/缺密钥/5xx/解析失败（**不是密码错**）；判定不通过也返 HTTP 200，业务成败看 `body.ok`。**对外 code 与后端内部 code 分开**（防枚举第二道）：`not_found`/`wrong_password`/`locked` → 同一个 `INVALID_CREDENTIALS`，只有 `expired` 与 `inactive` 单独文案。⚠️ **回落默认关闭**（`GATEWAY_INTERNAL_FALLBACK=false`，含生产）—— 回落看着「提高可用性」，实际是开了一条绕过 MySQL 的登录通道。⚠️ **Node 全局 `fetch` 会读 `HTTP_PROXY`/`http_proxy` 且不尊重 `NO_PROXY`** → 本机代理下 `fetch failed`/`ECONNREFUSED`；实测（Node 22.22）`undici` 既不能 `require` 也不能 `import 'node:undici'`、`setGlobalDispatcher` 是 `undefined`，**唯一稳定解是 `node:http`**（完全不读代理环境变量）。新增 `gateway/src/auth/internal-auth.client.ts`（8s 超时 + 1MB 响应上限 + 可收窄联合类型 `InternalAuthSuccess \| InternalAuthFailure`，失败态**在类型上就没有** `uid`/`role`）。JWT 载荷改带 `uid`/`role`/`ver`/`src`，⚠️ **`sub` 语义变了**（11c 前是登录名，之后是 `user.id` 的十进制串；旧 token 仍能过校验走 `uid=null` 兼容分支）。⚠️ **修掉三个「以为上线了其实没上线」**：① 升 bcrypt cost 不是换密码，却复用了 `update_password()` → 顺带 `token_version+1` 踢人 + `password_changed_at=now` 续期 90 天，新增 `update_password_hash_only()` 只动一列；② 「改密后旧 token 失效」此前只在管理端改密时生效、**员工自助改密不生效**（后端压根没比对），在 `core/identity.py` 补 `X-Token-Version` 比对（**头缺不拦**：dev 裸跑没这个头，11c 前的旧 token 有最长 12h 窗口，不该在升级瞬间被无收益地踢下线）；③ `create_user` 漏传 `password_changed_at` → 新号一登录就报 `expired`，加 `or now_db()` 兜底 + 断言守着（测试写错，但暴露了真实风险）。⚠️ **「IP 取 XFF 第一段」是路由层的职责**，不是服务层的 —— 第一版把断言下在 `svc.login` 上，越界了。**13d 预留的 `auth.login.success/failure/logout` 三个动作在这一版第一次真被用到**（含 `actor_user_id` 与客户端 IP）。新增 `tests/test_module13_login.py`（**71/0** 连跑两遍，含 2 条反向验证）；module11 141/0、module12_admin 75/0、module12_audit 64/0 全绿，`compare_metadata` diff=0，真链路 curl 四条路径（成功 / 密码错 / 不存在 / 离职）+ 浏览器侧边栏显示 `chen.jie`、提问发送成功、控制台 0 错误。测试库与手工验证数据均已还原（种子 10 人、失败计数全 0、密码还原为随机值、12 条手工登录审计已清） | `iterations/v2.0.0-p2.11c-gateway-mysql-auth.md` |
 | **v2.0.0-p2.13d** | 2026-10-07 | **审计日志（P2-13d）**：新增 `audit_log` 表（迁移 `0005`）与 `core/audit_repo.py`（`record`/`list_logs`/`count_logs`/`describe`），**只追加、不可改不可删** —— 三道结构性约束：仓储层**没有** update/delete 入口、**表里没有 `update_time` 也没有 `deleted_at`**（「顺手改一下 / 先软删」在结构上无处落笔）、`assert_detail_is_safe()` 深度遍历拒绝敏感键（password/token/secret…）与 bcrypt 特征值（`$2a$`/`$2b$`/`$2y$`）—— 后一条是因为键名拦得住 `{password:x}` 拦不住 `{note:"密码是 $2b$12$..."}`。**「不可删」的边界写在明处**：应用层之外无强制，任何有 DB 写权限的人都能 `DROP TABLE`；要真不可篡改得另起独立审计库 / WORM 归档，代价见迭代文档 §3.5，本轮明确不做。12 类写操作全部落审计（`user.create`/`profile.update`/`status.change`/`role.change`/`password.reset`/`password.must_change` + 部门职位各三类），`detail` 只记「从什么变成什么」且**无变化不落审计**（一条明细为空的记录会让人以为真改过，几天后没人信这条日志，审计就整体失效）。`Actor` 加 `client_ip`，优先取 `X-Forwarded-For` 第一段（后端在网关后面，`client.host` 全是 127.0.0.1）—— 前提「8000 不对外可达」写在代码注释里而非文档里，因为改代码的人不一定读文档。⚠️ **审计失败 fail-open 不阻断业务**：业务与审计不同事务，改成「审计失败则回滚」等于让只读的历史表变成业务单点（审计表满了就没人能改员工资料）；代价是「操作成功但审计没落库」当场看不出来，只在日志里有一行 error。⚠️ **登录类审计（`auth.login.*`）动作名已预留但没埋点** —— 登录真相源还在 `.env` 的 `GATEWAY_USERS`、网关不查 MySQL，没有 `user_id` 可写，等 11c。前端新增只读「审计日志」页。⚠️ **浏览器交叉验证抓到跨端契约 bug 并加断言钉住**：① 后端统一写 `{"from","to"}`，前端按 `detail.status`/`detail.role` 读 → 明细列整列 `—`（后端全绿、接口 200、页面上像「这条日志没明细」）—— 修法不只是改前端，而是加**契约断言**把 `action → detail 必需键` 钉成表、并**正扫 `AuditView.vue` 源码**确认前端引用的动作全在服务端白名单内；② 13b 的**静默数据污染**：列表接口脱敏 → 编辑弹窗拿 `138****0001` 当当前值 → 管理员不改手机号直接保存把脱敏串写回库（合法字符串，任何校验都拦不住），修法是详情端点给原值（`raw_phone=True`）+ 前端 `openEdit` 先拉详情，列表仍脱敏。测试组顺序也修了一处：手机号回归组原本排在清理组**之后**，而它要读的那行已被清理删掉。新增 `tests/test_module12_audit.py`（**64/0** 连跑两遍，11 组判据偏不变量，含 2 条反向验证：拆 `_audit` → 零留痕、拆 `_FORBIDDEN_KEYS` → 明文真能写进去）。module12 75/0、module11 141/0、`make test` 全绿、`compare_metadata` diff=0、构建通过、浏览器 8 行 + 动作筛选 + 关键词筛选（控制台 0 错误）、XFF 第一段取 IP 实测 `198.51.100.7` | `iterations/v2.0.0-p2.13d-audit-log.md` |
 | **v2.0.0-p2.13a** | 2026-10-07 | **管理端脚手架（P2-13a）**：新增独立前端应用 `admin-console/`（Vue3 + TS + Vite，端口 5174 + `strictPort`，`make admin` / `make admin-build`），**不新增后端进程** —— 复用现有 FastAPI 的 `/api/v1/admin/*`（4C4G 预算，PLAN §11.1）。后端新增 `core/identity.py`（`Actor` + `resolve_actor` + `current_actor` / `require_staff` / `require_admin` 三个依赖，dev / gateway 两种信任模式）+ `api/routes/admin.py`（`/me` 与 `/options`），新增配置 `IDENTITY_MODE` / `IDENTITY_DEV_USERNAME`。**它是 12b 后端那一半的提前借用**：管理端每个动作都要知道操作者，否则「hr 不能重置密码」这类规矩一条都落不下去，而缺的就是那种**不报错**的权限漏洞。新增 `tests/test_module12_admin.py`（31/0，连跑两遍），含**反向验证**（把 `require_staff` 换成「谁都放行」→ 普通员工那两条 403 必须转 200）。⚠️ **顺带修掉第四处迁移往返数据损失**：`acceptance_p2_11a.py` 的 downgrade 会把 0003 新增的**列连同数据** DROP 掉，upgrade 回来只有默认值 —— 实测发现种子员工被冲成「人人 role=user / status=active」（管理员变普通员工、离职的人复活），而旧断言只盯着「列在不在 / 行数变没变」，一条都没红。改为往返前后**逐列比对 19 个业务列**的快照。⚠️ 存量数据的损害不可逆，本轮用 `--apply --reset` **重建种子**修复（种子数据，无外部引用） | `iterations/v2.0.0-p2.13a-admin-console.md` |
 | **v2.0.0-p2.11a** | 2026-10-06 | **组织与账号表（P2-11a）**：`user` 从 6 列扩到 23 列（工号/邮箱/手机/性别/部门/职位/角色/状态 + 密码策略三项 + 吊销与审计六项，新增 4 个索引与唯一键），**下线 `is_active` 布尔列**（表达不了三态且无人读，权威字段改为 `status`）；新增 `department`（自关联树）与 `position`（职级挂在职位上）两张表；新增 `core/user_repo.py`（只做存储原语，判定规则留给 11b）；迁移 `0003` 可 up/down。module11 **73/0**、验收 **24/0**（均连跑两遍），`compare_metadata` diff=0，存量 35 文档/90 切片/1 会话/12 消息零损失。**反向验证**两条：摘掉 `set_status` 取值校验 → 3 条转红；`schema.py` 列注释改错一字符 → `modify_comment` 精确报错。⚠️ 本轮结束时 `user` 表**零行**、登录仍走 `.env` —— 别把「用户表建好了」理解成「多用户能用」 | `iterations/v2.0.0-p2.11a-user-org-schema.md` |
 
 | **v2.0.0-p2.13bc** | 2026-10-07 | **员工 CRUD + 密码管理（P2-13b + 13c，合并交付——两个任务物理上拆不开，理由见迭代文档 §3.1）**：新增 `core/admin_service.py`（业务编排层，**路由只收参、写操作全部收口在服务层**——13d 审计只需在这一层加一行）+ `api/routes/admin.py` 由 2 条扩到 13 条路由。**13b**：员工 CRUD（新建签发一次性临时密码；停用/复职/离职是状态不是删行；改角色、防「最后一个管理员」自锁；唯一键冲突按键名翻成人话「登录名 xxx 已被使用」）+ 部门/职位维护（防环双层：后端拒绝上级=自己或子孙、前端下拉直接不渲染）。**13c**：重置密码（明文只出现一次，无「指定密码」接口——管理员不该知道员工密码）、强制改密开关（**新增 `repo.set_must_change_password()` 只改一列**——第一版复用 `update_password` 被断言抓到「给旧密码续了 90 天 + 踢人下线」）、到期看板五桶**互斥**（锁定→待改密→已过期→即将到期→长期未登录，前端不重算，测试用 SQL 逐桶对账；只统计在职）。前端补齐三页：员工（筛选+防抖+临时密码弹窗）/ 部门与职位 / 密码看板（卡片即筛选器）。⚠️ **浏览器验收抓到 13a 两个登录闭环 bug 并修掉**：① 登录成功不跳转（`LoginView` 没写 `router.replace`，守卫同步补 `?redirect=`）；② `auth.login()` 里 `fetchProfile()` 写在 `setSession()` 之前 → `/me` 裸请求 401 → 所有人都报「账号已停用或不存在」——两条 curl 各自都是通的，只有浏览器串起来才现形。`test_module12_admin.py` 由 31 扩到 **73/0**（连跑两遍 + 与 module11 故意并行复跑）；收尾断言从「全表=10 行」改为「种子名单逐个还在」（并行写者不再打翻它）。`make test` 纳入 module12。module11 141/0、构建通过、真链路 curl + 浏览器三页截图（控制台 0 错误）、user=10/document=35 零损失 | `iterations/v2.0.0-p2.13bc-employee-crud-and-passwords.md` |
 
-> 当前应用版本：`2.0.0-p2.13d`
+> 当前应用版本：`2.0.0-p2.11c`
 >
 > 上表是**工程对账**口径（谁在哪个文件里改了什么）。
 > 如果是要**向人展示「这个项目怎么一步步完善的」**，读 `docs/RELEASES.md`。
@@ -109,12 +110,20 @@
 >
 > | 条件 | module9 | 合计 |
 > |------|---------|------|
-> | 无 worker 在应答 | 160 通过 / 0 失败（第 10 组 SKIP） | 806 |
-> | 有 worker 在应答 | 166 通过 / 0 失败 | 812 |
+> | **2026-10-08 实测（`p2.11c` 收尾，无 worker 在应答）** | 167 通过 / 0 失败（第 10 组 SKIP） | **1214** |
+> | 有 worker 在应答 | 未实测（历史口径是比 SKIP 多 6 条） | 未实测 |
 >
-> 差额正好 6 项 = 第 10 组的 6 条断言。**看到 806 不要当成回归**，先确认 `make worker` 起着。
-> 两个数都是 0 失败，所以「全绿」这条结论不受影响。
-> （p0.4a 起基线从 719/725 抬到 806/812，差 87 项 = 新增的 module10，正好对得上。）
+> **1214 是实测数，不是加出来的** —— 一次 `make test` 全量，把每个模块的汇总行相加
+> （module2~13 + `test_qa_cache` 14 项；module1 是日志演示脚本无计数）。
+> **看到 1214 不要当成回归**，先确认 `make worker` 起着；两个口径都是 0 失败，「全绿」这条结论不受影响。
+> ⚠️ **有 worker 那一行本轮没测**（`p2.11c` 收尾时 worker 未起）—— 按项目铁律，
+> 没实测的数字不写具体值，所以只留「比 SKIP 多 6 条」这个来自旧记录（`p0.4c`）的定性描述。
+> ⚠️ 旧记录（806 / 812）是 `p0.4c` 时期、尚未加入 module11~13 的口径，**已被本表取代** ——
+> 留着旧数是因为它同时也是「基线从 719/725 抬到 806/812，差 87 项 = 新增的 module10」那段推理的依据。
+>
+> **各模块当前通过数（2026-10-08 实测）**：module2 118 / module3 102 / module4 85 / module5 55 /
+> module6 130 / module7 43 / module8 62 / module9 167 / module10 87 / module11 141 /
+> module12_admin 75 / module12_audit 64 / module13_login 71 / qa_cache 14。
 >
 > **p0.4c 本轮口径**：按用户指示**未跑 module9**，逐个跑 module2~8、10 合计
 > **666 通过 / 0 失败**（module2 118 / module3 100 / module4 85 / module5 44 /
@@ -136,11 +145,17 @@
 | P0 上线硬前提 | P0-1 业务数据落 MySQL ✅、P0-2 鉴权网关 ✅、P0-3 异步解析 ✅、P0-4 向量元数据对齐 ✅（`p0.4a` 后端 + `p0.4b` 前端 + `p0.4c` 修错位） | ✅ **4 / 4** |
 | P1 容器化与部署 | P1-5 Docker 化 ✅（5a + 5b + `p1.5c`）、P1-6 远程模型 ✅（+`p1.6b/c/d/e` 不占格）、P1-7 TLS | 🔄 2 / 3 |
 | P2 生产化打磨 | P2-8 配置治理、P2-9 生产构建+备案号、P2-10 观测备份 | ⬜ 0 / 3 |
-| **P2 用户体系（第 3 版新增）** | P2-11 用户账号与密码策略 🔄（**11a ✅ · 11b ✅ · 11d ✅** / 11c 网关查库 ← 最后一格）、P2-12 多租户数据隔离、P2-13 管理端 🔄（**13a ✅ 脚手架 + 身份门槛** / 13b 员工 CRUD · 13c 密码管理 · 13d 审计未开始） | 🔄 **0 / 3** |
+| **P2 用户体系（第 3 版新增）** | P2-11 用户账号与密码策略 ✅（11a 表 · 11b 密码规则 · 11d 种子员工 · **11c 网关查库登录**）、P2-12 多租户数据隔离 🔄（**12b 身份与信任边界 ← 下一步**）、P2-13 管理端 ✅（13a 脚手架 + 13b 员工 CRUD · 13c 密码管理 · 13d 审计日志） | 🔄 **1 / 3** |
 | **P2 知识库写权限（第 4 版新增）** | P2-14 知识库写权限分发（上传 / 删除 / 重灌按 `project` 授权） | ⬜ **0 / 1** |
 
 > **2.0.0 大版本合计：P0-1 ✅、P0-2 ✅、P0-3 ✅（3a 后端 + 3b 前端）、P0-4 ✅（`p0.4a` 后端 + `p0.4b` 前端 + `p0.4c` 修复）、
-> P1-5 ✅（5a + 5b + 5c）、P1-6 ✅（模型走硅基流动），其余未开始。完成 7 / 14。**
+> P1-5 ✅（5a + 5b + 5c）、P1-6 ✅（模型走硅基流动）、**P2-11 ✅**（11a + 11b + 11c + 11d）、**P2-13 ✅**（13a + 13bc + 13d），
+> 其余未开始。完成 9 / 14。**
+
+> 🔴 **11c 落地后的红线提醒**：从 `2.0.0-p2.11c` 起系统第一次可以多人登录，
+> 而 **P2-12 会话隔离（12c）还没做** —— 此刻「谁能登进来」与「进来之后能看到谁的数据」之间存在窗口。
+> **12b（网关无条件剥离入站身份头 + 后端 fail-closed）是下一格**，12c 才是真正堵住数据不分人的那一格。
+> 在 12e 越权回归全绿之前，**账号只能本机自用**（计划书 §0.7.2）。
 >
 > 🎉 **P0 阶段已全部完成，阶段 tag `v2.0.0-p0.4` 已打**（与本次交付 tag `v2.0.0-p0.4b` 指向同一个 commit）。
 > 至此「上线硬前提」四项全部就位：数据落库、鉴权、异步解析、引用可反查可点击。

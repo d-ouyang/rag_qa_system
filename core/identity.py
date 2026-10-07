@@ -188,6 +188,7 @@ def resolve_actor(
     user_id_header: str | None = None,
     username_header: str | None = None,
     client_ip: str | None = None,
+    token_version_header: str | None = None,
 ) -> Actor:
     """
     把身份头解析成一个 Actor。**本模块唯一的解析出口**，路由层不许自己读头。
@@ -247,12 +248,49 @@ def resolve_actor(
         actor = replace(actor, client_ip=client_ip)
 
     # 已停用 / 已离职的人即使拿着还在有效期内的 token，也不许继续操作。
-    # 现在网关还不知道 status（11c 才查库），所以这道校验必须由后端兜。
+    # 网关（11c 起）登录时查过库，但**那是一次性的**：他登录之后被停用，
+    # 手里的 token 还没过期 —— 那一刻的「在职」判定早已与现实脱节。
     if actor.record is not None and actor.status != STATUS_ACTIVE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账号已停用或已离职，无法使用管理端",
         )
+
+    # ------------------------------------------------------------------ #
+    # token_version 比对（P2-11c）
+    # ------------------------------------------------------------------ #
+    # 上面那道 status 校验**只挡住了停用/离职**，没挡住「改密之后旧 token 仍有效」——
+    # 改密时人还是 active，而新旧两个 token 都指向同一个 active 的人。
+    # 所以要靠 token_version：改密 / 停用 / 改角色都会让它 +1（见 user_repo），
+    # 于是「这个 token 是改密之前签的」变成一个可判定的事实。
+    #
+    # ⚠️ 头缺了**不拦**（`None` 直接放过），这是刻意的：
+    #   · 开发时（dev 模式、裸跑 curl）没有这个头，拦住的话本地一切 401；
+    #   · 11c 之前签发的 token 里没有 `ver`（最长 12h 窗口），拦住的话
+    #     升级瞬间所有人被踢下线 —— 而那次踢下线毫无安全收益（那些 token
+    #     签发时确实是有效的）。
+    # 真要收紧（生产强制要求 ver 存在），那是「破坏性变更」级别的决定，
+    # 该在 12b 收口时做，不该偷偷夹在 11c 里。
+    if actor.record is not None and token_version_header is not None:
+        claimed = token_version_header.strip()
+        if claimed.isdigit():
+            if int(claimed) != int(actor.record.token_version):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="登录状态已失效（密码或权限已变更），请重新登录",
+                )
+            logger.warning(
+                "token_version 不匹配（token 已失效）| uid=%s 持有=%s 库里=%s",
+                actor.record.username, claimed, actor.record.token_version,
+            )
+        # 不是纯数字 = 网关发来的东西不对，**不拦但记一条**：
+        # 它要么是伪造（但 8000 不对外可达），要么是网关的 bug。
+        # 两种都不该让请求失败，但都要留下痕迹。
+        else:
+            logger.warning(
+                "X-Token-Version 不是数字，已忽略 | value=%r uid=%s",
+                token_version_header[:32], actor.record.username,
+            )
     return actor
 
 
@@ -284,12 +322,14 @@ def current_actor(
     request: Request,
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
     x_username: str | None = Header(default=None, alias="X-Username"),
+    x_token_version: str | None = Header(default=None, alias="X-Token-Version"),
 ) -> Actor:
     """取当前操作者。任何需要「知道是谁」的接口都依赖它。"""
     return resolve_actor(
         user_id_header=x_user_id,
         username_header=x_username,
         client_ip=_client_ip(request),
+        token_version_header=x_token_version,
     )
 
 
