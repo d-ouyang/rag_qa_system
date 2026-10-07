@@ -97,7 +97,25 @@ from langchain_core.documents import Document  # noqa: E402
 print(f"\nMySQL 已连通：{conn.get('detail')}")
 
 U = uuid.uuid4().hex[:8]
-UPLOAD = ROOT / "upload"
+# ⚠️ 这里必须读 `settings.UPLOAD_DIR`，不能写死 `ROOT / "upload"`。
+#
+# 2026-10-07 实测踩过：写死的话，`UPLOAD_DIR` 环境变量对它完全无效，于是
+# 「沙箱回归」里的测试文件**照样写进真实的upload/** —— 沙箱只隔离了 MySQL，
+# 文件这一路没隔离，而那一路正是知识库原文件所在的地方。
+# `settings.UPLOAD_DIR` 是 pydantic 字段，会吃环境变量，改它一处就够。
+UPLOAD = settings.UPLOAD_DIR
+
+
+# ⚠️ **storage_path 的相对前缀必须跟着 UPLOAD_DIR 走**（2026-10-07 沙箱回归实测）。
+#
+# 生产约定：`storage_path` 存的是**相对于项目根**的路径（见 alembic/0001 注释），
+# `core/parsing.py::resolve_storage_path()` 无条件按 `settings.BASE_DIR / path` 解析。
+# 于是测试里如果写死 `f"upload/{name}"`，那么 `UPLOAD_DIR` 环境变量对它**完全无效** ——
+# 沙箱回归的隔离在文件这一路直接失效（第一版就踩了：文件照样写进真 upload/）。
+#
+# 正确做法：前缀由 `settings.UPLOAD_DIR` 相对 BASE_DIR 算出来，
+# 而不是写死字面量。默认 `upload` 时它就是 `"upload"`，沙箱时是 `"upload_sandbox"`。
+UPLOAD_REL = str(settings.UPLOAD_DIR.resolve().relative_to(settings.BASE_DIR.resolve()))
 
 # 本模块的所有向量操作都在这张临时库里，绝不动 vector_db/
 _tmp = tempfile.TemporaryDirectory()
@@ -195,7 +213,7 @@ SRC.write_text(
     "差旅报销标准：市内交通实报实销，住宿按职级上限。" * 60,
     encoding="utf-8",
 )
-SRC_REL = f"upload/{SRC.name}"
+SRC_REL = f"{UPLOAD_REL}/{SRC.name}"
 
 doc_id = repo.create_pending(file_name=f"m10_{U}_引用.txt", storage_path=SRC_REL, file_size=SRC.stat().st_size)
 n_chunks = parse_and_index(doc_id, SRC_REL, file_name=SRC.name, store=vs)
@@ -468,7 +486,7 @@ try:
               f"{rr.status_code} {rr.text[:120]}")
 
     print("\n  -- 引用内容已随文档删除（404）--")
-    gone_rel = f"upload/m10_{U}_已删.txt"
+    gone_rel = f"{UPLOAD_REL}/m10_{U}_已删.txt"
     (UPLOAD / f"m10_{U}_已删.txt").write_text("这份文档马上会被删掉。" * 20, encoding="utf-8")
     gone_id = repo.create_pending(file_name=f"m10_{U}_已删.txt", storage_path=gone_rel, file_size=10)
     parse_and_index(gone_id, gone_rel, file_name=f"m10_{U}_已删.txt", store=vs)
@@ -484,9 +502,9 @@ try:
           rr.json().get("detail", "") if rr.status_code == 404 else "")
 
     print("\n  -- 文档还在但切片没了（404，文案不同）--")
-    alive_id = repo.create_pending(file_name=f"m10_{U}_重解析.txt", storage_path=f"upload/m10_{U}_重解析.txt", file_size=10)
+    alive_id = repo.create_pending(file_name=f"m10_{U}_重解析.txt", storage_path=f"{UPLOAD_REL}/m10_{U}_重解析.txt", file_size=10)
     (UPLOAD / f"m10_{U}_重解析.txt").write_text("这份文档的切片会被单独清掉。" * 20, encoding="utf-8")
-    parse_and_index(alive_id, f"upload/m10_{U}_重解析.txt", file_name=f"m10_{U}_重解析.txt", store=vs)
+    parse_and_index(alive_id, f"{UPLOAD_REL}/m10_{U}_重解析.txt", file_name=f"m10_{U}_重解析.txt", store=vs)
     vs.delete_by_doc_id(alive_id)          # 只清切片，记录留着 —— 模拟「正在重新解析」
     rr = client.get(f"/api/v1/chunks/{alive_id}:0")
     check("返回 404", rr.status_code == 404, f"{rr.status_code} {rr.text[:120]}")

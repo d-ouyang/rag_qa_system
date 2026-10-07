@@ -94,7 +94,13 @@ if _alive["ok"]:
     sys.exit(1)
 
 U = uuid.uuid4().hex[:8]
-UPLOAD = ROOT / "upload"
+# ⚠️ 这里必须读 `settings.UPLOAD_DIR`，不能写死 `ROOT / "upload"`。
+#
+# 2026-10-07 实测踩过：写死的话，`UPLOAD_DIR` 环境变量对它完全无效，于是
+# 「沙箱回归」里的测试文件**照样写进真实的upload/** —— 沙箱只隔离了 MySQL，
+# 文件这一路没隔离，而那一路正是知识库原文件所在的地方。
+# `settings.UPLOAD_DIR` 是 pydantic 字段，会吃环境变量，改它一处就够。
+UPLOAD = settings.UPLOAD_DIR
 VEC = get_vector_store_manager()
 REINDEX = ROOT / "scripts" / "reindex.py"
 

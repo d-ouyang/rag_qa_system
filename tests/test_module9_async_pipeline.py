@@ -97,13 +97,49 @@ from core.vector_store import VectorStoreManager  # noqa: E402
 print(f"\nMySQL 已连通：{conn.get('detail')}")
 
 U = uuid.uuid4().hex[:8]
-UPLOAD = ROOT / "upload"
+# ⚠️ 这里必须读 `settings.UPLOAD_DIR`，不能写死 `ROOT / "upload"`。
+#
+# 2026-10-07 实测踩过：写死的话，`UPLOAD_DIR` 环境变量对它完全无效，于是
+# 「沙箱回归」里的测试文件**照样写进真实的upload/** —— 沙箱只隔离了 MySQL，
+# 文件这一路没隔离，而那一路正是知识库原文件所在的地方。
+# `settings.UPLOAD_DIR` 是 pydantic 字段，会吃环境变量，改它一处就够。
+UPLOAD = settings.UPLOAD_DIR
+
+
+# ⚠️ **storage_path 的相对前缀必须跟着 UPLOAD_DIR 走**（2026-10-07 沙箱回归实测）。
+#
+# 生产约定：`storage_path` 存的是**相对于项目根**的路径（见 alembic/0001 注释），
+# `core/parsing.py::resolve_storage_path()` 无条件按 `settings.BASE_DIR / path` 解析。
+# 于是测试里如果写死 `f"upload/{name}"`，那么 `UPLOAD_DIR` 环境变量对它**完全无效** ——
+# 沙箱回归的隔离在文件这一路直接失效（第一版就踩了：文件照样写进真 upload/）。
+#
+# 正确做法：前缀由 `settings.UPLOAD_DIR` 相对 BASE_DIR 算出来，
+# 而不是写死字面量。默认 `upload` 时它就是 `"upload"`，沙箱时是 `"upload_sandbox"`。
+UPLOAD_REL = str(settings.UPLOAD_DIR.resolve().relative_to(settings.BASE_DIR.resolve()))
 
 
 def _cleanup_documents() -> None:
-    """清空 document 表。本模块的断言依赖「表是干净的」。"""
+    """
+    只删**本模块自己建的**文档行（`file_name` 带 `m9_<uuid>_` 前缀）。
+
+    ⚠️⚠️ **这里曾经写的是 `sa_delete(document_table)` —— 全表清空，且无 where。**
+    后果已经真实发生过（2026-10-07 → 10-08）：跑了一轮回归，本机 MySQL 里
+    35 篇真实知识库文档的登记行全部消失，而它们的 90 个切片还留在 Chroma 里。
+    症状极其难认：
+      · 前端「知识库管理」显示**文档数 0**（它读 `document` 表），
+        同一页的**片段总数 90**（它读 Chroma）—— 两个数字来自两个数据源，
+        于是看起来像 bug，不像数据丢了；
+      · 问答一律回「根据现有资料无法回答」（召回拿到的切片没有对应的 document 行）。
+    原文件在 `upload/` 里**一个没丢**，所以能靠 `scripts/reindex.py` 补登记救回来 ——
+    但那是一次手工操作，不该由一次 `make test` 触发。
+
+    与 `test_module10_chunk_refs.py` 的 `_cleanup_documents()` 同一口径：
+    按前缀限定，document / 文件 / 会话三处都只清自己造的东西。
+    """
     with session_scope() as s:
-        s.execute(sa_delete(document_table))
+        s.execute(
+            sa_delete(document_table).where(document_table.c.file_name.like(f"m9_{U}%"))
+        )
 
 
 def _cleanup_files() -> None:
@@ -113,6 +149,19 @@ def _cleanup_files() -> None:
 
 _cleanup_documents()
 
+# 🔴 **BASELINE 必须在模块起点取，且只取一次。**
+#
+# 取晚了会算错：上面那次 `_cleanup_documents()` 之后、本组上传之前，
+# 本模块还没造行，所以这里取到的就是「本机真实知识库的篇数」。
+# 之前把它写在第 8 组里取，那��本模块已经造过 1 条，于是基线偏大 1 ——
+# 表现是「列表 = 基线」这种断言差 1，而**真库其实一直是好的**
+#（35 篇没变）。这与踩坑 70/72 同形：小差最常见的原因是尺子。
+#
+# 它断言的东西：列表接口的总数 = 「本机真实文档数」+「本模块造的行数」。
+# 这样本模块既能验证自己造的行按预期增删，又不会因为真数据存在而失败。
+BASELINE = len(repo.list_all())
+print(f"基线：清理本模块残留后，库里有 {BASELINE} 篇文档（真知识库，与本模块无关）")
+
 
 # --------------------------------------------------------------------------- #
 # 第 1 组：状态机（仓储层）
@@ -120,7 +169,7 @@ _cleanup_documents()
 print("\n== 第 1 组：document 状态机 ==")
 
 NAME = f"m9_{U}_制度.txt"
-PATH_REL = f"upload/m9_{U}_doc.txt"
+PATH_REL = f"{UPLOAD_REL}/m9_{U}_doc.txt"
 
 doc_id = repo.create_pending(file_name=NAME, storage_path=PATH_REL, file_size=100)
 check("create_pending 返回正整数 doc_id", isinstance(doc_id, int) and doc_id > 0, str(doc_id))
@@ -182,7 +231,7 @@ check("重复 delete 返回 False", repo.delete(doc_id) is False)
 print("\n== 第 2 组：原子抢任务（16 线程抢同一条）==")
 
 _cleanup_documents()
-conc_id = repo.create_pending(file_name=f"m9_{U}_并发.txt", storage_path=f"upload/m9_{U}_conc.txt", file_size=1)
+conc_id = repo.create_pending(file_name=f"m9_{U}_并发.txt", storage_path=f"{UPLOAD_REL}/m9_{U}_conc.txt", file_size=1)
 
 N_THREADS = 16
 wins: list[int] = []
@@ -298,8 +347,8 @@ BAD = UPLOAD / f"m9_{U}_bad.docx"
 GOOD.write_text("差旅报销标准：市内交通实报实销，住宿按职级上限。" * 40, encoding="utf-8")
 BAD.write_bytes(b"definitely not a zip, so docx parsing must fail")
 
-good_rel = f"upload/{GOOD.name}"
-bad_rel = f"upload/{BAD.name}"
+good_rel = f"{UPLOAD_REL}/{GOOD.name}"
+bad_rel = f"{UPLOAD_REL}/{BAD.name}"
 
 check("相对路径解析到项目根", resolve_storage_path(good_rel) == ROOT / good_rel)
 check("绝对路径原样使用", resolve_storage_path(str(GOOD)) == GOOD)
@@ -377,7 +426,7 @@ check("损坏文件 chunk_count=0", recB.chunk_count == 0)
 # 「先不存在、后补上」——模拟「补传文件后点重试」
 LATE = UPLOAD / f"m9_{U}_late.txt"
 LATE.unlink(missing_ok=True)
-late_rel = f"upload/{LATE.name}"
+late_rel = f"{UPLOAD_REL}/{LATE.name}"
 dC = repo.create_pending(file_name=f"m9_{U}_晚到.txt", storage_path=late_rel, file_size=0)
 rC = run_parse_task(dC, store=vs)
 check("文件不存在 → ok=False", rC["ok"] is False, str(rC))
@@ -533,15 +582,22 @@ try:
     check("空批量 → 400 或 422", r.status_code in (400, 422), f"{r.status_code} {r.text[:120]}")
 
     print("\n  -- 列表（读 MySQL）--")
+    # ⚠️ 断言必须是**相对**的，不能断言绝对数量（基线在模块起点取，见上方 BASELINE 定义）。
+    # 本机 MySQL 里放着真实知识库，所以「表里总共只有 1 条」这种写法在有真数据时必然失败。
     r = client.get("/api/v1/documents/")
     check("列表 200", r.status_code == 200, str(r.status_code))
     lb = r.json()
-    check("total_documents=1", lb["total_documents"] == 1, str(lb["total_documents"]))
+    check("total_documents = 基线 + 1（本模块这一条）",
+          lb["total_documents"] == BASELINE + 1, f"{lb['total_documents']} vs基线 {BASELINE}+1")
     check("counts 四态齐全", all(k in lb["counts"] for k in repo.ALL_STATUSES), str(lb["counts"]))
     check("列表项带 status（前端要靠它轮询）", lb["documents"][0]["status"] == "pending")
     check("列表项带 attempt_count", "attempt_count" in lb["documents"][0], str(sorted(lb["documents"][0])))
     r = client.get("/api/v1/documents/?status=success")
-    check("按 status 过滤生效", r.json()["total_documents"] == 0, str(r.json()["total_documents"]))
+    # 同理：真知识库里全是 status=success，所以这里的期望是「基线里success 的条数」。
+    # 我们能确定的是**它不含本模块这条 pending**，于是总数不该比全量更少地等于 1。
+    _succ = r.json()["total_documents"]
+    check("按 status 过滤生效（success 不含本模块的 pending）",
+          _succ < lb["total_documents"], f"success={_succ}全量={lb['total_documents']}")
     r = client.get("/api/v1/documents/?status=乱填的")
     check("非法 status → 400（而不是静默返回全部）", r.status_code == 400, str(r.status_code))
 
@@ -579,7 +635,9 @@ try:
     check("生成新的 doc_id", newer_id != new_id, f"{newer_id} vs {new_id}")
     check("旧记录已被清掉", repo.get(new_id) is None)
     check("旧磁盘文件已删除", not resolve_storage_path(rec_up.storage_path).exists())
-    check("列表里仍只有一条（不会积累重复内容）", client.get("/api/v1/documents/").json()["total_documents"] == 1)
+    _after = client.get("/api/v1/documents/").json()["total_documents"]
+    check("列表里仍只有本模块这一条（同名替换不积累重复内容）",
+          _after == BASELINE + 1, f"{_after} vs 基线 {BASELINE}+1")
 
     print("\n  -- 删除（三件事）--")
     newer_rec = repo.get(newer_id)
@@ -590,7 +648,9 @@ try:
     check("file_removed=True", db.get("file_removed") is True, str(db))
     check("MySQL 记录已删", repo.get(newer_id) is None)
     check("磁盘文件已删", not resolve_storage_path(newer_rec.storage_path).exists())
-    check("列表已空", client.get("/api/v1/documents/").json()["total_documents"] == 0)
+    _left = client.get("/api/v1/documents/").json()["total_documents"]
+    check("本模块造的行已清干净（列表回到基线）",
+          _left == BASELINE, f"{_left} vs 基线 {BASELINE}")
     r = client.delete(f"/api/v1/documents/{newer_id}")
     check("重复删除幂等 → 200 且 record_removed=False",
           r.status_code == 200 and r.json()["record_removed"] is False, str(r.json()))
@@ -647,7 +707,7 @@ else:
     e2e_name = f"m9_{U}_e2e.txt"
     e2e_path = UPLOAD / e2e_name
     e2e_path.write_text("考勤制度：上班时间为九点到十八点，午休一小时。" * 40, encoding="utf-8")
-    e2e_rel = f"upload/{e2e_name}"
+    e2e_rel = f"{UPLOAD_REL}/{e2e_name}"
 
     e2e_id = repo.create_pending(file_name=e2e_name, storage_path=e2e_rel, file_size=e2e_path.stat().st_size)
     check("真投递到队列", queue_mod.enqueue_parse(e2e_id) is True)

@@ -19,7 +19,9 @@ GATEWAY_PORT ?= 3000
         stack-up stack-ps stack-logs stack-down stack-rebuild \
         db-upgrade db-current db-downgrade db-revision db-sql \
         worker accept accept-ui reindex reindex-apply accept-p04a accept-ui-p04b \
-        smoke-session accept-12b-reverse
+        smoke-session accept-12b-reverse accept-12c accept-12c-ui accept-12c-reverse \
+        kb-guard kb-guard-static kb-guard-count kb-restore test-sandbox dev-test-accounts \
+        dev-test-accounts-apply dev-test-accounts-reset
 
 help:
 	@echo "—— 一次性 ——"
@@ -85,6 +87,16 @@ help:
 	@echo "        wu.jing /DevAdmin2026!Aa（role=admin，登主应用 + **管理端 5174**）"
 	@echo "  ⚠️ admin/admin123 已失效（11c 起账号真相源在 MySQL，库里没有 admin 这一行）"
 	@echo "  ⚠️ 5174 只接受 role=admin/hr，普通员工登进去 403 是预期行为"
+	@echo "—— 知识库护栏（P2-12c 事故止损，**跑测试前先看这个**）——"
+	@echo "make kb-guard          三道检查：① 扫全仓「无 where 的删除」② document 表非空就拒绝"
+	@echo "                       ③ document.storage_path 指向的文件是否都在（抓原文件丢失）"
+	@echo "make kb-guard-static   只跑 ① 静态检查（不连库）"
+	@echo "make kb-guard-count    看真库「多少篇 / 多少个原文件」，跑完回归后跑它核对"
+	@echo "make kb-restore        误清之后补登记 + 重灌 + 清孤儿（需先停 worker/后端）"
+	@echo "make test-sandbox      在一次性库上跑回归，真数据不受影响"
+	@echo "make test              回归。⚠️ 真库有知识库时会被护栏拦下；"
+	@echo "                       强行跑用 KB_GUARD_ALLOW=1 make test"
+	@echo ""
 	@echo "  ⚠️ 手动流程全文见 docs/手动验收清单-v2.0.0.md §4.7"
 	@echo ""
 	@echo "—— 知识库重建（P0-4a）——"
@@ -174,7 +186,42 @@ releases:
 memory:
 	@$(PY) -c "import json;from core.memory_manager import get_memory_manager;print(json.dumps(get_memory_manager().memory_report(), ensure_ascii=False, indent=2))"
 
-test:
+# 回归测试（P0-1起）----------
+# ⚠️ **test 前面挂了一道知识库护栏**，这不是形式主义：
+#    2026-10-07跑了一轮 make test，tests/test_module9_async_pipeline.py 里的
+#    `sa_delete(document_table)`（**无 where 的全表删除**）把本机 35 篇真实
+#    知识库文档的登记行全部清掉，而它们的 90 个切片还留在 Chroma 里 ——
+#    于是前端出现「文档数 0 / 片段总数 90」这种自相矛盾的现象
+#    （两个数字来自两个数据源），问答则一律回「根据现有资料无法回答」。
+#    原文件在upload/ 里没丢，scripts/reindex.py 一次补回（实测 35/35），
+#    但**不该由一次 make test 触发**。
+#    护栏两道：① 静态扫全仓「无 where 的删除」 ② document 表非空就拒绝执行。
+#    要在真库上跑必须显式 KB_GUARD_ALLOW=1（会打印后果）。
+# 知识库护栏与沙箱（P2-12c 事故止损）----------
+kb-guard:
+	@$(PY) scripts/kb_guard.py
+
+kb-guard-static:
+	@$(PY) scripts/kb_guard.py --static-only
+
+# 只看真库当前有多少篇文档。**跑完回归后核对它没变**，
+# 是发现误清最快的办法（比等问答报错快得多）。
+kb-guard-count:
+	@$(PY) scripts/kb_guard.py --count-only
+
+# 误清之后的补救：补登记 upload/ 里的文件 → 重灌 → 清孤儿切片。
+# ⚠️ 要停掉 worker 与后端（脚本会自己拦）。
+kb-restore:
+	@echo "⚠️ 这会重灌整个知识库（需先停 worker 与后端）"
+	@read -p "  确认已停 worker/后端？输入 yes 继续: " a; [ "$$a" = "yes" ] || { echo "已取消"; exit 1; }
+	@$(PY) scripts/reindex.py --apply
+
+# 在一次性库上跑回归，真数据不受影响。⚠️ Chroma 未隔离
+#（collection 名不是环境变量），详见 scripts/test_sandbox.sh 头部说明。
+test-sandbox:
+	@bash scripts/test_sandbox.sh
+
+test: kb-guard
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module1_config.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module2_document_loader.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module3_vectorstore.py
