@@ -81,6 +81,13 @@ user_table = sa.Table(
     sa.Column("kb_role", sa.String(16), nullable=False, server_default="none",
               comment="知识库写权限(P2-14a)：none(只读,默认)/ops(可传可删)/qa·dev·superadmin(额外可重灌索引)；"
                       "与 role 正交 —— role 管能不能进管理端，kb_role 管能不能改知识库"),
+    # ⚠️ 注释必须与 alembic/versions/0007_user_token_quota.py 里的**逐字相同**
+    # （那里也写了同样一句提醒）—— `compare_metadata()` 的 diff 必须为 0，
+    # 而 `modify_comment` 正是它会报的一类差异。
+    sa.Column("token_quota_monthly", sa.BigInteger(), nullable=False, server_default="0",
+              comment="月度token 额度(P2-15)：0=不限（用全局默认 TOKEN_QUOTA_DEFAULT_MONTHLY）；"
+                      "计费口径=输入+输出，不含cache_read（服务商侧 prompt 缓存，单价不同，混入会算错钱）"),
+    sa.Index("idx_user_token_quota", "token_quota_monthly"),
     sa.Column("status", sa.String(16), nullable=False, server_default="active",
               comment="在职状态：active/disabled/resigned；只有 active 能登录，离职走 resigned 而非删行"),
     sa.Column("password_hash", sa.String(255), nullable=False, server_default="",
