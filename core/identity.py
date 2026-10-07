@@ -50,12 +50,12 @@ dev 模式存在的理由：① 阶段登录真相源还在 `.env`（11c 才迁�
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 from urllib.parse import unquote
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from config.settings import settings
 from core import password_policy as policy
@@ -88,6 +88,9 @@ class Actor:
     `id=None` 只有一种取值场景 —— break-glass 超管（`.env` 里的人不在库里）。
     它因此**落不进** `created_by` / `updated_by`（那两列填 NULL），
     这是刻意接受的信息损失：等 P2-13d 把它写进审计时，能留下的只有用户名。
+
+    `client_ip` 跟着身份一起走（P2-13d 起）：它是「这次请求」的属性而不是
+    「这个人」的属性，放进 Actor 是为了让审计不必在每个服务函数里多收一个参数。
     """
 
     id: int | None
@@ -97,6 +100,8 @@ class Actor:
     status: str
     source: str
     record: UserRecord | None = None
+    #: 本次请求的来源 IP。取不到时为 None（**不编造** 「0.0.0.0」这类占位）。
+    client_ip: str | None = None
 
     # ---------- 权限（只有三条，不多做）----------
     @property
@@ -182,6 +187,7 @@ def resolve_actor(
     *,
     user_id_header: str | None = None,
     username_header: str | None = None,
+    client_ip: str | None = None,
 ) -> Actor:
     """
     把身份头解析成一个 Actor。**本模块唯一的解析出口**，路由层不许自己读头。
@@ -234,6 +240,11 @@ def resolve_actor(
         )
 
     actor = _make_actor(record, claimed, source)
+    # ⚠️ 事后补一个字段而不是让 `_make_actor` 多收一个参数：Actor 是 frozen
+    # dataclass，用 dataclasses.replace 重建成一个，比给构造函数加参数更不容易
+    # 在调用点被漏掉（漏掉时 IP 为 None，审计里留空，而不会静默记成 127.0.0.1）。
+    if client_ip:
+        actor = replace(actor, client_ip=client_ip)
 
     # 已停用 / 已离职的人即使拿着还在有效期内的 token，也不许继续操作。
     # 现在网关还不知道 status（11c 才查库），所以这道校验必须由后端兜。
@@ -248,12 +259,38 @@ def resolve_actor(
 # --------------------------------------------------------------------------- #
 # FastAPI 依赖
 # --------------------------------------------------------------------------- #
+def _client_ip(request: Request) -> str | None:
+    """
+    取本次请求的来源 IP，供审计落库。
+
+    优先取 `X-Forwarded-For` 的**第一段**：后端在网关后面，`request.client.host`
+    拿到的是网关的地址（本地全是 127.0.0.1），记它等于没记。XFF 的第一段
+    是网关注取的原始客户端地址。
+
+    为什么敢信这个头（它由客户端自由填写）：与本文件顶部的信任边界同源 ——
+    8000 不对外可达，能把请求送到后端的只有网关，所以这个头只可能由网关设置。
+    **如果哪天把 8000 映射出去了，这里立刻变成可伪造的字段**，
+    那时审计里的 IP 就只是「一个自称来自某地的人」。
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else None
+
+
 def current_actor(
+    request: Request,
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
     x_username: str | None = Header(default=None, alias="X-Username"),
 ) -> Actor:
     """取当前操作者。任何需要「知道是谁」的接口都依赖它。"""
-    return resolve_actor(user_id_header=x_user_id, username_header=x_username)
+    return resolve_actor(
+        user_id_header=x_user_id,
+        username_header=x_username,
+        client_ip=_client_ip(request),
+    )
 
 
 def require_staff(actor: Actor = Depends(current_actor)) -> Actor:

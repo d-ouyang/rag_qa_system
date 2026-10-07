@@ -1,8 +1,9 @@
 """
 业务表的 Python 侧定义（SQLAlchemy Core）—— 应用读写时用的类型化视图。
 
-P2-11a 起是**七张**表：user / department / position / folder / session /
-chat_message / document。前三张是组织与账号（本期新增），后四张是 P0-1/P0-3 的存量。
+P2-11a 起是**八张**表：user / department / position / user_password_history /
+audit_log / folder / session / chat_message / document。
+前四张是组织、账号与审计（本期新增），后四张是 P0-1/P0-3 的存量。
 
 --------------------------------------------------------------------------
 与 alembic/versions/0001_*.py 的关系（别把这两份合并）
@@ -162,6 +163,41 @@ user_password_history_table = sa.Table(
     # 支持「取某个员工最近 N 条」—— 没有这个索引，每次改密都要全表扫
     sa.Index("idx_pwh_user_changed", "user_id", "changed_at"),
     comment="改密历史（P2-11b；只追加，超出保留条数的旧记录会被裁掉）",
+    **TABLE_KW,
+)
+
+# 审计日志：**刻意没有** update_time / deleted_at 两列。
+# 没有这两列，「顺手改一下」「先软删」在 SQL 层面就不成立 ——
+# 「不可改不可删」要落在结构上，不能只靠谁都知道的约定。
+audit_log_table = sa.Table(
+    "audit_log",
+    metadata,
+    sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+    sa.Column("actor_user_id", sa.BigInteger(), nullable=True,
+              comment="操作人 user.id；break-glass 超管没有 user 行，此时为空"),
+    sa.Column("actor_username", sa.String(64), nullable=False,
+              comment="操作人登录名（冗余存一份：超管不在 user 表、人也会改名）"),
+    sa.Column("actor_role", sa.String(16), nullable=True,
+              comment="操作当时的系统角色；事后权限变了，日志仍按当时记"),
+    sa.Column("action", sa.String(48), nullable=False,
+              comment="动作标识，如 user.create / user.status.change / password.reset"),
+    sa.Column("target_type", sa.String(32), nullable=False,
+              comment="对象类型：user / department / position / auth"),
+    sa.Column("target_id", sa.BigInteger(), nullable=True, comment="对象 id；无法定位时为空"),
+    sa.Column("target_label", sa.String(160), nullable=True,
+              comment="对象可读标签（如 chen.jie（陈杰））；冗余，防对象改名后读不懂"),
+    sa.Column("detail", sa.Text(), nullable=True,
+              comment="附加信息（JSON 文本）；**绝不含密码明文与哈希**，写入前应用层会拒绝"),
+    sa.Column("ip", sa.String(45), nullable=True,
+              comment="来源 IP；45 字符是 IPv6 的最长表示（含 IPv4 映射）"),
+    sa.Column("created_at", mysql.DATETIME(fsp=6), nullable=False,
+              comment="发生时间；由应用显式写入，不依赖 DB 时区"),
+    sa.PrimaryKeyConstraint("id"),
+    sa.Index("idx_audit_created", "created_at"),
+    sa.Index("idx_audit_actor", "actor_user_id", "created_at"),
+    sa.Index("idx_audit_target", "target_type", "target_id"),
+    sa.Index("idx_audit_action", "action"),
+    comment="审计日志（P2-13d；只追加，无 update_time / deleted_at —— 改不了也删不掉）",
     **TABLE_KW,
 )
 

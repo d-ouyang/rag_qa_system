@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from config.settings import settings
 from core import admin_service as svc
+from core import audit_repo
 from core import user_repo as repo
 from core.identity import Actor, require_admin, require_staff
 
@@ -225,11 +226,22 @@ def create_user(body: CreateUserBody, actor: Actor = Depends(require_staff)) -> 
 
 @router.get("/users/{user_id}", summary="员工详情")
 def read_user(user_id: int, actor: Actor = Depends(require_staff)) -> dict[str, Any]:
+    """
+    单个员工的详情，**手机号给原值**（列表接口才脱敏）。
+
+    为什么这一处不脱敏：编辑弹窗要拿它当前值来显示。若这里给 `138****0001`，
+    管理员不改手机号直接点保存，就会把**脱敏串当新值写回库**——
+    数据被悄悄污染，而且当场没有任何报错（它是个格式合法的字符串）。
+    这不是理论风险：浏览器实测第一次就撞上了（详见迭代文档 §4.1）。
+
+    能看到原值的只有 admin / hr（`require_staff`），而他们本来就能改这个字段 ——
+    脱敏在这里要防的不是「改」，只是「一眼扫过去时不该完整露出所有人手机号」。
+    """
     try:
         record = svc._load_user(user_id)
     except svc.AdminError as e:
         raise _fail(e) from e
-    return record.to_dict()
+    return record.to_dict(raw_phone=True)
 
 
 @router.patch("/users/{user_id}", summary="修改员工资料")
@@ -314,6 +326,52 @@ def password_board(actor: Actor = Depends(require_staff)) -> dict[str, Any]:
     except svc.AdminError as e:
         raise _fail(e) from e
     return board.to_dict()
+
+
+# --------------------------------------------------------------------------- #
+# 审计日志（13d）—— 只读
+# --------------------------------------------------------------------------- #
+@router.get("/audit-logs", summary="审计日志（只读、不可改不可删）")
+def list_audit_logs(
+    actor: str | None = Query(default=None, description="按操作人登录名模糊筛"),
+    action: str | None = Query(default=None, description="按动作精确筛，如 user.password.reset"),
+    target_type: str | None = Query(default=None, description="user / department / position / auth"),
+    target_id: int | None = Query(default=None, description="按被操作对象 id 筛"),
+    keyword: str | None = Query(default=None, description="在对象标签与 detail 里模糊搜"),
+    since: datetime | None = Query(default=None, description="起始时间（含）"),
+    until: datetime | None = Query(default=None, description="结束时间（含）"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    actor_in: Actor = Depends(require_staff),
+) -> dict[str, Any]:
+    """
+    查审计。**只有 GET** —— 这个资源不存在 PUT / DELETE，因为底层表就没有那两种能力
+    （`audit_repo` 里没有 update / delete，表里没有 `update_time` / `deleted_at`）。
+
+    ⚠️ 谁能看审计 = 谁能看**所有管理员**的每一次操作，包括重置密码这件事发生过。
+    这比「能改员工资料」的门槛更高一档：hr 能改资料但看不到密码相关日志。
+    """
+    conditions: dict[str, Any] = {
+        "actor": actor, "action": action, "target_type": target_type,
+        "target_id": target_id, "keyword": keyword, "since": since, "until": until,
+    }
+    # 逐个剔掉 None：仓储层按「条件为 None 就不过滤」解释，空串会让 LIKE '%%' 全表匹配
+    conditions = {k: v for k, v in conditions.items() if v is not None}
+    try:
+        rows = audit_repo.list_logs(limit=limit, offset=offset, order=order, **conditions)
+        total = audit_repo.count_logs(**conditions)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "items": [audit_repo.describe(row) for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        # 前端要显示「动作」下拉框，选项只能来自这一份白名单
+        "actions": [{"value": k, "label": v} for k, v in audit_repo.ACTION_LABELS.items()],
+        "target_types": list(audit_repo.TARGET_TYPES),
+    }
 
 
 # --------------------------------------------------------------------------- #

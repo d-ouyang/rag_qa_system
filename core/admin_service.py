@@ -48,6 +48,7 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 
 from config.settings import settings
+from core import audit_repo
 from core import password_policy as policy
 from core import user_repo as repo
 from core.db import now_db
@@ -108,6 +109,75 @@ def _load_user(user_id: int) -> repo.UserRecord:
 
 def _admin_ids() -> set[int]:
     return {u.id for u in repo.list_users(role=repo.ROLE_ADMIN, include_resigned=True)}
+
+
+# --------------------------------------------------------------------------- #
+# 审计（P2-13d）—— 13b/13c 刻意留出来的口子
+# --------------------------------------------------------------------------- #
+def _user_label(record: repo.UserRecord | None) -> str | None:
+    """审计里的对象标签：`chen.jie（陈杰）`。冗余存一份，对象改名后日志仍读得懂。"""
+    if record is None:
+        return None
+    name = record.display_name or ""
+    return f"{record.username}（{name}）" if name and name != record.username else record.username
+
+
+def _audit(
+    actor: Actor,
+    action: str,
+    target_type: str,
+    *,
+    target_id: int | None = None,
+    target_label: str | None = None,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    """
+    落一条审计。**审计失败不阻断业务**（下面说明为什么这么选），但一定打 error 日志。
+
+    取舍：fail-closed（审计写不进���就拒绝这次操作）在安全上更严，可这里是内网管理端，
+    而审计表与业务表在**同一个 MySQL**——它写不进的情形（磁盘满、表锁死）几乎同时
+    意味着业务本身也写不进去。那时把操作一起拒掉，只是让「磁盘满了」从一个
+    明确报错变成「管理端不能用」，而**已经写成功的那部分业务数据并不会回滚**
+    （业务与审计不在一个事务里，见下），于是结果是「一半做了、一半没做，且都没记录」。
+
+    真正能根治的是「业务写与审计写同事务」，那要求 repo 层接受外部 session
+    （现在每个 repo 函数自己 `session_scope()`），属于结构性改造，本轮不做。
+    所以这里的取舍是：**保可用 + 醒目留痕 + 测试断言正常路径 100% 落审计**。
+    """
+    try:
+        audit_repo.record(
+            actor_user_id=actor.id,
+            actor_username=actor.username,
+            actor_role=actor.role,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            target_label=target_label,
+            detail=detail,
+            ip=actor.client_ip,
+        )
+    except Exception:  # noqa: BLE001 - 审计不能反过来打断业务，见上面说明
+        logger.error(
+            "审计写入失败（业务已完成，但这条动作没有留痕）| action=%s | actor=%s | target=%s:%s",
+            action, actor.username, target_type, target_id,
+            exc_info=True,
+        )
+
+
+def _audit_field_changes(before: Any, after: Any, fields: Any) -> dict[str, Any]:
+    """
+    只记**真正变了**的字段（`{字段: [旧, 新]}`）。
+
+    为什么不是把提交上来的字段全记一遍：那会让「打开弹窗又取消」这类没改动的操作
+    也产出一条「改了 6 个字段」的日志，几天后没人信这条日志。
+    """
+    changes: dict[str, Any] = {}
+    for key in sorted(fields):
+        old = getattr(before, key, None)
+        new = getattr(after, key, None)
+        if old != new:
+            changes[key] = [old, new]
+    return changes
 
 
 # --------------------------------------------------------------------------- #
@@ -192,6 +262,21 @@ def create_user(
     record = _load_user(user_id)
     logger.info("新建员工 | actor=%s | id=%s | username=%s | role=%s",
                 actor.username, user_id, username, role)
+    # ⚠️ detail 里**没有**临时密码，也不写哈希：审计表的读取权限通常比 user 表更宽，
+    # 它一旦存了密码，就成了第二个明文落点。`audit_repo.record()` 也会主动拒绝
+    # 这类内容（结构性防线，不是靠这一行的自觉）。
+    _audit(
+        actor, "user.create", "user",
+        target_id=user_id, target_label=_user_label(record),
+        detail={
+            "username": username,
+            "employee_no": employee_no,
+            "role": role,
+            "department_id": department_id,
+            "position_id": position_id,
+            "issued_temporary_password": True,
+        },
+    )
     return NewUser(record=record, temporary_password=temporary)
 
 
@@ -209,14 +294,28 @@ def update_profile(
     allowed = {"display_name", "email", "phone", "gender", "department_id", "position_id"}
     unknown = set(fields) - allowed
     _require(not unknown, f"不允许改这些字段：{sorted(unknown)}")
-    _load_user(user_id)  # 先确认这个人存在，否则「改了个不存在的人」会静默成功
+    before = _load_user(user_id)  # 先确认这个人存在，否则「改了个不存在的人」会静默成功
     try:
         repo.update_profile(user_id, updated_by=actor.id, **fields)
     except IntegrityError as e:
         _raise_readable_integrity_error(e, "邮箱与其他员工冲突")
+    after = _load_user(user_id)
     logger.info("修改员工资料 | actor=%s | id=%s | fields=%s",
                 actor.username, user_id, sorted(fields))
-    return _load_user(user_id)
+    changes = _audit_field_changes(before, after, fields)
+    if changes:
+        _audit(
+            actor, "user.profile.update", "user",
+            target_id=user_id, target_label=_user_label(after),
+            # 只记真正变了的字段：没改的字段记进去会让日志噪声淹没重点
+            detail={"changes": changes},
+        )
+    else:
+        # 一个字段都没变（打开弹窗又点了保存）**不落审计**。
+        # 理由：一条「改了 6 个字段」但 details 为空的记录，会让人以为真改过；
+        # 而几天后没人再信这条日志时，审计就整体失效了 —— 这是它唯一的敌人。
+        logger.debug("资料未实际变化，不落审计 | actor=%s | id=%s", actor.username, user_id)
+    return after
 
 
 def set_status(actor: Actor, user_id: int, status: str) -> repo.UserRecord:
@@ -240,7 +339,15 @@ def set_status(actor: Actor, user_id: int, status: str) -> repo.UserRecord:
     repo.set_status(user_id, status, updated_by=actor.id)
     logger.info("员工状态变更 | actor=%s | id=%s | %s → %s",
                 actor.username, user_id, record.status, status)
-    return _load_user(user_id)
+    after = _load_user(user_id)
+    _audit(
+        actor, "user.status.change", "user",
+        target_id=user_id, target_label=_user_label(record),
+        # 状态变更是「他下次能不能登录」，所以顺手记下连带后果：旧 token 是否已失效
+        detail={"from": record.status, "to": status,
+                "token_version": after.token_version},
+    )
+    return after
 
 
 def set_role(actor: Actor, user_id: int, role: str) -> repo.UserRecord:
@@ -260,7 +367,14 @@ def set_role(actor: Actor, user_id: int, role: str) -> repo.UserRecord:
     repo.set_role(user_id, role, updated_by=actor.id)
     logger.info("员工角色变更 | actor=%s | id=%s | %s → %s",
                 actor.username, user_id, record.role, role)
-    return _load_user(user_id)
+    after = _load_user(user_id)
+    _audit(
+        actor, "user.role.change", "user",
+        target_id=user_id, target_label=_user_label(record),
+        detail={"from": record.role, "to": role,
+                "token_version": after.token_version},
+    )
+    return after
 
 
 # --------------------------------------------------------------------------- #
@@ -296,7 +410,16 @@ def reset_password(actor: Actor, user_id: int) -> tuple[repo.UserRecord, str]:
     repo.add_password_history(user_id, password_hash, changed_by_user_id=actor.id, now=stamp)
     repo.prune_password_history(user_id, settings.PASSWORD_HISTORY_KEEP)
     logger.info("重置密码 | actor=%s | id=%s | must_change=1", actor.username, user_id)
-    return _load_user(user_id), temporary
+    after = _load_user(user_id)
+    # 这一行是本模块最要紧的审计：**只记「重置过」，绝不记密码本身**。
+    # 它必须能回答「谁重置了陈杰的密码」，而不能回答「陈杰的新密码是什么」。
+    _audit(
+        actor, "user.password.reset", "user",
+        target_id=user_id, target_label=_user_label(record),
+        detail={"must_change": True, "token_version": after.token_version,
+                "temporary_password_issued": True},
+    )
+    return after, temporary
 
 
 def set_must_change(actor: Actor, user_id: int, must_change: bool) -> repo.UserRecord:
@@ -314,7 +437,16 @@ def set_must_change(actor: Actor, user_id: int, must_change: bool) -> repo.UserR
     repo.set_must_change_password(user_id, bool(must_change), updated_by=actor.id)
     logger.info("强制改密开关 | actor=%s | id=%s | must_change=%s",
                 actor.username, user_id, bool(must_change))
-    return _load_user(user_id)
+    after = _load_user(user_id)
+    _audit(
+        actor, "user.password.must_change", "user",
+        target_id=user_id, target_label=_user_label(record),
+        # 特意记 must_change 变了却 password_changed_at 没变 ——
+        # 「开关不续期」是一条需要能被事后核对的性质。
+        detail={"from": bool(record.must_change_password), "to": bool(must_change),
+                "password_changed_at_untouched": True},
+    )
+    return after
 
 
 # --------------------------------------------------------------------------- #
@@ -358,6 +490,10 @@ def create_department(
     if record is None:  # pragma: no cover - 建完立刻读，读不到是异常
         raise AdminError("部门创建后读取失败", status=500)
     logger.info("新建部门 | actor=%s | id=%s | code=%s", actor.username, dept_id, code)
+    _audit(actor, "department.create", "department",
+           target_id=dept_id, target_label=f"{code}（{record.name}）",
+           detail={"code": code, "parent_id": parent_id,
+                   "leader_user_id": leader_user_id})
     return record
 
 
@@ -374,6 +510,7 @@ def update_department(actor: Actor, dept_id: int, **fields: Any) -> repo.Departm
     unknown = set(fields) - allowed
     _require(not unknown, f"不允许改这些字段：{sorted(unknown)}")
     _require(repo.get_department(dept_id) is not None, "部门不存在", status=404)
+    before = repo.get_department(dept_id)
 
     if "parent_id" in fields:
         parent_id = fields["parent_id"]
@@ -396,6 +533,11 @@ def update_department(actor: Actor, dept_id: int, **fields: Any) -> repo.Departm
     if record is None:  # pragma: no cover
         raise AdminError("部门读取失败", status=500)
     logger.info("修改部门 | actor=%s | id=%s | fields=%s", actor.username, dept_id, sorted(fields))
+    assert before is not None
+    _audit(actor, "department.update", "department",
+           target_id=dept_id,
+           target_label=f"{record.code}（{record.name}）",
+           detail={"changes": _audit_field_changes(before, record, fields)})
     return record
 
 
@@ -421,6 +563,7 @@ def delete_department(actor: Actor, dept_id: int) -> None:
     """
     _require(actor.can_manage_org, "没有权限维护部门", status=403)
     _require(repo.get_department(dept_id) is not None, "部门不存在", status=404)
+    snapshot = repo.get_department(dept_id)
     children = [d for d in repo.list_departments() if d.parent_id == dept_id]
     _require(not children, f"还有 {len(children)} 个下级部门，请先移走或删除它们")
     members = repo.count_users_in_department(dept_id, only_active=False)
@@ -434,6 +577,12 @@ def delete_department(actor: Actor, dept_id: int) -> None:
     with session_scope() as session:
         session.execute(sa_delete(department_table).where(department_table.c.id == dept_id))
     logger.info("删除部门 | actor=%s | id=%s", actor.username, dept_id)
+    assert snapshot is not None
+    # 标签取删除**之前**的快照：行没了之后再查就只能拿到 id，日志会变成一串数字
+    _audit(actor, "department.delete", "department",
+           target_id=dept_id,
+           target_label=f"{snapshot.code}（{snapshot.name}）",
+           detail={"code": snapshot.code})
 
 
 # --------------------------------------------------------------------------- #
@@ -456,6 +605,9 @@ def create_position(
     if record is None:  # pragma: no cover
         raise AdminError("职位创建后读取失败", status=500)
     logger.info("新建职位 | actor=%s | id=%s | code=%s", actor.username, pos_id, code)
+    _audit(actor, "position.create", "position",
+           target_id=pos_id, target_label=f"{code}（{record.name}）",
+           detail={"code": code, "sequence": sequence, "level": level})
     return record
 
 
@@ -465,30 +617,31 @@ def update_position(actor: Actor, pos_id: int, **fields: Any) -> repo.PositionRe
     unknown = set(fields) - allowed
     _require(not unknown, f"不允许改这些字段：{sorted(unknown)}")
 
-    from sqlalchemy import select as sa_select
+    # ⚠️ 快照必须在 UPDATE **之前**取：审计要记的是「从什么变成什么」，
+    # 改完再查就只剩新值，changes 永远是空的（一条看起来很详细、实际零信息的日志）。
+    before = next((p for p in repo.list_positions() if p.id == pos_id), None)
+    _require(before is not None, "职位不存在", status=404)
+
     from sqlalchemy import update as sa_update
 
     from core.db import session_scope
     from core.schema import position_table
 
     with session_scope() as session:
-        exists = session.execute(
-            sa_select(position_table.c.id).where(position_table.c.id == pos_id)
-        ).first()
-        if exists is None:
-            raise AdminError("职位不存在", status=404)
         try:
             session.execute(
                 sa_update(position_table).where(position_table.c.id == pos_id).values(**fields)
             )
         except IntegrityError as e:
             _raise_readable_integrity_error(e, "职位编码已被使用")
-    for candidate in repo.list_positions():
-        if candidate.id == pos_id:
-            logger.info("修改职位 | actor=%s | id=%s | fields=%s",
-                        actor.username, pos_id, sorted(fields))
-            return candidate
-    raise AdminError("职位读取失败", status=500)  # pragma: no cover
+    after = next((p for p in repo.list_positions() if p.id == pos_id), None)
+    if after is None:  # pragma: no cover - 刚改完的行走不到这里
+        raise AdminError("职位读取失败", status=500)
+    logger.info("修改职位 | actor=%s | id=%s | fields=%s", actor.username, pos_id, sorted(fields))
+    _audit(actor, "position.update", "position",
+           target_id=pos_id, target_label=f"{after.code}（{after.name}）",
+           detail={"changes": _audit_field_changes(before, after, fields)})
+    return after
 
 
 def delete_position(actor: Actor, pos_id: int) -> None:
@@ -500,6 +653,10 @@ def delete_position(actor: Actor, pos_id: int) -> None:
     """
     _require(actor.can_manage_org, "没有权限维护职位", status=403)
 
+    # 同上：删除前的快照（行没了就查不到了）
+    snapshot = repo.get_position(pos_id)
+    _require(snapshot is not None, "职位不存在", status=404)
+
     from sqlalchemy import delete as sa_delete
     from sqlalchemy import func as sa_func
     from sqlalchemy import select as sa_select
@@ -508,11 +665,6 @@ def delete_position(actor: Actor, pos_id: int) -> None:
     from core.schema import position_table, user_table
 
     with session_scope() as session:
-        exists = session.execute(
-            sa_select(position_table.c.id).where(position_table.c.id == pos_id)
-        ).first()
-        if exists is None:
-            raise AdminError("职位不存在", status=404)
         used = session.execute(
             sa_select(sa_func.count()).select_from(user_table)
             .where(user_table.c.position_id == pos_id)
@@ -521,6 +673,11 @@ def delete_position(actor: Actor, pos_id: int) -> None:
             raise AdminError(f"还有 {used} 名员工挂着这个职位，请先调整他们的职位")
         session.execute(sa_delete(position_table).where(position_table.c.id == pos_id))
     logger.info("删除职位 | actor=%s | id=%s", actor.username, pos_id)
+    assert snapshot is not None
+    _audit(actor, "position.delete", "position",
+           target_id=pos_id,
+           target_label=f"{snapshot.code}（{snapshot.name}）",
+           detail={"code": snapshot.code})
 
 
 # --------------------------------------------------------------------------- #

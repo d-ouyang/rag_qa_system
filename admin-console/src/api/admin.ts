@@ -168,6 +168,14 @@ export function fetchUsers(params: {
   return get<UserListResult>(`/api/v1/admin/users${suffix ? `?${suffix}` : ''}`)
 }
 
+/**
+ * 单个员工详情。**手机号是原值**（列表接口脱敏）。
+ * 编辑弹窗必须用它，否则会把脱敏串当新值写回库 —— 详见 UsersView.openEdit 的注释。
+ */
+export function fetchUser(id: number): Promise<UserRow> {
+  return get<UserRow>(`/api/v1/admin/users/${id}`)
+}
+
 export function createUser(payload: CreateUserPayload): Promise<CreateUserResult> {
   return postJson<CreateUserResult>('/api/v1/admin/users', payload)
 }
@@ -236,6 +244,55 @@ export interface BoardItem {
 
 export function fetchPasswordBoard(): Promise<PasswordBoard> {
   return get<PasswordBoard>('/api/v1/admin/password/board')
+}
+
+// --------------------------------------------------------------------------- //
+// 审计日志（P2-13d）—— 只有读，没有写
+// --------------------------------------------------------------------------- //
+export interface AuditRow {
+  id: number
+  actor_user_id: number | null
+  actor_username: string
+  actor_role: string | null
+  action: string
+  action_label: string
+  target_type: string
+  target_id: number | null
+  target_label: string | null
+  detail: Record<string, unknown> | null
+  ip: string | null
+  created_at: string
+}
+
+export interface AuditListResult {
+  items: AuditRow[]
+  total: number
+  limit: number
+  offset: number
+  /** 动作候选 —— 来自服务端白名单，前端不自己维护一份（两份一定会漂） */
+  actions: { value: string; label: string }[]
+  target_types: string[]
+}
+
+export function fetchAuditLogs(params: {
+  actor?: string | null
+  action?: string | null
+  target_type?: string | null
+  target_id?: number | null
+  keyword?: string | null
+  limit?: number
+  offset?: number
+}): Promise<AuditListResult> {
+  const query = new URLSearchParams()
+  if (params.actor) query.set('actor', params.actor)
+  if (params.action) query.set('action', params.action)
+  if (params.target_type) query.set('target_type', params.target_type)
+  if (params.target_id != null) query.set('target_id', String(params.target_id))
+  if (params.keyword) query.set('keyword', params.keyword)
+  query.set('limit', String(params.limit ?? 50))
+  query.set('offset', String(params.offset ?? 0))
+  const suffix = query.toString()
+  return get<AuditListResult>(`/api/v1/admin/audit-logs?${suffix}`)
 }
 
 // --------------------------------------------------------------------------- //

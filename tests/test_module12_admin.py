@@ -93,6 +93,24 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
 from api.main import app  # noqa: E402
+
+# --------------------------------------------------------------------------- #
+# 审计基线（P2-13d）
+# --------------------------------------------------------------------------- #
+# 本脚本的动作现在**都会落审计**，所以它必须像清理 user / department 那样清理审计 ——
+# 否则 `make test` 每跑一次就在真审计表里堆一批 m12a_tmp 的垃圾，
+# 而审计表恰恰是「出事那天要靠它」的那张表，不能被测试数据淹没。
+#
+# 记基线而不是按业务键删：审计行的 target_label 会被对象改名带着变
+# （改过的员工标签是「m12a_tmp（改过名字）」），按前缀 LIKE 会漏。
+# 表可能还不存在（迁移 0005 没跑），那时记 None，收尾也不清。
+try:
+    with db_module.get_engine().connect() as _c:
+        AUDIT_BASELINE_MAX_ID = int(
+            _c.execute(text("SELECT COALESCE(MAX(id), 0) FROM audit_log")).scalar() or 0
+        )
+except Exception:  # noqa: BLE001 - 表不存在属于「还没迁移」，不是错误
+    AUDIT_BASELINE_MAX_ID = None
 from config.settings import settings  # noqa: E402
 from core import password_policy as policy  # noqa: E402
 from core import user_repo as repo  # noqa: E402
@@ -527,6 +545,29 @@ check("本模块造的职位已清干净", left_pos == 0, f"{left_pos} 行")
 missing = [n for n in SEED_USERNAMES if n not in present]
 check(f"种子员工一个不少（{len(SEED_USERNAMES)} 人）", not missing, f"缺 {missing}")
 print(f"  复核：user={total} 行 / document={docs} 行")
+
+# ---- 审计也要清（P2-13d）----
+# 这一段本身就是「测试自己删除审计」—— 与 audit_repo 声称的「不可改不可删」不矛盾：
+# 那条约束的对象是**应用层接口**，这里是测试用 SQL 清理自己造的夹具行。
+if AUDIT_BASELINE_MAX_ID is not None:
+    with get_engine().connect() as conn:
+        made_audit = int(conn.execute(
+            text("SELECT COUNT(*) FROM audit_log WHERE id > :b"),
+            {"b": AUDIT_BASELINE_MAX_ID},
+        ).scalar() or 0)
+        conn.execute(text("DELETE FROM audit_log WHERE id > :b"), {"b": AUDIT_BASELINE_MAX_ID})
+        conn.commit()
+    with get_engine().connect() as conn:
+        left_audit = int(conn.execute(
+            text("SELECT COUNT(*) FROM audit_log WHERE id > :b"),
+            {"b": AUDIT_BASELINE_MAX_ID},
+        ).scalar() or 0)
+    # 两条都要：删之前得确实验证过「本模块确实造了审计」，
+    # 否则清理逻辑坏掉（永远删 0 行）也会显示全绿 —— 那是第 49 条坑的形状。
+    check("本模块的动作确实落了审计（否则下面的清理断言在空转）",
+          made_audit > 0, f"{made_audit} 行")
+    check("本模块造的审计行已清干净（否则真审计会被测试数据淹没）",
+          left_audit == 0, f"{left_audit} 行")
 
 print()
 print("=" * 66)

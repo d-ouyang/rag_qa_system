@@ -904,6 +904,18 @@ def create_position(
     return pos_id
 
 
+def get_position(pos_id: int) -> PositionRecord | None:
+    """按 id 取职位。与 `get_department` 对称。
+
+    P2-13d 补的：删除职位的审计要记「删的是哪个职位」，
+    而行删掉之后就查不到了，所以必须在删之前拿快照。
+    """
+    stmt = select(position_table).where(position_table.c.id == int(pos_id))
+    with session_scope() as session:
+        row = session.execute(stmt).mappings().first()
+    return _row_to_position(row) if row else None
+
+
 def get_position_by_code(code: str) -> PositionRecord | None:
     stmt = select(position_table).where(position_table.c.code == code)
     with session_scope() as session:

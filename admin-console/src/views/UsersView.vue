@@ -123,18 +123,32 @@ function openCreate() {
   editOpen.value = true
 }
 
-function openEdit(row: UserRow) {
-  editing.value = row
+/**
+ * 打开编辑弹窗。**先拉一次详情**再填表，不直接用列表里的那一行。
+ *
+ * 为什么：列表接口的手机号是脱敏的（`138****0001`）。若直接把它填进表单，
+ * 管理员什么都不改点个保存，这个脱敏串就会被当成新值写回库 ——
+ * 数据被悄悄污染，且当场不报错（它是个合法字符串）。
+ * 后端 `GET /users/{id}` 对 staff 返回原值，所以这里拿得到真手机号。
+ */
+async function openEdit(row: UserRow) {
+  let detail = row
+  try {
+    detail = await api.fetchUser(row.id)
+  } catch (e) {
+    toast('warn', e instanceof ApiError ? e.message : '取员工详情失败，将用列表里的信息')
+  }
+  editing.value = detail
   form.value = {
-    username: row.username,
-    employee_no: row.employee_no,
-    display_name: row.display_name,
-    email: row.email ?? '',
-    phone: row.phone ?? '',
-    gender: row.gender ?? '',
-    department_id: row.department_id,
-    position_id: row.position_id,
-    role: row.role,
+    username: detail.username,
+    employee_no: detail.employee_no,
+    display_name: detail.display_name,
+    email: detail.email ?? '',
+    phone: detail.phone ?? '',
+    gender: detail.gender ?? '',
+    department_id: detail.department_id,
+    position_id: detail.position_id,
+    role: detail.role,
   }
   formError.value = ''
   editOpen.value = true

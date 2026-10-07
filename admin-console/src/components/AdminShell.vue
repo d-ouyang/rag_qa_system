@@ -6,13 +6,6 @@
  * 问题永远是「是谁干的」。让操作者身份常驻可见，是给审计（P2-13d）先垫一步。
  */
 <script setup lang="ts">
-/**
- * 管理端外壳 —— 左侧导航 + 右侧内容。
- *
- * 路由之外刻意保留的一件事：**顶栏上永远显示「当前登录者是谁」**。
- * 管理端的操作会改动别人 —— 重置密码、停用账号 —— 事后第一个被问到的
- * 问题永远是「是谁干的」。让操作者身份常驻可见，是给审计（P2-13d）先垫一步。
- */
 import { computed } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -29,6 +22,7 @@ const NAV: NavItem[] = [
   { to: '/users', label: '员工', icon: '☰' },
   { to: '/org', label: '部门与职位', icon: '⑃' },
   { to: '/passwords', label: '密码管理', icon: '⚿' },
+  { to: '/audit', label: '审计日志', icon: '☷' },
 ]
 
 const route = useRoute()
