@@ -47,6 +47,8 @@ P2-12c：所有会话路由都挂了身份，每个动作都带 owner_id
 import json
 import logging
 import uuid
+from config.settings import settings
+from core import quota_policy
 from collections.abc import Iterator
 from typing import Any
 
@@ -521,6 +523,53 @@ def delete_session(session_id: str, actor: Actor = Depends(current_actor)) -> di
             raise HTTPException(status_code=403, detail="无权访问该会话")
         return {"session_id": session_id, "cleared": False, "detail": "会话不存在或已过期"}
     return {"session_id": session_id, "cleared": True}
+
+
+@router.get("/quota/me", summary="本人本月 token 用量与横幅文案（只提醒不阻断）")
+def my_quota(actor: Actor = Depends(current_actor)) -> dict[str, Any]:
+    """
+    主应用顶部横幅的数据源（15d）。
+
+    ⚠️ **这个端点永远不拒绝提问**。它的全部输出就是一段事实描述
+       （`quota_policy.banner_text`：只描述事实、不劝阻、不威胁）——
+       用户拍板「只提醒不阻断」，所以这里没有「还能不能问」这个字段，
+       前端拿不到、也就长不出禁用按钮。
+
+    ⚠️ 档位判定在后端（`status_of`），前端只负责显示 ——
+       同一个百分比两个口径的教训（15a）不再犯第二遍。
+    """
+    from core import quota_repo
+
+    rows = quota_repo.usage_by_user(
+        user_id=actor.id, start_day=int(settings.TOKEN_QUOTA_PERIOD_START_DAY),
+    )
+    bucket = rows[0] if rows else None
+    used = quota_policy.billable(
+        bucket.input_tokens if bucket else 0,
+        bucket.output_tokens if bucket else 0,
+        bucket.cache_read_tokens if bucket else 0,
+    )
+    effective = quota_policy.effective_quota(
+        bucket.quota_override if bucket else 0,
+        int(settings.TOKEN_QUOTA_DEFAULT_MONTHLY),
+    )
+    status = quota_policy.status_of(
+        used, effective,
+        warn_percent=int(settings.TOKEN_QUOTA_WARN_PERCENT),
+        over_percent=int(settings.TOKEN_QUOTA_OVER_PERCENT),
+    )
+    return {
+        "used": used,
+        "input_tokens": bucket.input_tokens if bucket else 0,
+        "output_tokens": bucket.output_tokens if bucket else 0,
+        "cache_read_tokens": bucket.cache_read_tokens if bucket else 0,
+        "effective_quota": effective,
+        "usage_percent": quota_policy.usage_percent(used, effective),
+        "status": status,
+        "status_label": quota_policy.describe(status),
+        # 横幅文案（可能为空 = 不打扰）。前端**只显示**它，不自己拼。
+        "banner": quota_policy.banner_text(used, effective),
+    }
 
 
 @router.get(

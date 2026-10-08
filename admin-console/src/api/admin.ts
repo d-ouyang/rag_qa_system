@@ -310,6 +310,46 @@ export function setUserKbRole(id: number, kbRole: KbRole): Promise<UserRow> {
 }
 
 /**
+ * P2-15d：用量看板（仅管理员）。
+ *
+ * ⚠️ `usage_percent` / `status` / `status_label` **全部后端算好**，
+ *   前端只渲染 —— 前端自己算百分比就是 15a 那个「同一字段两个口径」的坑。
+ *   `usage_percent === null` 表示「不限额度」，界面显示「—」而不是「0%」。
+ */
+export interface UsageRow {
+  user_id: number
+  username: string
+  display_name: string
+  department_id: number | null
+  department_name: string | null
+  quota_override: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  requests: number
+  session_count: number
+  effective_quota: number
+  billable_tokens: number
+  usage_percent: number | null
+  status: 'ok' | 'warn' | 'over'
+  status_label: string
+}
+
+export interface UsageBoard {
+  period_start_day: number
+  warn_percent: number
+  over_percent: number
+  status_labels: Record<'ok' | 'warn' | 'over', string>
+  rows: UsageRow[]
+  unattributed: { input_tokens: number; output_tokens: number; messages: number }
+  grand_total: { input_tokens: number; output_tokens: number; messages: number }
+}
+
+export function fetchUsageBoard(): Promise<UsageBoard> {
+  return get<UsageBoard>('/api/v1/admin/usage/board')
+}
+
+/**
  * P2-15b：下发月度 token 额度。
  *
  * ⚠️ 类型是 `number`（不是 `0 | 50000 | 100000` 那样的联合类型）：

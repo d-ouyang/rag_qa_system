@@ -31,7 +31,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -42,6 +42,7 @@ from core import admin_service as svc
 from core import audit_repo
 from core import kb_acl
 from core import quota_policy
+from core import quota_repo
 from core import user_repo as repo
 from core.identity import Actor, require_admin, require_staff
 
@@ -590,3 +591,59 @@ def delete_position(pos_id: int, actor: Actor = Depends(require_staff)) -> dict[
     except svc.AdminError as e:
         raise _fail(e) from e
     return {"ok": True, "id": pos_id}
+
+
+# --------------------------------------------------------------------------- #
+# 用量看板（P2-15d）
+# --------------------------------------------------------------------------- #
+@router.get("/usage/board", summary="本月 Token 用量看板（仅管理员）")
+def usage_board(
+    actor: Actor = Depends(require_admin),
+    when: date | None = None,
+    department_id: int | None = None,
+) -> dict[str, Any]:
+    """
+    按人 × 本月的 token 用量（数据来自 `core/quota_repo.usage_board`，口径见 15a）。
+
+    ⚠️ **仅管理员**（`require_admin` 而非 `require_staff`）：
+       看板回答的是「谁用了多少」—— 这是成本信息，不是人事信息。
+       hr 能看员工资料，但「他这个月花了多少钱」不该出现在 hr 的界面上。
+
+    ⚠️ 判定（档位/百分比/文案）全部由 `quota_policy` 派生，本端点**零判定**：
+       把 repo 的行原样交给 policy，再原样交给前端 ——
+       前端不自己算百分比（15a 教训：同一字段两个口径）。
+    """
+    rows = quota_repo.usage_board(
+        when=when, start_day=settings.TOKEN_QUOTA_PERIOD_START_DAY,
+    )
+    if department_id is not None:
+        rows = [r for r in rows if r.department_id == department_id]
+    default_quota = int(settings.TOKEN_QUOTA_DEFAULT_MONTHLY)
+    warn = int(settings.TOKEN_QUOTA_WARN_PERCENT)
+    over = int(settings.TOKEN_QUOTA_OVER_PERCENT)
+    out = []
+    for r in rows:
+        effective = quota_policy.effective_quota(r.quota_override, default_quota)
+        # input/output 计费口径（不含 cache_read）与 cache_read 三数分开
+        used = quota_policy.billable(r.input_tokens, r.output_tokens,
+                                     r.cache_read_tokens)
+        status = quota_policy.status_of(used, effective,
+                                        warn_percent=warn, over_percent=over)
+        out.append({
+            **r.to_dict(),
+            "effective_quota": effective,
+            "billable_tokens": used,
+            "usage_percent": quota_policy.usage_percent(used, effective),
+            "status": status,
+            "status_label": quota_policy.describe(status),
+        })
+    return {
+        "period_start_day": int(settings.TOKEN_QUOTA_PERIOD_START_DAY),
+        "warn_percent": warn,
+        "over_percent": over,
+        "status_labels": dict(quota_policy.STATUS_LABELS),
+        "rows": out,
+        # 对账行：让看板自身能回答「这些数加起来对不对」
+        "unattributed": quota_repo.unattributed_total(when=when),
+        "grand_total": quota_repo.grand_total(when=when),
+    }

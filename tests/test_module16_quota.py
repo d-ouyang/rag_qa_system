@@ -36,6 +36,7 @@ P2-15 测试：Token 额度与预警。
 这两组加起来回答的是同一个问题的两面：
 **「这个数字少算了人」必须是可见的，而不是一个安静的差值。**
 """
+import inspect
 import json
 import os
 import sys
@@ -649,6 +650,77 @@ check("🔴 quota_policy 里没有「是否允许继续提问」形状的函数"
               for name in dir(qp) if callable(getattr(qp, name, None))
               and not name.startswith("_")),
       str([n for n in dir(qp) if n.startswith(("can_", "allow_", "should_"))]))
+
+# --------------------------------------------------------------------------- #
+# 第 7 组：看板与横幅端点（15d）+ 越权收口（15e）
+# --------------------------------------------------------------------------- #
+section("第 7 组：看板与横幅端点（15d）+ 越权收口（15e）")
+
+from api.routes import admin as admin_routes      # noqa: E402
+from api.routes import qa as qa_routes            # noqa: E402
+
+# --- 结构断言：两个端点的权限声明（15e：越权在依赖上拒绝，不靠前端） ---
+_src_admin = admin_routes.usage_board.__doc__ and True
+_sig = inspect.signature(admin_routes.usage_board)
+_deps = {p.name: str(p.default) for p in _sig.parameters.values()}
+check("🔴 看板端点声明了 require_admin（成本信息不给 hr 看）",
+      "require_admin" in _deps.get("actor", ""),
+      f"actor 依赖={_deps.get('actor')}")
+_sig_me = inspect.signature(qa_routes.my_quota)
+_deps_me = {p.name: str(p.default) for p in _sig_me.parameters.values()}
+check("🔴 /quota/me 声明的是 current_actor（任何登录者都能看自己的）",
+      "current_actor" in _deps_me.get("actor", ""),
+      f"actor 依赖={_deps_me.get('actor')}")
+
+# --- 看板端点（函数级直调，真库） ---
+board_resp = admin_routes.usage_board(
+    actor=_ADMIN, when=None, department_id=None)
+check("看板返回对账三件套（rows / unattributed / grand_total）",
+      all(k in board_resp for k in ("rows", "unattributed", "grand_total")),
+      f"键={sorted(board_resp)}")
+_r_in = sum(r["input_tokens"] for r in board_resp["rows"])
+check("🔴 看板自带的对账恒等式成立（grand = 按人 + 未归属）",
+      board_resp["grand_total"]["input_tokens"]
+      == _r_in + board_resp["unattributed"]["input_tokens"],
+      f"grand={board_resp['grand_total']['input_tokens']} "
+      f"rows={_r_in} unattr={board_resp['unattributed']['input_tokens']}")
+check("看板行只带后端算好的判定字段（前端零判定）",
+      all(("usage_percent" in r and "status" in r and "status_label" in r)
+          for r in board_resp["rows"]),
+      "")
+check("不限额度的行 usage_percent 是 null（不是 0%）",
+      any(r["usage_percent"] is None and r["effective_quota"] == 0
+          for r in board_resp["rows"]),
+      "没有不限额度的行可对照（全局默认 >0 时此断言恒真前提失效）")
+
+# --- 部门筛选 ---
+_row = board_resp["rows"][0]
+if _row["department_id"] is not None:
+    _filtered = admin_routes.usage_board(
+        actor=_ADMIN, when=None, department_id=_row["department_id"])
+    check("部门筛选只留该部门（且数字与全量一致）",
+          all(r["department_id"] == _row["department_id"] for r in _filtered["rows"])
+          and any(r["user_id"] == _row["user_id"] for r in _filtered["rows"]),
+          f"筛出 {_filtered['rows']} 行")
+
+# --- /quota/me：15e 的「用量聚合只统计自己的」 ---
+from core import user_repo as _ur  # noqa: E402
+_me_admin = qa_routes.my_quota(actor=_ADMIN)
+_me_row = [b for b in qr.usage_by_user(user_id=_real_admin_id)]
+_expected = qp.billable(_me_row[0].input_tokens if _me_row else 0,
+                        _me_row[0].output_tokens if _me_row else 0,
+                        _me_row[0].cache_read_tokens if _me_row else 0)
+check("🔴 /quota/me 只统计**调用者本人**的用量（15e：admin 看自己也是自己的）",
+      _me_admin["used"] == _expected,
+      f"端点={_me_admin['used']} repo(user_id={_real_admin_id})={_expected}")
+check("/quota/me 永远不含「还能不能问」字段（15c 的刻意缺席在端点层同样成立）",
+      not any(k in _me_admin for k in ("can_ask", "allowed", "blocked", "remaining_ask")),
+      f"键={sorted(_me_admin)}")
+check("未设额度时 /quota/me 的横幅为空（不打扰）",
+      _me_admin["effective_quota"] == 0 and _me_admin["banner"] == "",
+      f"quota={_me_admin['effective_quota']} banner={_me_admin['banner']!r}")
+
+# --- 真链路复跑一次（重启后端后的新路由）——走 repo 不走 HTTP（HTTP 已在浏览器验收覆盖）
 
 # --------------------------------------------------------------------------- #
 # 第 4 组：反向验证（--reverse 才跑）

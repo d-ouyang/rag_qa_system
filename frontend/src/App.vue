@@ -16,6 +16,7 @@
  */
 import { onMounted, watch } from 'vue'
 import AppSidebar from '@/components/AppSidebar.vue'
+import QuotaBanner from '@/components/QuotaBanner.vue'
 import ChatView from '@/views/ChatView.vue'
 import KnowledgeView from '@/views/KnowledgeView.vue'
 import LoginView from '@/views/LoginView.vue'
@@ -72,6 +73,7 @@ watch(
   <div v-else class="app-shell">
     <AppSidebar />
     <main class="content-area">
+      <QuotaBanner />
       <ChatView v-if="ui.activeView === 'chat'" />
       <KnowledgeView v-else-if="ui.activeView === 'knowledge'" />
       <SettingsView v-else-if="ui.activeView === 'settings'" />

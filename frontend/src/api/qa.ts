@@ -2,6 +2,27 @@
 import { del, get, patchJson, postJson, postNdjson } from './http'
 import type { ChatMessage, SessionInfo, SourceItem, StreamFrame } from '@/types'
 
+/**
+ * P2-15d：本人本月 token 用量 + 顶部横幅文案。
+ *
+ * 🔴 `banner` 由后端 `quota_policy.banner_text()` 生成 —— **前端只显示，不自己拼**。
+ *    `banner === ''` 表示不打扰（未设额度或未到阈值），不是「没加载出来」。
+ *    这个端点永远不拒绝提问（没有「还能不能问」的字段）—— 只提醒不阻断。
+ */
+export interface MyQuota {
+  used: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  effective_quota: number
+  usage_percent: number | null
+  status: 'ok' | 'warn' | 'over'
+  status_label: string
+  banner: string
+}
+
+export const fetchMyQuota = () => get<MyQuota>('/api/v1/qa/quota/me')
+
 export const listSessions = () => get<SessionInfo[]>('/api/v1/qa/sessions')
 
 export const getSessionHistory = (sessionId: string) =>
