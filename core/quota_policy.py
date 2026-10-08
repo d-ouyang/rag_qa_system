@@ -89,6 +89,48 @@ STATUS_COLORS: dict[str, str] = {
 #:   而**不是**在这个函数里硬编码系数。
 BILLABLE_FIELDS = ("input", "output")
 
+# --------------------------------------------------------------------------- #
+# 超额行为档位（P2-15c）
+# --------------------------------------------------------------------------- #
+#: **唯一启用的档位**：「仅提醒」。
+#:
+#: ⚠️ 计划书 §15c 原本设计了三档（仅提醒 / 提醒+降级 / 硬阻断），
+#: 但用户 2026-10-07 拍板：
+#: > 「超出 token 预警，不要做真的阻断或者禁用，只做提醒和看板。」
+#:
+#: 所以另外两档**刻意不存在**，连空钩子都不留 ——
+#: 一个返回 True 的 `can_ask()` 或一个空实现的 `degrade_model()`
+#: 比没有它们更坏：调用方以为有开关可拨，拨了才发现什么都不会发生。
+#: 真要做阻断时的判据要重新设计（§15c 文件头那段：降级到哪个模型、
+#: 谁承担超额），那是一张新表 + 一轮新决策，不是在这里补一个分支。
+#:
+#: `OVER_ACTION_NOTIFY` 与 `settings.TOKEN_QUOTA_OVER_ACTION` 校验配套：
+#: 配置写成别的值会在**启动时**失败（fail-closed），
+#: 而不是运行到超额那天才发现行为对不上。
+OVER_ACTION_NOTIFY = "notify"
+OVER_ACTIONS = (OVER_ACTION_NOTIFY,)
+
+
+def validate_over_action(value: str) -> str:
+    """
+    校验超额行为档位配置。**非法值抛 ValueError**（启动时调用 → 进程拒启）。
+
+    为什么 fail-closed 而不是「不认识的值就当 notify」：
+    把 "block" 静默当 "notify" 的后果是「管理员以为配了阻断，
+    实际什么都没发生」—— 这正是用户明确排除的行为，却以更坏的方式出现；
+    把 "notify" 静默当 "block" 则直接违反拍板口径。
+    两种静默都不可接受，所以宁可启动失败。
+    """
+    if value not in OVER_ACTIONS:
+        raise ValueError(
+            f"TOKEN_QUOTA_OVER_ACTION 只能是 {list(OVER_ACTIONS)}，"
+            f"当前是 {value!r}。"
+            "「仅提醒」是 2026-10-07 拍板的唯一档位；"
+            "其他档位（降级/阻断）尚未实现 —— 判据要重新设计（PLAN §15c）。"
+        )
+    return value
+
+
 
 def billable(input_tokens: Any, output_tokens: Any, cache_read_tokens: Any = 0) -> int:
     """计费 token 合计（input + output，**不含 cache_read**）。
@@ -247,6 +289,8 @@ def _to_int(value: Any) -> int:
 
 __all__ = [
     "BILLABLE_FIELDS",
+    "OVER_ACTIONS",
+    "OVER_ACTION_NOTIFY",
     "QuotaStatus",
     "STATUS_COLORS",
     "STATUS_LABELS",
@@ -258,6 +302,7 @@ __all__ = [
     "describe",
     "effective_quota",
     "to_quota_int",
+    "validate_over_action",
     "status_of",
     "usage_percent",
 ]

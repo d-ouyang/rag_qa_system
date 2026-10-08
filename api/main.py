@@ -80,7 +80,22 @@ def root() -> dict[str, str]:
 
 @app.on_event("startup")
 def on_startup() -> None:
-    """启动日志：打印关键配置，方便确认「起的是不是想要的那个配置」。"""
+    """启动日志：打印关键配置，方便确认「起的是不是想要的那个配置」。
+
+    ⚠️ P2-15c 起这里还做**超额行为档位**的启动校验（fail-closed）：
+       `TOKEN_QUOTA_OVER_ACTION` 配成任何不是 "notify" 的值都直接拒启 ——
+       理由见 `core/quota_policy.OVER_ACTIONS`（唯一合法档位是「仅提醒」，
+       用户 2026-10-07 拍板）。宁可起不来，也不要
+       「以为配了阻断、其实什么都没发生」。
+    """
+    from core import quota_policy as quota_policy  # 局部导入避免环
+
+    # 校验在 quota_policy（判定唯一处）；非法值抛 ValueError → 进程拒启。
+    quota_policy.validate_over_action(settings.TOKEN_QUOTA_OVER_ACTION)
+    logger.info(
+        "超额行为档位 = %s（仅提醒：超阈值只显示横幅与看板标红，不阻断）",
+        settings.TOKEN_QUOTA_OVER_ACTION,
+    )
     logger.info(
         "FastAPI 启动完成 | %s v%s | LLM_PROVIDER=%s 向量库=%s 重排=%s",
         settings.PROJECT_NAME,

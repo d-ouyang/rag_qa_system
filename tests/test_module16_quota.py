@@ -46,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from config.logging_config import setup_logging  # noqa: E402
+from config.settings import settings  # noqa: E402  # 第 6 组断言档位默认值用
 
 setup_logging()
 
@@ -623,6 +624,33 @@ check("请求体收字符串 '5000'（前端表单与 curl 都这么传）", _ok
       "字符串被拒了 —— 用 StrictInt 会连它一起拒掉")
 
 # --------------------------------------------------------------------------- #
+# 第 6 组：超额行为档位（15c）—— 仅提醒是唯一档
+# --------------------------------------------------------------------------- #
+section("第 6 组：超额行为档位（15c：只提醒，另两档刻意不存在）")
+
+check("🔴 OVER_ACTIONS 只含 notify（另两档连空钩子都不留 —— 空钩子比没有钩子更坏）",
+      qp.OVER_ACTIONS == (qp.OVER_ACTION_NOTIFY,) == ("notify",),
+      f"实际={qp.OVER_ACTIONS}")
+check("settings 默认档位是 notify 且能过校验",
+      qp.validate_over_action(settings.TOKEN_QUOTA_OVER_ACTION) == "notify",
+      f"settings.TOKEN_QUOTA_OVER_ACTION={settings.TOKEN_QUOTA_OVER_ACTION!r}")
+for _bad in ("block", "degrade", "NOTIFY", "提醒", ""):
+    _raised = False
+    try:
+        qp.validate_over_action(_bad)
+    except ValueError as e:
+        _raised = "notify" in str(e) and "拍板" in str(e)
+    check(f"非法档位 {_bad!r} 被拒且报错里带口径出处",
+          _raised, "没有抛或报错文案缺关键信息")
+
+check("🔴 quota_policy 里没有「是否允许继续提问」形状的函数"
+      "（有它就会长出禁用按钮 —— 用户明确排除）",
+      not any(name.startswith(("can_", "allow_", "should_"))
+              for name in dir(qp) if callable(getattr(qp, name, None))
+              and not name.startswith("_")),
+      str([n for n in dir(qp) if n.startswith(("can_", "allow_", "should_"))]))
+
+# --------------------------------------------------------------------------- #
 # 第 4 组：反向验证（--reverse 才跑）
 # --------------------------------------------------------------------------- #
 section("第 4 组：反向验证（--reverse：改坏实现 → 上面某组断言必须转红）")
@@ -851,6 +879,42 @@ if "--reverse" in sys.argv:
     check("反向 11：把「值没变」与「值变了」两种情况的审计判据拆开检测",
           _same_value_hits == 0 and _changed_hits == 1,
           f"同值记了 {_same_value_hits} 条（应0），变值记了 {_changed_hits} 条（应 1）")
+
+    # ----------------------------------------------------------------- #
+    # 反向 12：档位清单放开（假装实现了 block）→ 第 6 组「只含 notify」红
+    # ----------------------------------------------------------------- #
+    _orig_actions = qp.OVER_ACTIONS
+    qp.OVER_ACTIONS = ("notify", "block")
+    _leaked = qp.OVER_ACTIONS != ("notify",)
+    qp.OVER_ACTIONS = _orig_actions
+    check("反向 12：档位清单放开后，「只含 notify」那条断言转红",
+          _leaked and qp.OVER_ACTIONS == ("notify",),
+          f"放开后={_orig_actions}")
+
+    # ----------------------------------------------------------------- #
+    # 反向 13：validate 改成恒放行 → 「非法档位被拒」那条断言红
+    # ----------------------------------------------------------------- #
+    _orig_validate = qp.validate_over_action
+    qp.validate_over_action = lambda v: v
+    _accepted_bad = True
+    try:
+        qp.validate_over_action("block")
+    except ValueError:
+        _accepted_bad = False
+    finally:
+        qp.validate_over_action = _orig_validate
+    # 判据两半分别成立：① 恒放行时非法值真的被收下（拆到了行为）；
+    # ② 恢复后原判据会红（非法值重新被拒）。
+    # ⚠️ 不要在恢复之后又调 validate("block") 来「验证会抛」——
+    #   那个 ValueError 会逃出 check() 直接炸掉整个脚本（实测踩过）。
+    _restored_rejects = False
+    try:
+        qp.validate_over_action("block")
+    except ValueError:
+        _restored_rejects = True
+    check("反向 13：validate 改成恒放行后，「非法档位被拒」那条断言转红",
+          _accepted_bad and _restored_rejects,
+          f"恒放行时被拒？{not _accepted_bad}；恢复后被拒？{_restored_rejects}")
 
     # 🔴 终检：反向组跑完之后，**整库**必须回到原样
     with get_engine().connect() as c:
