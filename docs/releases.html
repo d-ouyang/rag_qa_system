@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 2.0.0-p2.19b</div>
+    <div class="badge"><span class="live"></span>当前版本 2.0.0-p2.20</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -258,7 +258,7 @@
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
       <div class="stat" title="按「任务格」计数，不是按发布次数计数。P2-12 是 5 个子项，整格完成才 +1；2026-10-08 决策取消 12d（知识库不隔离读）并新增 P2-15，故任务格 14 → 15。P2-14 六格已全部交付（14a/14b/14c/14e/14f0/14df），整格完成，进度 9 → 10。**P2-15 五格全部交付（15a 口径 · 15b 写路径与界面 · 15c 仅提醒档 · 15d 看板与横幅 · 15e 越权收口）**，整格完成，进度 10 → 11。剩余待办：TLS（等 ICP 备案）与 P2-8~10。"><div class="k">2.0.0 大版本进度</div><div class="v">11<span class="u">/ 15</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">35<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">36<span class="u">个</span></div></div>
     </div>
   </section>
 
@@ -354,6 +354,24 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v2.0.0-p2.20",
+    date: "2026-10-08",
+    accent: "#3fb950",
+    tagline: "个人中心改成一次点击的菜单，改密时边输边打勾",
+    problem: "上一版把个人信息做成了居中弹窗，但用户拿 WorkBuddy 的交互做参照：点左下角应该是从那里向上展开的菜单 —— 头像在顶、常用入口在中间、退出在底部；另外改密码时希望能边输入边看到规则满足没有，而不是提交后被打回才知道。还有一处漏网：管理端的浏览器标签图标一直是默认的那张。",
+    sections: [
+      { type: "added", items: [
+        { star: true, h: "个人中心改为底部展开的菜单", t: "点头像从原地向上展开：顶部头像与部门职位，中间收拢「系统设置 / 文件传输·知识库 / 修改密码」三个入口（点完直接跳对应页面），退出登录放底部；侧边栏上的退出按钮保留 —— 两个入口做同一件事。" },
+        { star: true, h: "改密码时边输边打勾", t: "长度够不够、字符类型够不够两类、有没有包含登录名、两次输入是否一致 —— 每输一个字符逐条打勾，全部满足前提交按钮不可点。规则参数来自后端配置；判定最终仍以后端为准，前端这层是即时反馈。" },
+        { h: "改密规则附格式示例", t: "规则说明里给出一个符合形状的示例（并当场注明请勿直接使用 —— 示例写在页面上，谁都看得见）。" },
+        { h: "管理端标签页图标换成锅圈 logo", t: "此前浏览器标签上还是默认图标。" }
+      ]},
+      { type: "verified", items: [
+        { h: "真 DOM 验收 13 项全通过", t: "面板底部锚定是坐标断言（面板底端接近视口底）、实时校验用「弱密码不全绿 → 强密码全绿」两态断言、菜单跳转与面板关闭、favicon 指向。" }
+      ]}
+    ]
+  },
   {
     version: "v2.0.0-p2.19",
     date: "2026-10-08",
