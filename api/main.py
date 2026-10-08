@@ -34,7 +34,7 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.PROJECT_VERSION,
     description=(
-        "企业级 RAG 智能问答系统：向量检索 + CrossEncoder 重排 + "
+        "锅圈RAG 智能问答系统：向量检索 + CrossEncoder 重排 + "
         "多轮对话记忆 + 意图识别，对外提供 RESTful 问答接口。"
     ),
 )

@@ -16,6 +16,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import ModalDialog from '@/components/ModalDialog.vue'
+import { useConfirmStore } from '@/stores/confirm'
 import ToastStack from '@/components/ToastStack.vue'
 import { newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
@@ -26,6 +27,7 @@ const departments = ref<DepartmentRow[]>([])
 const positions = ref<PositionRow[]>([])
 const users = ref<{ id: number; display_name: string; department_id: number | null }[]>([])
 const toasts = ref<ToastItem[]>([])
+const confirm = useConfirmStore()
 
 function toast(kind: ToastItem['kind'], text: string) {
   const item = newToast(kind, text)
@@ -170,6 +172,16 @@ async function submitDept() {
   }
 }
 async function removeDept(d: DepartmentRow) {
+  // P2-21：删除部门加二次确认（用户要求：所有删除操作都要确认）。
+  // ⚠️ 文案不写「会同时删除成员」——后端有校验（有子部门/有成员时拒绝），
+  //   前端不要替后端承诺一件它不做的事（那会让「删不掉」显得像 bug）。
+  const ok = await confirm.ask({
+    title: `删除部门「${d.name}」？`,
+    text: '删除后不可恢复。若该部门下还有子部门或成员，后端会拒绝删除。',
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api.deleteDepartment(d.id)
     toast('ok', `部门「${d.name}」已删除`)
@@ -229,6 +241,14 @@ async function submitPos() {
   }
 }
 async function removePos(p: PositionRow) {
+  // P2-21：删除职位加二次确认（同上）。
+  const ok = await confirm.ask({
+    title: `删除职位「${p.name}」？`,
+    text: '删除后不可恢复。若还有员工挂在该职位上，后端会拒绝删除。',
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return
   try {
     await api.deletePosition(p.id)
     toast('ok', `职位「${p.name}」已删除`)

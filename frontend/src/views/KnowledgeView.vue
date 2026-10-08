@@ -25,10 +25,12 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { getDocumentChunks } from '@/api/documents'
 import { useDocumentStore } from '@/stores/documents'
 import { useUiStore } from '@/stores/ui'
+import { useConfirmStore } from '@/stores/confirm'
 import type { DocStatus, DocumentChunk, KnowledgeDoc } from '@/types'
 
 const docs = useDocumentStore()
 const ui = useUiStore()
+const confirm = useConfirmStore()
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragOver = ref(false)
 
@@ -174,10 +176,17 @@ function confirmRemove(d: KnowledgeDoc) {
       : d.status === 'pending'
         ? '\n\n注意：该文档还在排队，删除后不会再被解析。'
         : ''
-  const ok = window.confirm(
-    `确认从知识库删除「${d.file_name}」？\n会同时移除磁盘原文件、全部向量片段与元数据记录。${extra}`,
-  )
-  if (ok) void docs.remove(d)
+  // P2-21：window.confirm → 通用确认组件（样式统一、可 await、可测）
+  void confirm
+    .ask({
+      title: `确认从知识库删除「${d.file_name}」？`,
+      text: `会同时移除磁盘原文件、全部向量片段与元数据记录。${extra}`,
+      confirmText: '删除',
+      danger: true,
+    })
+    .then((ok) => {
+      if (ok) void docs.remove(d)
+    })
 }
 
 /**

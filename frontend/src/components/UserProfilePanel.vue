@@ -1,52 +1,39 @@
 <script setup lang="ts">
 /**
- * P2-16a/P2-20：个人中心面板（点侧边栏左下角用户区弹出）。
+ * P2-16a / P2-20 / P2-21：个人中心面板（点侧边栏左下角用户区弹出）。
  *
- * P2-20 按用户要求参考 WorkBuddy 的交互重做：
- *  - **底部锚定的弹出菜单**（不是居中 Modal）：头像/名称在顶、
- *    菜单项在中间层（系统设置 / 文件传输·知识库 / 修改密码）、退出登录在底部；
- *  - 「系统设置」「文件传输」作为面板的菜单项（点击 → ui.switchView，面板关闭）；
- *    外侧个人名字右侧的退出登录入口**保留**，面板底部也有一份；
- *  - 基本资料与用量区保留（16a）。
+ * 结构（参考 WorkBuddy 的交互）：
+ *   头像/姓名/部门职位（顶）→ 基本资料 → 用量 → 菜单层 → 退出登录（底）。
  *
- * 改密表单（P2-18 保留 + P2-20 增强）：
- *  - 输入框有占位文本；
- *  - 🔴 新密码**实时校验**：输入时逐条显示 11b 规则是否满足（UX 预检）——
- *    判定的唯一出处仍是后端 `password_policy`（提交时后端会再完整验一遍），
- *    前端这层只是即时反馈，参数（最小长度）从 `/qa/me/password-policy` 下发；
- *  - 规则提示带**示例格式**（并注明仅演示、请勿直接使用）。
+ * P2-21 三处调整：
+ *  ① **「系统设置 / 文件传输·知识库」两个入口从侧边栏移进来**（侧边栏本体不再有它们）；
+ *     图标换用侧边栏原来那套线性 SVG（用户明确「那个图标比展开的好看」）；
+ *  ② **修改密码改为独立弹窗**（`ChangePasswordDialog`）—— 本面板只 emit 事件，
+ *     不做表单（面板是「看信息 + 导航」，改密是完整任务，两种交互模型不混在一起）；
+ *  ③ 退出登录走**通用二次确认**（`stores/confirm.ts`，全站同一套弹窗）。
  *
- * 数据在打开时拉一次（低频查看动作，不轮询）。
+ * 数据打开时拉一次（低频查看，不轮询）。
  */
-import { computed, ref, watch } from 'vue'
-import {
-  changeMyPassword,
-  fetchMyProfile,
-  fetchPasswordPolicyHint,
-  type MyProfile,
-  type PasswordPolicyHint,
-} from '@/api/qa'
+import { ref, watch } from 'vue'
+import { fetchMyProfile, type MyProfile } from '@/api/qa'
 import { useAuthStore } from '@/stores/auth'
+import { useConfirmStore } from '@/stores/confirm'
 import { useUiStore } from '@/stores/ui'
 
 const auth = useAuthStore()
+const confirm = useConfirmStore()
 const ui = useUiStore()
 
 const props = defineProps<{ open: boolean }>()
-const emit = defineEmits<{ (e: 'close'): void }>()
+const emit = defineEmits<{
+  (e: 'close'): void
+  /** P2-21：请求打开「修改密码」独立弹窗（由父层挂载组件） */
+  (e: 'change-password'): void
+}>()
 
 const profile = ref<MyProfile | null>(null)
 const loading = ref(false)
 const error = ref('')
-
-// 视图切换：info（默认）⇄ password（改密表单）
-const mode = ref<'info' | 'password'>('info')
-const oldPwd = ref('')
-const newPwd = ref('')
-const newPwd2 = ref('')
-const pwdError = ref('')
-const pwdSaving = ref(false)
-const policyHint = ref<PasswordPolicyHint | null>(null)
 
 watch(
   () => props.open,
@@ -55,16 +42,6 @@ watch(
     loading.value = true
     error.value = ''
     profile.value = null
-    // 每次打开重置到信息视图与表单
-    mode.value = 'info'
-    oldPwd.value = ''
-    newPwd.value = ''
-    newPwd2.value = ''
-    pwdError.value = ''
-    // P2-19：改密规则提示只在打开时拉一次（数字来自 11b 策略，前端不写死）
-    fetchPasswordPolicyHint()
-      .then((h) => (policyHint.value = h))
-      .catch(() => (policyHint.value = null))
     try {
       profile.value = await fetchMyProfile()
     } catch {
@@ -75,84 +52,22 @@ watch(
   },
 )
 
-/** 示例密码：只演示「长位数 + 多字符类」的形状。⚠️ 注明请勿直接使用。 */
-const SAMPLE_PASSWORD = 'Xk9#mQ2vLp'
-
-/**
- * 🔴 实时校验（P2-20）：新密码输入时逐条显示 11b 规则是否满足。
- *
- * 规则与后端 `password_policy.validate_strength` 对齐：
- *   ① 长度 ≥ min_length（参数从 policy 端点下发，默认 10）
- *   ② 至少包含 大写/小写/数字/符号 中的两类
- *   ③ 不包含登录名（不区分大小写）
- * 两次输入一致单独一条（表单层规则）。
- *
- * ⚠️ 这是 **UX 预检**，不是判据第二份：后端提交时仍会完整校验。
- */
-const pwdChecks = computed(() => {
-  const v = newPwd.value
-  const minLen = policyHint.value?.min_length ?? 10
-  const classes = [
-    /[a-z]/.test(v),
-    /[A-Z]/.test(v),
-    /\d/.test(v),
-    /[^A-Za-z0-9]/.test(v),
-  ].filter(Boolean).length
-  const username = auth.username || ''
-  return [
-    {
-      ok: v.length >= minLen,
-      text: `至少 ${minLen} 位（当前 ${v.length}）`,
-    },
-    {
-      ok: classes >= 2,
-      text: '包含大写字母 / 小写字母 / 数字 / 符号中的至少两类',
-    },
-    {
-      ok: username === '' || !v.toLowerCase().includes(username.toLowerCase()),
-      text: '不包含登录名',
-    },
-    {
-      ok: newPwd2.value !== '' && v === newPwd2.value,
-      text: '两次输入一致',
-    },
-  ]
-})
-
-const allChecksPass = computed(() => pwdChecks.value.every((c) => c.ok))
-
-function switchMode(m: 'info' | 'password') {
-  mode.value = m
-  pwdError.value = ''
-  oldPwd.value = ''
-  newPwd.value = ''
-  newPwd2.value = ''
-}
-
-async function submitPassword() {
-  pwdError.value = ''
-  if (!allChecksPass.value) {
-    pwdError.value = '新密码尚未满足全部规则'
-    return
-  }
-  pwdSaving.value = true
-  try {
-    const res = await changeMyPassword(oldPwd.value, newPwd.value)
-    // 成功 → 清凭据回登录页（token_version+1 后旧 token 必然 401，
-    // 与其等下一次请求被打回，不如现在就干净地退出）
-    window.alert(res.message || '密码已修改，请重新登录')
-    await auth.logout()
-  } catch (e) {
-    pwdError.value = e instanceof Error && e.message ? e.message : '修改失败，请稍后重试'
-  } finally {
-    pwdSaving.value = false
-  }
-}
-
 /** 菜单项：切视图 + 关面板 */
 function navTo(view: 'settings' | 'knowledge') {
   ui.switchView(view)
   onClose()
+}
+
+/** P2-21：退出登录二次确认（文案说明「数据不会丢」—— 不说清会让人不敢点） */
+async function onLogout() {
+  const ok = await confirm.ask({
+    title: '确认退出登录？',
+    text: '退出后需要用账号密码重新登录。你的会话记录与知识库内容都保存在服务端，不会丢失。',
+    confirmText: '退出登录',
+  })
+  if (!ok) return
+  onClose()
+  await auth.logout()
 }
 
 function fmt(n: number | null | undefined): string {
@@ -169,7 +84,7 @@ function onClose() {
     <!-- 点击遮罩关闭；面板锚定在侧边栏左下角用户区上方（WorkBuddy 式） -->
     <div v-if="open" class="pp-mask" @click.self="onClose">
       <div class="pp-panel" role="dialog" aria-label="个人中心">
-        <!-- ① 头部：头像 + 姓名 + 部门职位 -->
+        <!-- ① 头部 -->
         <header class="pp-card pp-head-card">
           <div class="pp-avatar">{{ profile?.profile.display_name.slice(0, 1) ?? '…' }}</div>
           <div class="pp-head-text">
@@ -183,65 +98,8 @@ function onClose() {
         <p v-if="loading" class="pp-state">加载中…</p>
         <p v-else-if="error" class="pp-state pp-error">{{ error }}</p>
 
-        <!-- ② 改密视图（面板内切换） -->
-        <div v-else-if="mode === 'password'" class="pp-card pp-pwd-card">
-          <div class="pp-card-title">
-            <button class="pp-back" aria-label="返回" @click="switchMode('info')">‹</button>
-            <span>修改密码</span>
-          </div>
-          <label class="pp-field">
-            <span>当前密码</span>
-            <input
-              v-model="oldPwd"
-              type="password"
-              placeholder="输入当前使用的密码"
-              autocomplete="current-password"
-            />
-          </label>
-          <label class="pp-field">
-            <span>新密码</span>
-            <input
-              v-model="newPwd"
-              type="password"
-              placeholder="输入新密码（见下方规则）"
-              autocomplete="new-password"
-            />
-          </label>
-          <!-- 🔴 实时校验：输入时逐条显示规则是否满足 -->
-          <ul v-if="newPwd" class="pp-checks">
-            <li v-for="c in pwdChecks" :key="c.text" :class="{ ok: c.ok }">
-              <span class="pp-check-mark">{{ c.ok ? '✓' : '○' }}</span>
-              {{ c.text }}
-            </li>
-          </ul>
-          <label class="pp-field">
-            <span>确认新密码</span>
-            <input
-              v-model="newPwd2"
-              type="password"
-              placeholder="再输入一次新密码"
-              autocomplete="new-password"
-            />
-          </label>
-          <p v-if="pwdError" class="pp-error">{{ pwdError }}</p>
-          <p v-if="policyHint" class="pp-rules">
-            规则：至少 {{ policyHint.min_length }} 位，含大小写字母、数字、符号中至少两类，
-            不含登录名，不与最近 {{ policyHint.history_keep }} 次重复。
-            示例格式：<code class="mono">{{ SAMPLE_PASSWORD }}</code>
-            （仅演示形状，请勿直接使用）。有效期 {{ policyHint.expire_days }} 天。
-          </p>
-          <button
-            class="pp-btn pp-btn--primary pp-btn--block"
-            :disabled="pwdSaving || !allChecksPass || !oldPwd"
-            @click="submitPassword"
-          >
-            {{ pwdSaving ? '提交中…' : '确认修改' }}
-          </button>
-          <p class="pp-note muted">改密成功后会退出登录，请用新密码重新登录。</p>
-        </div>
-
-        <!-- ③ 信息视图（默认） -->
         <template v-else-if="profile">
+          <!-- ② 基本资料 -->
           <div class="pp-card">
             <dl class="pp-rows">
               <div class="pp-row"><dt>登录名</dt><dd class="mono">{{ profile.profile.username }}</dd></div>
@@ -253,6 +111,7 @@ function onClose() {
             </dl>
           </div>
 
+          <!-- ③ 用量（P2-16a，用户明确希望保留） -->
           <div class="pp-card">
             <div class="pp-usage-line">
               <span class="pp-usage-label">本月用量</span>
@@ -274,29 +133,45 @@ function onClose() {
             <p class="pp-note muted">超额只提醒，不限制使用；删除会话会同时移除其用量记录。</p>
           </div>
 
-          <!-- ④ 菜单层（中间层）：系统设置 / 文件传输 / 修改密码 -->
+          <!-- ④ 菜单层：图标用侧边栏原来那套线性 SVG（用户要求） -->
           <nav class="pp-menu">
             <button class="pp-menu-item" @click="navTo('settings')">
-              <span class="pp-menu-icon">⚙</span>
+              <svg class="pp-menu-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
               <span>系统设置</span>
               <span class="pp-menu-arrow">›</span>
             </button>
             <button class="pp-menu-item" @click="navTo('knowledge')">
-              <span class="pp-menu-icon">⇪</span>
+              <svg class="pp-menu-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
               <span>文件传输 · 知识库</span>
               <span class="pp-menu-arrow">›</span>
             </button>
-            <button class="pp-menu-item" @click="switchMode('password')">
-              <span class="pp-menu-icon">🔑</span>
+            <!-- P2-21：钥匙图标为单色线性（不用 emoji —— 彩色 emoji 与主题不搭） -->
+            <button class="pp-menu-item" @click="emit('change-password')">
+              <svg class="pp-menu-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="7.5" cy="15.5" r="4.5" />
+                <path d="M10.7 12.3 20 3" />
+                <path d="M16 7l3 3" />
+              </svg>
               <span>修改密码</span>
               <span class="pp-menu-arrow">›</span>
             </button>
           </nav>
 
-          <!-- ⑤ 底部：退出登录（外侧个人名字右侧的退出入口保留） -->
+          <!-- ⑤ 退出登录（外侧用户区右侧的退出入口保留） -->
           <div class="pp-menu pp-menu--last">
-            <button class="pp-menu-item pp-logout" @click="auth.logout()">
-              <span class="pp-menu-icon">→</span>
+            <button class="pp-menu-item pp-logout" @click="onLogout">
+              <svg class="pp-menu-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
               <span>退出登录</span>
             </button>
           </div>
@@ -307,20 +182,20 @@ function onClose() {
 </template>
 
 <style scoped>
-/* 遮罩：透明（点击空白关闭），不用暗遮罩 —— 面板是轻量弹出，不是模态 */
+/* 遮罩：透明（点击空白关闭）—— 轻量弹出，不是模态 */
 .pp-mask {
   position: fixed;
   inset: 0;
   z-index: 60;
 }
 
-/* 🔴 底部锚定：面板贴着侧边栏左下角用户区的上方（WorkBuddy 式交互）。
-   侧边栏宽 --sidebar-width，用户区高约 60px —— 面板 left/bottom 与之对齐。 */
+/* 🔴 底部锚定：贴着侧边栏左下角用户区上方。
+   P2-21：宽度调大（用户反馈字段换行）—— 比 --sidebar-width 大是有意的。 */
 .pp-panel {
   position: fixed;
   left: 10px;
   bottom: 74px;
-  width: calc(var(--sidebar-width, 260px) - 20px);
+  width: 340px;
   max-height: calc(100vh - 100px);
   overflow-y: auto;
   background: var(--bg-panel, #fff);
@@ -379,15 +254,21 @@ function onClose() {
 .pp-row {
   display: flex;
   justify-content: space-between;
+  gap: 12px;
   font-size: 13px;
 }
 
 .pp-row dt {
   color: var(--text-3, #888);
+  flex-shrink: 0;
 }
 
 .pp-row dd {
   margin: 0;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pp-usage-line {
@@ -431,9 +312,9 @@ function onClose() {
   background: var(--bg-hover, rgba(0, 0, 0, 0.05));
 }
 
+/* 🔴 单色线性图标（currentColor）—— 不用彩色 emoji */
 .pp-menu-icon {
-  width: 18px;
-  text-align: center;
+  flex-shrink: 0;
   color: var(--text-2, #666);
 }
 
@@ -442,129 +323,14 @@ function onClose() {
   color: var(--text-3, #999);
 }
 
-.pp-logout {
-  color: #d9534f;
-}
-
+.pp-logout,
 .pp-logout .pp-menu-icon {
   color: #d9534f;
 }
 
-/* 改密表单 */
-.pp-card-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  font-size: 14px;
-  margin-bottom: 10px;
-}
-
-.pp-back {
-  border: none;
-  background: none;
-  font-size: 18px;
-  cursor: pointer;
-  color: var(--text-2, #666);
-  padding: 0 4px;
-}
-
-.pp-pwd-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.pp-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.pp-field span {
-  font-size: 12px;
-  color: var(--text-3, #888);
-}
-
-.pp-field input {
-  padding: 8px 10px;
-  border: 1px solid var(--border, #ddd);
-  border-radius: 8px;
-  background: var(--bg-app, #fff);
-  color: inherit;
-  font-size: 13px;
-}
-
-.pp-field input:focus {
-  outline: none;
-  border-color: var(--primary, #4a6cf7);
-}
-
-/* 🔴 实时校验列表：满足=绿勾，未满足=灰圈 */
-.pp-checks {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.pp-checks li {
-  font-size: 12px;
-  color: var(--text-3, #999);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.pp-checks li.ok {
-  color: #3fb950;
-}
-
-.pp-check-mark {
-  width: 14px;
-  text-align: center;
-}
-
-.pp-rules {
-  font-size: 12px;
-  color: var(--text-2, #666);
-  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin: 0;
-  line-height: 1.6;
-}
-
-.pp-btn {
-  padding: 8px 14px;
-  border-radius: 8px;
-  border: 1px solid var(--border, #ddd);
-  background: none;
-  color: inherit;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.pp-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.pp-btn--primary {
-  background: var(--primary, #4a6cf7);
-  border-color: var(--primary, #4a6cf7);
-  color: #fff;
-}
-
-.pp-btn--block {
-  width: 100%;
-}
-
 .pp-note {
   font-size: 11px;
-  margin: 0;
+  margin: 6px 0 0;
 }
 
 .pp-state {
@@ -576,7 +342,6 @@ function onClose() {
 .pp-error {
   color: #d9534f;
   font-size: 12px;
-  margin: 0;
 }
 
 .muted {

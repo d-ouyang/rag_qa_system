@@ -17,6 +17,7 @@
 import { onMounted, watch } from 'vue'
 import AppSidebar from '@/components/AppSidebar.vue'
 import QuotaBanner from '@/components/QuotaBanner.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import ChatView from '@/views/ChatView.vue'
 import KnowledgeView from '@/views/KnowledgeView.vue'
 import LoginView from '@/views/LoginView.vue'
@@ -79,6 +80,8 @@ watch(
       <SettingsView v-else-if="ui.activeView === 'settings'" />
     </main>
     <ToastStack />
+    <!-- P2-21：全局二次确认（一次挂载，处处 await） -->
+    <ConfirmDialog />
   </div>
 </template>
 

@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # 项目信息
-    PROJECT_NAME : str = "rag-qa-system"
+    PROJECT_NAME : str = "锅圈RAG 智能问答系统"
     PROJECT_VERSION : str = "1.0.0"
     BASE_DIR : Path = Path(__file__).parent.parent.resolve()
 

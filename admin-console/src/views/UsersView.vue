@@ -25,8 +25,10 @@ import * as api from '@/api/admin'
 import { ROLE_LABEL, STATUS_LABEL, type KbRole, type KbRoleOption, type Role, type UserRow, type UserStatus } from '@/api/admin'
 import { ApiError } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import { useConfirmStore } from '@/stores/confirm'
 
 const auth = useAuthStore()
+const confirm = useConfirmStore()
 
 // ---------- 数据 ----------
 const rows = ref<UserRow[]>([])
@@ -252,21 +254,25 @@ async function copyTemp() {
 }
 
 // ---------- 状态与角色 ----------
-const confirmOpen = ref(false)
-const confirmText = ref('')
-const confirmAction = ref<(() => Promise<void>) | null>(null)
-
-function ask(text: string, action: () => Promise<void>) {
-  confirmText.value = text
-  confirmAction.value = action
-  confirmOpen.value = true
-}
-
-async function runConfirm() {
-  const action = confirmAction.value
-  confirmOpen.value = false
-  confirmAction.value = null
-  if (action) await action()
+/**
+ * P2-21：确认统一走全局 `confirm` store（这是**适配层**，保持原有
+ * `ask(文案, 动作)` 调用点不动 —— 5 处调用点的文案都是「标题？+\n\n+ 说明」
+ * 的格式，第一段当标题、其余当正文）。
+ *
+ * 🔴 这样做的理由：这几个操作（重置密码/改状态/改角色/改档位/改额度）
+ *    的确认文案都是逐字打磨过的（写明后果），迁移时**不能动文案**；
+ *    抽通用组件只该换「弹窗长什么样」，不该顺手改「说了什么」。
+ *    第三参 danger 由调用点显式传（不靠文案里有没有「删除」来猜）。
+ */
+async function ask(text: string, action: () => Promise<void>, danger = false) {
+  const [title, ...rest] = text.split('\n\n')
+  const ok = await confirm.ask({
+    title,
+    text: rest.join('\n\n').trim(),
+    danger,
+    confirmText: danger ? '确认' : '确认',
+  })
+  if (ok) await action()
 }
 
 function askReset(row: UserRow) {
@@ -285,6 +291,7 @@ function askReset(row: UserRow) {
         toast('error', e instanceof ApiError ? e.message : '重置失败')
       }
     },
+    true,
   )
 }
 
@@ -807,13 +814,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
     </ModalDialog>
 
     <!-- 二次确认 -->
-    <ModalDialog :open="confirmOpen" title="确认操作" :width="420" @close="confirmOpen = false">
-      <p class="confirm-text">{{ confirmText }}</p>
-      <template #footer>
-        <button class="btn" @click="confirmOpen = false">取消</button>
-        <button class="btn btn-danger" @click="runConfirm">确认</button>
-      </template>
-    </ModalDialog>
+
 
     <ToastStack :items="toasts" @dismiss="dismiss" />
   </div>

@@ -40,8 +40,10 @@ import * as api from '@/api/admin'
 import type { BoardItem, PasswordBoard } from '@/api/admin'
 import { ApiError } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import { useConfirmStore } from '@/stores/confirm'
 
 const auth = useAuthStore()
+const confirm = useConfirmStore()
 
 type BucketKey = 'must_change' | 'expired' | 'expiring_soon' | 'stale_login' | 'locked' | 'all'
 
@@ -182,22 +184,12 @@ async function copyTemp() {
   }
 }
 
-// ---------- 二次确认 ----------
-const confirmOpen = ref(false)
-const confirmText = ref('')
-const confirmAction = ref<(() => Promise<void>) | null>(null)
-
-function ask(text: string, action: () => Promise<void>) {
-  confirmText.value = text
-  confirmAction.value = action
-  confirmOpen.value = true
-}
-
-async function runConfirm() {
-  const action = confirmAction.value
-  confirmOpen.value = false
-  confirmAction.value = null
-  if (action) await action()
+// ---------- 二次确认（P2-21：统一走全局 confirm store） ----------
+/** 适配层：保持 `ask(文案, 动作, danger)` 调用点与逐字文案不变。 */
+async function ask(text: string, action: () => Promise<void>, danger = false) {
+  const [title, ...rest] = text.split('\n\n')
+  const ok = await confirm.ask({ title, text: rest.join('\n\n').trim(), danger })
+  if (ok) await action()
 }
 
 async function reload() {
@@ -390,13 +382,7 @@ function doDisable(item: BoardItem) {
     </ModalDialog>
 
     <!-- 二次确认 -->
-    <ModalDialog :open="confirmOpen" title="确认操作" :width="420" @close="confirmOpen = false">
-      <p class="confirm-text">{{ confirmText }}</p>
-      <template #footer>
-        <button class="btn" @click="confirmOpen = false">取消</button>
-        <button class="btn btn-danger" @click="runConfirm">确认</button>
-      </template>
-    </ModalDialog>
+
 
     <ToastStack :items="toasts" @dismiss="dismiss" />
   </div>

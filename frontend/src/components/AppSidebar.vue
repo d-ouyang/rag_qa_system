@@ -12,17 +12,28 @@ import { useSessionStore, type LocalSession } from '@/stores/sessions'
 import { useSettingsStore } from '@/stores/settings'
 import { useUiStore, type ActiveView } from '@/stores/ui'
 import UserProfilePanel from '@/components/UserProfilePanel.vue'
+import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
+import { useConfirmStore } from '@/stores/confirm'
 
 const ui = useUiStore()
 const sessions = useSessionStore()
 const settingsStore = useSettingsStore()
 const auth = useAuthStore()
+const confirm = useConfirmStore()
 
 /** 头像占位字符：用户名首字母（没有用户名时退化成问号，不显示空白） */
 const userInitial = computed(() => (auth.username || '?').slice(0, 1).toUpperCase())
 
 /** P2-16a：个人信息面板开关。数据在面板打开时自己拉，这里只管开关。 */
 const profileOpen = ref(false)
+// P2-21：改密独立弹窗的开关
+const pwdOpen = ref(false)
+
+/** 面板点「修改密码」→ 关面板 + 开独立弹窗（两种交互模型不混在一起） */
+function onChangePassword() {
+  profileOpen.value = false
+  pwdOpen.value = true
+}
 
 /**
  * 退出登录。
@@ -32,6 +43,14 @@ const profileOpen = ref(false)
  * 清空本地数据、回到登录页由 auth store + App.vue 的 watch 统一处理。
  */
 async function onLogout() {
+  // P2-21：退出登录加二次确认（用户要求）；文案说明「不会丢数据」——
+  // 会话与消息都在后端，登出只是清本地凭据，不说清会让人不敢点。
+  const ok = await confirm.ask({
+    title: '确认退出登录？',
+    text: '退出后需要用账号密码重新登录。你的会话记录与知识库内容都保存在服务端，不会丢失。',
+    confirmText: '退出登录',
+  })
+  if (!ok) return
   await auth.logout()
   ui.toast('已退出登录', 'info')
 }
@@ -128,8 +147,19 @@ function cancelRename() {
   renamingId.value = null
 }
 
-function onRemove(sessionId: string) {
+async function onRemove(sessionId: string) {
   menuFor.value = null
+  // P2-21：删除会话加二次确认（删除会连同消息一起移除，不可恢复）
+  const target = [...sessions.pinnedSessions, ...sessions.normalSessions].find(
+    (x) => x.session_id === sessionId,
+  )
+  const ok = await confirm.ask({
+    title: `确认删除会话「${target?.title ?? sessionId}」？`,
+    text: '该会话下的全部对话消息会一并删除，且无法恢复。',
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!ok) return
   void sessions.removeSession(sessionId).then(() => {
     // 删完当前会话后自动落到最近一个会话（没有则新建）
     if (!sessions.currentId) {
@@ -159,7 +189,7 @@ function fmtTime(ts: number | null): string {
     <div class="project-card" @click="navTo('chat')">
       <img class="project-logo" src="/gq_logo.jpg" alt="锅圈" />
       <div class="project-meta">
-        <div class="project-name">RAG 智能问答系统</div>
+        <div class="project-name">锅圈RAG 智能问答系统</div>
         <div class="project-sub">
           <span class="tag">v{{ version }}</span>
           <span class="health" :class="serviceUp === true ? 'up' : serviceUp === false ? 'down' : ''">
@@ -247,32 +277,6 @@ function fmtTime(ts: number | null): string {
       </template>
     </div>
 
-    <!-- ③ 功能入口 -->
-    <div class="sidebar-footer">
-      <button
-        class="nav-btn"
-        :class="{ active: ui.activeView === 'knowledge' }"
-        @click="navTo('knowledge')"
-      >
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-          <polyline points="17 8 12 3 7 8" />
-          <line x1="12" y1="3" x2="12" y2="15" />
-        </svg>
-        文件传输 · 知识库
-      </button>
-      <button
-        class="nav-btn"
-        :class="{ active: ui.activeView === 'settings' }"
-        @click="navTo('settings')"
-      >
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-        系统设置
-      </button>
-    </div>
 
     <!-- ④ 当前登录用户 + 退出登录。P2-16a：整块可点 → 个人信息面板（退出按钮 stopPropagation 不受影响） -->
     <div class="user-bar user-bar--clickable" role="button" tabindex="0"
@@ -294,7 +298,14 @@ function fmtTime(ts: number | null): string {
     </div>
   </aside>
 
-  <UserProfilePanel :open="profileOpen" @close="profileOpen = false" />
+    <UserProfilePanel
+    :open="profileOpen"
+    @close="profileOpen = false"
+    @change-password="onChangePassword"
+  />
+
+  <!-- P2-21：修改密码是独立弹窗（不在个人中心面板里做表单） -->
+  <ChangePasswordDialog :open="pwdOpen" @close="pwdOpen = false" />
 </template>
 
 <style scoped>

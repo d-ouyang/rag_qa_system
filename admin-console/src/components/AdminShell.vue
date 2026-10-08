@@ -9,6 +9,7 @@
 import { computed } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { ROLE_LABEL } from '@/api/admin'
 
 interface NavItem {
@@ -82,6 +83,8 @@ async function logout() {
     <main class="content">
       <RouterView />
     </main>
+    <!-- P2-21：全局二次确认（一次挂载，处处 await） -->
+    <ConfirmDialog />
   </div>
 </template>
 

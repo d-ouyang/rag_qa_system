@@ -16,9 +16,6 @@ import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 
-/** 仅开发构建下展示默认账号提示（生产构建里该分支会被摇掉） */
-const isDev = import.meta.env.DEV
-
 const username = ref('')
 const password = ref('')
 const errorText = ref('')
@@ -54,7 +51,7 @@ async function submit() {
     <form class="login-card" @submit.prevent="submit">
       <div class="brand">
         <img class="brand-mark" src="/gq_logo.jpg" alt="锅圈" />
-        <h1>企业级 RAG 智能问答系统</h1>
+        <h1>锅圈RAG 智能问答系统</h1>
         <p>请登录后使用</p>
       </div>
 
@@ -88,8 +85,6 @@ async function submit() {
       <button class="submit" type="submit" :disabled="!canSubmit">
         {{ loading ? '登录中…' : '登录' }}
       </button>
-
-      <p v-if="isDev" class="hint">本地开发默认账号：admin / admin123</p>
     </form>
   </div>
 </template>
