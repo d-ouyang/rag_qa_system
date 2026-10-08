@@ -92,8 +92,7 @@ async function submit() {
       </button>
 
       <p class="foot muted">
-        登录走鉴权网关（与主应用同一个入口）；进入后还会向后端确认你的角色，
-        <strong>普通员工账号会被拒</strong>。
+        本入口仅限管理与人事账号使用，<strong>普通员工账号无法登录</strong>。
       </p>
     </form>
   </div>

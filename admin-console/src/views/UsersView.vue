@@ -299,7 +299,7 @@ function changeStatus(row: UserRow, status: UserStatus) {
   const label = STATUS_LABEL[status]
   ask(
     `把「${row.display_name}」改为${label}？\n\n` +
-      `他手上的登录凭证会立刻失效（token_version + 1），需要重新登录。`,
+      `他手上的登录凭证会立刻失效，需要重新登录。`,
     async () => {
       try {
         await api.setUserStatus(row.id, status)
@@ -804,7 +804,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
       <p class="temp-lead">{{ tempPasswordFor }} 的临时密码：</p>
       <div class="temp-box mono" @click="copyTemp">{{ tempPassword }}</div>
       <p class="hint-block">
-        ⚠️ 关掉这个窗口之后就再也看不到了（后端只存哈希，没有第二次查看的接口）。
+        ⚠️ 出于安全考虑，系统只保存密码的加密结果，关掉这个窗口后就无法再次查看。
         请立刻发给本人；他首次登录会被强制改掉。丢了只能再重置一次。
       </p>
       <template #footer>

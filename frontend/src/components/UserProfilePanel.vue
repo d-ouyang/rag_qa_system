@@ -62,7 +62,7 @@ function navTo(view: 'settings' | 'knowledge') {
 async function onLogout() {
   const ok = await confirm.ask({
     title: '确认退出登录？',
-    text: '退出后需要用账号密码重新登录。你的会话记录与知识库内容都保存在服务端，不会丢失。',
+    text: '退出后需要用账号密码重新登录。你的会话记录与知识库内容都不会丢失。',
     confirmText: '退出登录',
   })
   if (!ok) return

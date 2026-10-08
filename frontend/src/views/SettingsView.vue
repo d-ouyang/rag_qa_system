@@ -115,7 +115,7 @@ const groups = computed(() => {
     <header class="page-header">
       <div>
         <h2>系统设置</h2>
-        <p class="page-desc">当前问答系统运行配置（只读）。配置来源于 .env 与环境变量，修改后重启后端生效。</p>
+        <p class="page-desc">当前问答系统运行配置（只读）。配置来源于系统配置文件，修改后需重启系统生效。</p>
       </div>
       <div class="header-actions">
         <button class="btn-ghost" :disabled="settingsStore.loading" @click="settingsStore.refresh()">

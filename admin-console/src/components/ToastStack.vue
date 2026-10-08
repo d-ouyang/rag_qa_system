@@ -29,10 +29,17 @@ const emit = defineEmits<{ (e: 'dismiss', id: number): void }>()
 .toasts {
   position: fixed;
   top: 16px;
-  right: 20px;
+  /* P2-21c：中间顶部。用 left/right:0 + margin auto 居中 ——
+     不用 translateX(-50%)（实测 transform 被页面其他规则覆盖成 identity，
+     盒子停在左半边；margin auto 居中不受 transform 影响）。 */
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: fit-content;
   z-index: 80;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   gap: 8px;
   max-width: 380px;
 }

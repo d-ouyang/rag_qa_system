@@ -177,7 +177,7 @@ async function removeDept(d: DepartmentRow) {
   //   前端不要替后端承诺一件它不做的事（那会让「删不掉」显得像 bug）。
   const ok = await confirm.ask({
     title: `删除部门「${d.name}」？`,
-    text: '删除后不可恢复。若该部门下还有子部门或成员，后端会拒绝删除。',
+    text: '删除后不可恢复。若该部门下还有子部门或成员，则无法删除。',
     confirmText: '删除',
     danger: true,
   })
@@ -244,7 +244,7 @@ async function removePos(p: PositionRow) {
   // P2-21：删除职位加二次确认（同上）。
   const ok = await confirm.ask({
     title: `删除职位「${p.name}」？`,
-    text: '删除后不可恢复。若还有员工挂在该职位上，后端会拒绝删除。',
+    text: '删除后不可恢复。若还有员工挂在该职位上，则无法删除。',
     confirmText: '删除',
     danger: true,
   })

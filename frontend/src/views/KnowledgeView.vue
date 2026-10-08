@@ -180,7 +180,7 @@ function confirmRemove(d: KnowledgeDoc) {
   void confirm
     .ask({
       title: `确认从知识库删除「${d.file_name}」？`,
-      text: `会同时移除磁盘原文件、全部向量片段与元数据记录。${extra}`,
+      text: `会同时删除原文档文件，以及它在问答系统里的全部相关记录。${extra}`,
       confirmText: '删除',
       danger: true,
     })
