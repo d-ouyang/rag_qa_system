@@ -101,7 +101,7 @@ function forbiddenParents(deptId: number): Set<number> {
 // ---------- 部门弹窗 ----------
 const deptOpen = ref(false)
 const deptEditing = ref<DepartmentRow | null>(null)
-const deptForm = ref({ code: '', name: '', parent_id: null as number | null, leader_user_id: null as number | null, sort_order: 0 })
+const deptForm = ref({ code: '', name: '', parent_id: '' as number | '' | null, leader_user_id: '' as number | '' | null, sort_order: 0 })
 const deptError = ref('')
 const deptSaving = ref(false)
 
@@ -114,11 +114,12 @@ const parentOptions = computed(() => {
 // ⚠️ parentSelectOptions 基于 **parentOptions**（已排除自己与子孙）而不是 departments
 //    —— 部门树防环的那道前端拦截不能因为换下拉组件而丢掉。
 const parentSelectOptions = computed(() => [
-  { value: null, label: '（无，作为一级部门）' },
+  // ⚠️ null 在 EP 里显示 placeholder —— 「无」用 '' 哨兵，提交时转回 null
+  { value: '', label: '（无，作为一级部门）' },
   ...parentOptions.value.map((d) => ({ value: d.id, label: d.name })),
 ])
 const leaderSelectOptions = computed(() => [
-  { value: null, label: '（未指定）' },
+  { value: '', label: '（未指定）' },
   ...users.value.map((u) => ({ value: u.id, label: u.display_name })),
 ])
 const sequenceOptions = Object.entries(SEQUENCE_LABEL).map(([key, label]) => ({ value: key, label }))
@@ -132,8 +133,8 @@ function openDeptCreate() {
 function openDeptEdit(d: DepartmentRow) {
   deptEditing.value = d
   deptForm.value = {
-    code: d.code, name: d.name, parent_id: d.parent_id,
-    leader_user_id: d.leader_user_id, sort_order: d.sort_order,
+    code: d.code, name: d.name, parent_id: d.parent_id ?? '',
+    leader_user_id: d.leader_user_id ?? '', sort_order: d.sort_order,
   }
   deptError.value = ''
   deptOpen.value = true
@@ -145,8 +146,8 @@ async function submitDept() {
     if (deptEditing.value) {
       await api.updateDepartment(deptEditing.value.id, {
         name: deptForm.value.name,
-        parent_id: deptForm.value.parent_id,
-        leader_user_id: deptForm.value.leader_user_id,
+        parent_id: deptForm.value.parent_id === '' ? null : deptForm.value.parent_id,
+        leader_user_id: deptForm.value.leader_user_id === '' ? null : deptForm.value.leader_user_id,
         sort_order: deptForm.value.sort_order,
       })
       toast('ok', '部门已更新')
@@ -154,8 +155,8 @@ async function submitDept() {
       await api.createDepartment({
         code: deptForm.value.code,
         name: deptForm.value.name,
-        parent_id: deptForm.value.parent_id,
-        leader_user_id: deptForm.value.leader_user_id,
+        parent_id: deptForm.value.parent_id === '' ? null : deptForm.value.parent_id,
+        leader_user_id: deptForm.value.leader_user_id === '' ? null : deptForm.value.leader_user_id,
         sort_order: deptForm.value.sort_order,
       })
       toast('ok', `部门「${deptForm.value.name}」已创建`)

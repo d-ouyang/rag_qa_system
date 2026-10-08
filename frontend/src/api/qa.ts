@@ -62,6 +62,17 @@ export const fetchMyProfile = () => get<MyProfile>('/api/v1/qa/me/profile')
  * P2-18：本人自助改密。成功后旧 token 全部失效 ——
  * 调用方（面板）负责清除本地凭据并回到登录页。
  */
+/** P2-19：改密规则提示参数（11b 策略，数字后端下发，前端不硬编码）。 */
+export interface PasswordPolicyHint {
+  min_length: number
+  expire_days: number
+  warn_days: number
+  history_keep: number
+}
+
+export const fetchPasswordPolicyHint = () =>
+  get<PasswordPolicyHint>('/api/v1/qa/me/password-policy')
+
 export const changeMyPassword = (oldPassword: string, newPassword: string) =>
   postJson<{ ok: boolean; message: string }>('/api/v1/qa/me/password', {
     old_password: oldPassword,

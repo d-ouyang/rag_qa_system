@@ -184,6 +184,14 @@ async function logout() {
   width: 100%;
   justify-content: center;
 }
+/* P2-19：content 改为 flex 列 + 不整页滚动 —— 「列表滚动、分页固定页底」
+   的前提是每页自己管理滚动（.list-page flex:1），整页滚动会让 pager 被推出视口。
+   非 .list-page 的页面（概览等）保持原滚动：给它们包一层可滚的容器由各自处理，
+   这里统一 overflow:hidden 后概览页若超高会被裁 —— 所以 .content 保留滚动，
+   改为：默认可滚；.list-page 内部用 height 撑满视口减 content padding 的方案不可行，
+   改用 .list-page 高度 = content 高度（.content 不滚时）。
+   结论：.content 仍可滚（概览页需要），.list-page 用
+   `height: calc(100vh - 内容区上下 padding)` 的确定高度实现「pager 固定」。 */
 .content {
   flex: 1;
   min-width: 0;

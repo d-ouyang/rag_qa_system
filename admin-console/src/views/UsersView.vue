@@ -55,7 +55,7 @@ const loading = ref(false)
 const toasts = ref<ToastItem[]>([])
 
 const keyword = ref('')
-const filterDept = ref<number | null>(null)
+const filterDept = ref<number | ''>('')
 const filterRole = ref<Role | ''>('')
 const filterStatus = ref<UserStatus | ''>('')
 const includeResigned = ref(false)
@@ -106,7 +106,7 @@ async function load() {
   try {
     const res = await api.fetchUsers({
       keyword: keyword.value.trim() || undefined,
-      department_id: filterDept.value,
+      department_id: filterDept.value === '' ? null : filterDept.value,
       role: filterRole.value || null,
       status: filterStatus.value || null,
       include_resigned: includeResigned.value,
@@ -144,8 +144,8 @@ const form = ref({
   email: '',
   phone: '',
   gender: '',
-  department_id: null as number | null,
-  position_id: null as number | null,
+  department_id: '' as number | '' | null,
+  position_id: '' as number | '' | null,
   role: 'user' as Role,
 })
 const formError = ref('')
@@ -155,7 +155,7 @@ function openCreate() {
   editing.value = null
   form.value = {
     username: '', employee_no: '', display_name: '', email: '', phone: '',
-    gender: '', department_id: null, position_id: null, role: 'user',
+    gender: '', department_id: '', position_id: '', role: 'user',
   }
   formError.value = ''
   editOpen.value = true
@@ -184,8 +184,8 @@ async function openEdit(row: UserRow) {
     email: detail.email ?? '',
     phone: detail.phone ?? '',
     gender: detail.gender ?? '',
-    department_id: detail.department_id,
-    position_id: detail.position_id,
+    department_id: detail.department_id ?? '',
+    position_id: detail.position_id ?? '',
     role: detail.role,
   }
   formError.value = ''
@@ -202,8 +202,8 @@ async function submitForm() {
         email: form.value.email || null,
         phone: form.value.phone || null,
         gender: form.value.gender || null,
-        department_id: form.value.department_id,
-        position_id: form.value.position_id,
+        department_id: form.value.department_id === '' ? null : form.value.department_id,
+        position_id: form.value.position_id === '' ? null : form.value.position_id,
       })
       toast('ok', `${updated.display_name} 的资料已更新`)
     } else {
@@ -214,8 +214,8 @@ async function submitForm() {
         email: form.value.email || null,
         phone: form.value.phone || null,
         gender: form.value.gender || null,
-        department_id: form.value.department_id,
-        position_id: form.value.position_id,
+        department_id: form.value.department_id === '' ? null : form.value.department_id,
+        position_id: form.value.position_id === '' ? null : form.value.position_id,
         role: form.value.role,
       })
       // 临时密码**只在这里出现一次**，所以必须立刻弹给它看，且不能随手关掉
@@ -428,7 +428,10 @@ function changeQuota(row: UserRow, raw: string) {
  * 用空字符串会与真实的空串枚举值冲突，用 null 语义干净。
  */
 const deptOptions = computed(() => [
-  { value: null, label: '全部部门' },
+  // ⚠️ 「全部」用 '' 哨兵而不是 null：Element Plus 对 null 一律显示 placeholder
+  //   （实测：filterDept=null 时界面显示 "Select" 而不是「全部部门」）。
+  //   load 里把 '' 转回 null 再发请求。
+  { value: '', label: '全部部门' },
   ...departments.value.map((d) => ({ value: d.id, label: d.name })),
 ])
 const roleOptions = computed(() => [
@@ -440,14 +443,16 @@ const statusOptions = computed(() => [
   ...Object.entries(STATUS_LABEL).map(([key, label]) => ({ value: key, label })),
 ])
 const posOptions = computed(() => [
-  { value: null, label: '—' },
+  { value: '', label: '—' },
   ...positions.value.map((x) => ({
     value: x.id,
     label: x.level ? `${x.name}（${x.level}）` : x.name,
   })),
 ])
 const deptFormOptions = computed(() => [
-  { value: null, label: '—' },
+  // ⚠️ null 在 EP 里显示 placeholder 而不是 label —— 「不分配」也用 '' 哨兵，
+  //   提交时（submitForm）把 '' 转回 null 落库。
+  { value: '', label: '—' },
   ...departments.value.map((d) => ({ value: d.id, label: d.name })),
 ])
 const statusInlineOptions = [
@@ -486,15 +491,10 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
       <button class="btn btn-primary" @click="openCreate">＋ 新建员工</button>
     </div>
 
-    <div class="card filters">
-      <input
-        v-model="keyword"
-        class="input search"
-        placeholder="搜索姓名 / 登录名 / 工号 / 邮箱"
-        @input="onSearchInput"
-      />
+    <el-form :inline="true" class="card filters filters-form">
+      <el-input v-model="keyword" placeholder="搜索姓名 / 登录名 / 工号 / 邮箱" clearable @input="onSearchInput" />
       <el-select
-                v-model="filterDept"
+                v-model="filterDept" placeholder="部门"
                 @change="resetAndLoad"
     >
       <el-option
@@ -505,7 +505,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
       />
             </el-select>
       <el-select
-                v-model="filterRole"
+                v-model="filterRole" placeholder="角色"
                 @change="resetAndLoad"
     >
       <el-option
@@ -516,7 +516,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
       />
             </el-select>
       <el-select
-                v-model="filterStatus"
+                v-model="filterStatus" placeholder="状态"
                 @change="resetAndLoad"
     >
       <el-option
@@ -526,12 +526,16 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
         :value="o.value"
       />
             </el-select>
-      <label class="check">
-        <input v-model="includeResigned" type="checkbox" @change="resetAndLoad" />
-        <span>含离职</span>
-      </label>
-      <button class="btn btn-ghost" :disabled="loading" @click="load">刷新</button>
-    </div>
+      <el-form-item>
+        <label class="check">
+          <input v-model="includeResigned" type="checkbox" @change="resetAndLoad" />
+          <span>含离职</span>
+        </label>
+      </el-form-item>
+      <el-form-item>
+        <button class="btn btn-ghost" :disabled="loading" @click="resetAndLoad">刷新</button>
+      </el-form-item>
+    </el-form>
 
     <div class="card table-wrap">
       <table class="grid">

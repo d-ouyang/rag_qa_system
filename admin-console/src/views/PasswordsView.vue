@@ -54,6 +54,13 @@ interface BucketMeta {
 
 const BUCKETS: BucketMeta[] = [
   {
+    // P2-17：用户要看「全部的人」——五桶都是筛过的子集，没有一个视图能总览。
+    key: 'all',
+    label: '全部人员',
+    tone: 'muted',
+    desc: '所有在职人员的密码状态一览（不筛选）',
+  },
+  {
     key: 'must_change',
     label: '待改密',
     tone: 'danger',
@@ -73,13 +80,6 @@ const BUCKETS: BucketMeta[] = [
     tone: 'muted',
     desc: '连续输错被节流，锁定到期自动解除（重置密码不解锁）',
   },
-  {
-    // P2-17：用户要看「全部的人」——五桶都是筛过的子集，没有一个视图能总览。
-    key: 'all',
-    label: '全部人员',
-    tone: 'muted',
-    desc: '所有在职人员的密码状态一览（不筛选）',
-  },
 ]
 
 // ---------- 数据 ----------
@@ -87,7 +87,8 @@ const board = ref<PasswordBoard | null>(null)
 const departments = ref<api.DepartmentRow[]>([])
 const loading = ref(false)
 const toasts = ref<ToastItem[]>([])
-const activeKey = ref<BucketKey>('must_change')
+// P2-19：默认显示「全部人员」（用户要看全部，而不是先看某个分组）
+const activeKey = ref<BucketKey>('all')
 
 function toast(kind: ToastItem['kind'], text: string) {
   const item = newToast(kind, text)
@@ -266,7 +267,7 @@ function doDisable(item: BoardItem) {
 </script>
 
 <template>
-  <div>
+  <div class="list-page">
     <div class="head">
       <div>
         <h1 class="page-title">密码管理</h1>

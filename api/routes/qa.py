@@ -532,6 +532,23 @@ class ChangeMyPasswordBody(BaseModel):
     new_password: str = Field(min_length=1)
 
 
+@router.get("/me/password-policy", summary="改密规则提示（11b 策略参数，给面板文案用）")
+def my_password_policy() -> dict[str, Any]:
+    """
+    改密表单的提示规则参数（P2-19 第 5 条）。
+
+    ⚠️ 数字从 settings 来，**前端不硬编码** —— 11b 改策略时面板提示跟着变。
+    （与 /admin/options 的 password_policy 同源同值，但那个端点要 staff 令牌，
+    这里给 current_actor —— 普通员工改密也需要看到规则。）
+    """
+    return {
+        "min_length": int(settings.PASSWORD_MIN_LENGTH),
+        "expire_days": int(settings.PASSWORD_EXPIRE_DAYS),
+        "warn_days": int(settings.PASSWORD_EXPIRE_WARN_DAYS),
+        "history_keep": int(settings.PASSWORD_HISTORY_KEEP),
+    }
+
+
 @router.post("/me/password", summary="本人自助修改密码（验旧密码 + 11b 全套策略）")
 def change_my_password(
     body: ChangeMyPasswordBody, actor: Actor = Depends(current_actor)

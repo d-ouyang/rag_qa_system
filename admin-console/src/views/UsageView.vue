@@ -61,14 +61,15 @@ const board = ref<UsageBoard | null>(null)
 const departments = ref<api.DepartmentRow[]>([])
 // P2-18：部门筛选选项（空值 = 全部部门）
 const deptFilterOptions = computed(() => [
-  { value: null, label: '全部部门' },
+  // ⚠️ null 在 EP 里显示 placeholder —— 「全部」用 '' 哨兵（同 UsersView）
+  { value: '', label: '全部部门' },
   ...departments.value.map((d) => ({ value: d.id, label: d.name })),
 ])
-const filterDept = ref<number | null>(null)
+const filterDept = ref<number | ''>('')
 
 const rows = computed(() => {
   if (!board.value) return []
-  if (filterDept.value == null) return board.value.rows
+  if (filterDept.value === '') return board.value.rows
   return board.value.rows.filter((r) => r.department_id === filterDept.value)
 })
 
@@ -126,6 +127,7 @@ onMounted(load)
       </div>
       <el-select
                 v-model="filterDept"
+                placeholder="部门"
                 @change="load"
     >
       <el-option

@@ -16,7 +16,13 @@
  * 打开时最新即可；后台放着不动时数字过期无妨。
  */
 import { computed, ref, watch } from 'vue'
-import { changeMyPassword, fetchMyProfile, type MyProfile } from '@/api/qa'
+import {
+  changeMyPassword,
+  fetchMyProfile,
+  fetchPasswordPolicyHint,
+  type MyProfile,
+  type PasswordPolicyHint,
+} from '@/api/qa'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
@@ -32,6 +38,8 @@ const newPwd = ref('')
 const newPwd2 = ref('')
 const pwdError = ref('')
 const pwdSaving = ref(false)
+// P2-19：改密规则提示（数字后端下发，前端不硬编码 —— 11b 改策略时提示跟着变）
+const policyHint = ref<PasswordPolicyHint | null>(null)
 
 function switchMode(m: 'info' | 'password') {
   mode.value = m
@@ -76,6 +84,10 @@ watch(
   async (open) => {
     if (!open) return
     loading.value = true
+    // P2-19：改密规则提示只在打开时拉一次（数字来自 11b 策略，前端不写死）
+    fetchPasswordPolicyHint()
+      .then((h) => (policyHint.value = h))
+      .catch(() => (policyHint.value = null))
     error.value = ''
     profile.value = null
     try {
@@ -125,6 +137,11 @@ function onClose() {
           </label>
           <p v-if="!passwordsMatch && newPwd2" class="pp-warn">两次输入的新密码不一致</p>
           <p v-if="pwdError" class="pp-error">{{ pwdError }}</p>
+          <p v-if="policyHint" class="pp-rules">
+            密码规则：至少 {{ policyHint.min_length }} 位，须包含大小写字母、数字、符号中至少两类，
+            不能包含登录名或工号，不能与最近 {{ policyHint.history_keep }} 次用过的密码相同；
+            有效期 {{ policyHint.expire_days }} 天（提前 {{ policyHint.warn_days }} 天提醒）。
+          </p>
           <p class="pp-note muted">改密成功后会退出登录，请用新密码重新登录。</p>
           <div class="pp-actions">
             <button class="pp-btn" :disabled="pwdSaving" @click="switchMode('info')">返回</button>
@@ -429,6 +446,16 @@ function onClose() {
 .pp-note {
   font-size: 11px;
   margin: 8px 0 0;
+}
+
+.pp-rules {
+  font-size: 12px;
+  color: var(--text-2, #666);
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 4px 0 0;
+  line-height: 1.6;
 }
 
 .pp-badge--ok {

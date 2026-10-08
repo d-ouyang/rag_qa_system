@@ -396,7 +396,10 @@ table.grid th.num {
 .list-page {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  /* P2-19：.content 是整页滚动容器（概览页需要），
+     所以 .list-page 不能用 height:100%（父级高度是内容高度），
+     改用视口高度的确定值：100vh − content 上下 padding(22+40) − 预留余量。 */
+  height: calc(100vh - 100px);
   min-height: 0;
 }
 .list-page > .table-wrap {
@@ -413,10 +416,109 @@ table.grid th.num {
 html.dark {
   --el-bg-color: var(--surface, #171b24);
   --el-bg-color-overlay: var(--surface-2, #1c212c);
+  --el-bg-color-page: var(--bg-app, #12151c);
   --el-border-color: var(--border-strong, #2f3646);
   --el-border-color-light: var(--border, #232833);
+  --el-border-color-lighter: var(--border, #232833);
+  --el-fill-color: var(--surface-2, #1c212c);
+  --el-fill-color-light: var(--surface, #171b24);
+  --el-fill-color-lighter: var(--bg-app, #12151c);
   --el-fill-color-blank: var(--bg-app, #12151c);
+  --el-fill-color-dark: var(--surface-3, #1c212c);
   --el-text-color-primary: var(--text-1, #e8eaed);
   --el-text-color-regular: var(--text-2, #9aa3b2);
+  --el-text-color-secondary: var(--text-3, #6b7484);
   --el-color-primary: var(--primary, #4a6cf7);
+}
+
+/* P2-19：el-select 触发框与既有输入框（.input）同一底色/边框，
+   下拉面板、分页的背景与页面无明显色差（用户指出「看出明显色差」）。 */
+.el-select__wrapper {
+  background-color: var(--bg-app, #12151c);
+  box-shadow: 0 0 0 1px var(--border-strong, #2f3646) inset;
+  min-height: 34px;
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
+.el-select__wrapper.is-hovering {
+  box-shadow: 0 0 0 1px var(--text-3, #6b7484) inset;
+}
+
+.el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--primary, #4a6cf7) inset,
+    0 0 0 3px var(--primary-soft, rgba(74, 108, 247, 0.2)) !important;
+}
+
+.el-select__placeholder {
+  color: var(--text-3, #6b7484);
+}
+
+/* 分页：背景透明（色差来源之一），文字/按钮与主题一致 */
+.el-pagination {
+  --el-pagination-bg-color: transparent;
+  --el-pagination-text-color: var(--text-2, #9aa3b2);
+  --el-pagination-button-bg-color: var(--surface, #171b24);
+  --el-pagination-hover-color: var(--primary, #4a6cf7);
+  background: transparent;
+  padding: 0;
+}
+
+.el-pagination .el-pager li {
+  background: var(--surface, #171b24);
+  border: 1px solid var(--border, #232833);
+  border-radius: 6px;
+  margin: 0 2px;
+}
+
+.el-pagination .el-pager li.is-active {
+  background: var(--primary, #4a6cf7);
+  border-color: var(--primary, #4a6cf7);
+  color: #fff;
+}
+
+.el-pagination button {
+  background: var(--surface, #171b24);
+  border: 1px solid var(--border, #232833);
+  border-radius: 6px;
+  margin: 0 2px;
+}
+
+.el-pagination .el-pagination__total {
+  color: var(--text-3, #6b7484);
+}
+
+/* 下拉面板（Teleport 到 body 的 overlay）底色与卡片一致 */
+.el-select__popper.el-popper {
+  background: var(--surface-2, #1c212c);
+  border: 1px solid var(--border-strong, #2f3646);
+}
+
+.el-select__popper .el-select-dropdown__item.is-hovering {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+}
+
+.el-select__popper .el-select-dropdown__item.is-selected {
+  color: var(--primary, #4a6cf7);
+  font-weight: 600;
+}
+
+.el-select__popper .el-popper__arrow::before {
+  background: var(--surface-2, #1c212c);
+  border-color: var(--border-strong, #2f3646);
+}
+
+/* 行内表单（P2-19：筛选区用 el-form inline，参考官方 Inline Form）。
+   宽度走官方 CSS 变量（--el-select-width / --el-input-width）。 */
+.filters-form.el-form--inline .el-form-item {
+  margin-right: 12px;
+  margin-bottom: 0;
+}
+
+.filters-form .el-select {
+  --el-select-width: 160px;
+}
+
+.filters-form .el-input {
+  --el-input-width: 240px;
 }
