@@ -13,7 +13,6 @@
  *    有对账行的看板，漏算会自己站出来。
  */
 import { computed, onMounted, ref } from 'vue'
-import AppSelect from '@/components/AppSelect.vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
@@ -115,7 +114,7 @@ onMounted(load)
 </script>
 
 <template>
-  <div>
+  <div class="list-page">
     <ToastStack :items="toasts" @dismiss="dismiss" />
     <div class="head">
       <div>
@@ -125,7 +124,17 @@ onMounted(load)
           · 阈值 {{ board?.warn_percent ?? '—' }}% 提醒 / {{ board?.over_percent ?? '—' }}% 已超额
         </p>
       </div>
-      <AppSelect v-model="filterDept" :options="deptFilterOptions" @change="load" />
+      <el-select
+                v-model="filterDept"
+                @change="load"
+    >
+      <el-option
+        v-for="o in deptFilterOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
     </div>
 
     <div v-if="board" class="card table-wrap">

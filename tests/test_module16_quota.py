@@ -1022,3 +1022,38 @@ else:
 print("\n" + "=" * 66)
 print(f"  P2-15 回归结果：{PASS} 通过 / {FAIL} 失败")
 print("=" * 66)
+
+# --------------------------------------------------------------------------- #
+# 🔴 收尾保障：跑完把测试账号的**固定密码**设回去并打印可登录清单
+# --------------------------------------------------------------------------- #
+# 用户 2026-10-08 的要求：「不管重置还是不重置，我希望每次完成一轮，
+# 给我个可以登录两个客户端的用户名和密码列表」。
+#
+# 背景：module14d / module12_admin 等测试会把账号密码换成随机临时值
+# （这是它们唯一合法的还原方式），而本模块自己也动过 wu.jing 的额度。
+# 所以**每轮跑完自动执行 `dev_test_accounts.py --apply`**：
+#   · 三个账号的密码回到固定值（DevTest2026!Aa / DevTest2026!Bb / DevAdmin2026!Aa）
+#   · must_change_password=0（直接能进问答页）
+# 这样「跑完测试 → 手动验证」之间不再隔着一个「账号登不进」的坑。
+# ⚠️ 只对**测试账号**生效 —— 生产语义（离职/停用/真实员工）不归它管。
+if FAIL == 0 and "--reverse" not in sys.argv or True:
+    # 🔴 即使有 FAIL 也要恢复：测试挂了更可能留下半截状态，
+    #   「失败后不清理」等于给下一轮埋雷。
+    import subprocess
+    _apply = subprocess.run(
+        [str(ROOT / ".venv" / "bin" / "python"),
+         str(ROOT / "scripts" / "dev_test_accounts.py"), "--apply"],
+        capture_output=True, text=True, timeout=120,
+    )
+    if _apply.returncode == 0:
+        print("\n  ✅ 测试账号已恢复为固定密码（可直接登录两个客户端）：")
+        print("  ┌────────────┬──────────────────┬────────────────────────┐")
+        print("  │ 登录名      │ 密码              │ 入口                    │")
+        print("  ├────────────┼──────────────────┼────────────────────────┤")
+        print("  │ chen.jie   │ DevTest2026!Aa   │ 主应用 http://localhost:5173   │")
+        print("  │ zhao.min   │ DevTest2026!Bb   │ 主应用 http://localhost:5173   │")
+        print("  │ wu.jing    │ DevAdmin2026!Aa  │ 管理端 http://localhost:5174（也可登 5173）│")
+        print("  └────────────┴──────────────────┴────────────────────────┘")
+    else:
+        print("\n  ⚠️ 账号恢复失败 —— 手动跑: .venv/bin/python scripts/dev_test_accounts.py --apply")
+        print("  " + (_apply.stderr or _apply.stdout)[-300:])

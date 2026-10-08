@@ -256,6 +256,8 @@ export function fetchUsers(params: {
   role?: string | null
   status?: string | null
   include_resigned?: boolean
+  limit?: number
+  offset?: number
 }): Promise<UserListResult> {
   const query = new URLSearchParams()
   if (params.keyword) query.set('keyword', params.keyword)
@@ -263,6 +265,8 @@ export function fetchUsers(params: {
   if (params.role) query.set('role', params.role)
   if (params.status) query.set('status', params.status)
   if (params.include_resigned) query.set('include_resigned', 'true')
+  if (params.limit != null) query.set('limit', String(params.limit))
+  if (params.offset != null) query.set('offset', String(params.offset))
   const suffix = query.toString()
   return get<UserListResult>(`/api/v1/admin/users${suffix ? `?${suffix}` : ''}`)
 }
@@ -397,7 +401,10 @@ export interface PasswordBoard {
     expired: number
     stale_login: number
     locked: number
+    all: number
   }
+  /** P2-17：全部在职人员（不筛桶）—— 「全部人员」视图的数据源。 */
+  all_people: BoardItem[]
   generated_at: string
   policy: { expire_days: number; warn_days: number }
 }

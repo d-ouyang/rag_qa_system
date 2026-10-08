@@ -65,7 +65,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, or_, select, update, func as sa_func
 
 from core.db import now_db, session_scope
 from core.kb_acl import KB_ROLE_NONE, check_kb_role
@@ -496,6 +496,45 @@ def count_users_in_department(department_id: int, *, only_active: bool = True) -
 # --------------------------------------------------------------------------- #
 # 更新：账号
 # --------------------------------------------------------------------------- #
+def count_users(
+    *,
+    department_id: int | None = None,
+    role: str | None = None,
+    status: str | None = None,
+    keyword: str | None = None,
+    include_resigned: bool = False,
+) -> int:
+    """
+    与 `list_users` **完全相同**的过滤条件下的总数（真分页用，P2-17）。
+
+    🔴 条件必须与 `list_users` **逐字一致** —— 否则「共 N 条」与实际页数对不上，
+    分页器会显示一个不存在的世界。两处条件靠 review 对齐太脆，
+    所以这里特意把两份数放在一起：改 `list_users` 的过滤时必须同步改这里
+    （测试 module12_admin 会用「count == len(list)」的对账恒等式守着）。
+    """
+    stmt = select(sa_func.count()).select_from(user_table)
+    if department_id is not None:
+        stmt = stmt.where(user_table.c.department_id == department_id)
+    if role is not None:
+        stmt = stmt.where(user_table.c.role == _check_role(role))
+    if status is not None:
+        stmt = stmt.where(user_table.c.status == _check_status(status))
+    elif not include_resigned:
+        stmt = stmt.where(user_table.c.status != STATUS_RESIGNED)
+    if keyword:
+        like = f"%{keyword.strip()}%"
+        stmt = stmt.where(
+            or_(
+                user_table.c.display_name.like(like),
+                user_table.c.username.like(like),
+                user_table.c.employee_no.like(like),
+                user_table.c.email.like(like),
+            )
+        )
+    with session_scope() as session:
+        return int(session.execute(stmt).scalar() or 0)
+
+
 def update_profile(
     user_id: int,
     *,

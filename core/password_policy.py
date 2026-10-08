@@ -80,6 +80,12 @@ _CODE_INACTIVE = "inactive"
 _CODE_MUST_CHANGE = "must_change"
 _CODE_EXPIRED = "expired"
 
+# P2-18：公开别名 —— 自助改密路径要判断「过期用户放行改密」，
+# 跨模块调 `_CODE_*` 私有名是破坏约定（与 to_quota_int 公开的同一理由）。
+CODE_OK = _CODE_OK
+CODE_MUST_CHANGE = _CODE_MUST_CHANGE
+CODE_EXPIRED = _CODE_EXPIRED
+
 # 字符类别（复杂度判定用）。不设「必须大写+数字+符号」那种组合规则 ——
 # 那类规则逼出的是 `Abc123!@#` 这种模式化口令，见设计规格 §4。
 _CLASSES = (string.ascii_lowercase, string.ascii_uppercase, string.digits,

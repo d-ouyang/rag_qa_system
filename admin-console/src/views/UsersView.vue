@@ -19,7 +19,6 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import ModalDialog from '@/components/ModalDialog.vue'
-import AppSelect from '@/components/AppSelect.vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { formatDateTime, newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
@@ -31,6 +30,10 @@ const auth = useAuthStore()
 
 // ---------- 数据 ----------
 const rows = ref<UserRow[]>([])
+// P2-17：真分页（后端 offset/limit + 同条件 total）。
+const PAGE_SIZE = 20
+const page = ref(1)
+const total = ref(0)
 const departments = ref<api.DepartmentRow[]>([])
 const positions = ref<api.PositionRow[]>([])
 /**
@@ -86,6 +89,18 @@ async function loadOptions() {
   quotaParams.value = opt.token_quota ?? null
 }
 
+/** 筛选条件变化 → 回第 1 页再查（否则停在第 5 页改筛选会看到空页）。 */
+/** el-pagination 翻页。 */
+function onPage(n: number) {
+  page.value = n
+  void load()
+}
+
+function resetAndLoad() {
+  page.value = 1
+  void load()
+}
+
 async function load() {
   loading.value = true
   try {
@@ -95,8 +110,11 @@ async function load() {
       role: filterRole.value || null,
       status: filterStatus.value || null,
       include_resigned: includeResigned.value,
+      limit: PAGE_SIZE,
+      offset: (page.value - 1) * PAGE_SIZE,
     })
     rows.value = res.items
+    total.value = res.total
   } catch (e) {
     toast('error', e instanceof ApiError ? e.message : '加载员工列表失败')
   } finally {
@@ -459,11 +477,11 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
 </script>
 
 <template>
-  <div>
+  <div class="list-page">
     <div class="head">
       <div>
         <h1 class="page-title">员工</h1>
-        <p class="page-sub">共 {{ rows.length }} 人 · 离职走「停用/离职」，不删行</p>
+        <p class="page-sub">共 {{ total }} 人 · 离职走「停用/离职」，不删行</p>
       </div>
       <button class="btn btn-primary" @click="openCreate">＋ 新建员工</button>
     </div>
@@ -475,11 +493,41 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
         placeholder="搜索姓名 / 登录名 / 工号 / 邮箱"
         @input="onSearchInput"
       />
-      <AppSelect v-model="filterDept" :options="deptOptions" @change="load" />
-      <AppSelect v-model="filterRole" :options="roleOptions" @change="load" />
-      <AppSelect v-model="filterStatus" :options="statusOptions" @change="load" />
+      <el-select
+                v-model="filterDept"
+                @change="resetAndLoad"
+    >
+      <el-option
+        v-for="o in deptOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
+      <el-select
+                v-model="filterRole"
+                @change="resetAndLoad"
+    >
+      <el-option
+        v-for="o in roleOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
+      <el-select
+                v-model="filterStatus"
+                @change="resetAndLoad"
+    >
+      <el-option
+        v-for="o in statusOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
       <label class="check">
-        <input v-model="includeResigned" type="checkbox" @change="load" />
+        <input v-model="includeResigned" type="checkbox" @change="resetAndLoad" />
         <span>含离职</span>
       </label>
       <button class="btn btn-ghost" :disabled="loading" @click="load">刷新</button>
@@ -564,20 +612,32 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
               >
                 重置密码
               </button>
-              <AppSelect
+              <el-select
                 v-if="!isSelf(row.id)"
                 class="inline"
                 :model-value="row.status"
-                :options="statusInlineOptions"
-                @change="(v) => changeStatus(row, v as UserStatus)"
-              />
-              <AppSelect
+                @change="(v: string | number | null | undefined) => changeStatus(row, v as UserStatus)"
+    >
+      <el-option
+        v-for="o in statusInlineOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
+              <el-select
                 v-if="!isSelf(row.id)"
                 class="inline"
                 :model-value="row.role"
-                :options="roleInlineOptions"
-                @change="(v) => changeRole(row, v as Role)"
-              />
+                @change="(v: string | number | null | undefined) => changeRole(row, v as Role)"
+    >
+      <el-option
+        v-for="o in roleInlineOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
               <!--
                 P2-14f：知识库写权限下拉。
                 ⚠️ **option 全部来自后端 `/options` 的 `kb_roles`** ——
@@ -589,13 +649,19 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
                 后端也拒「把自己降档」（降权后恢复要找别人），但 UI 直接不给入口
                 更好：让人先撞一次403 才知道规矩，体验差。
               -->
-              <AppSelect
+              <el-select
                 v-if="!isSelf(row.id) && kbRoleOptions.length"
                 class="inline"
                 :model-value="row.kb_role"
-                :options="kbRoleOptions.map((o) => ({ value: o.value, label: o.short_label ?? o.label }))"
-                @change="(v) => changeKbRole(row, v as KbRole)"
-              />
+                @change="(v: string | number | null | undefined) => changeKbRole(row, v as KbRole)"
+    >
+      <el-option
+        v-for="o in kbRoleOptions.map((o) => ({ value: o.value, label: o.short_label ?? o.label }))"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
               <span v-if="isSelf(row.id)" class="muted self">（自己）</span>
             </td>
           </tr>
@@ -604,6 +670,16 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div class="pager">
+      <el-pagination
+        layout="total, prev, pager, next"
+        :total="total"
+        :page-size="PAGE_SIZE"
+        :current-page="page"
+        @current-change="onPage"
+      />
     </div>
 
     <!-- 新建 / 编辑 -->
@@ -644,16 +720,43 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
       <div class="two">
         <label class="field">
           <span>部门</span>
-          <AppSelect v-model="form.department_id" :options="deptFormOptions" />
+          <el-select
+                v-model="form.department_id"
+    >
+      <el-option
+        v-for="o in deptFormOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
         </label>
         <label class="field">
           <span>职位</span>
-          <AppSelect v-model="form.position_id" :options="posOptions" />
+          <el-select
+                v-model="form.position_id"
+    >
+      <el-option
+        v-for="o in posOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
         </label>
       </div>
       <label v-if="!editing" class="field">
         <span>系统角色</span>
-        <AppSelect v-model="form.role" :options="formRoleOptions" />
+        <el-select
+                v-model="form.role"
+    >
+      <el-option
+        v-for="o in formRoleOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
         <span class="hint">建号后会签发一个一次性临时密码，他首次登录必须改掉</span>
       </label>
       <!--
@@ -731,9 +834,12 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
   flex: 1 1 240px;
   width: auto;
 }
-.filters .select {
-  width: auto;
-  min-width: 120px;
+.filters .el-select {
+  width: 160px;
+  flex: 0 0 auto;
+}
+.el-select.inline {
+  width: 132px;
 }
 .check {
   display: flex;

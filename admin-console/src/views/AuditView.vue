@@ -18,7 +18,6 @@
  * 而「排查」正是这个页面存在的理由。
  */
 import { computed, onMounted, ref } from 'vue'
-import AppSelect from '@/components/AppSelect.vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { formatDateTime, newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
@@ -107,16 +106,13 @@ function resetFilters() {
   void load()
 }
 
-function page(delta: number) {
-  const next = offset.value + delta * PAGE_SIZE
-  if (next < 0) return
-  if (next >= total.value) return
-  offset.value = next
+// P2-17：el-pagination 需要「当前页（1 起）」而不是 offset。
+const currentPage = computed(() => Math.floor(offset.value / PAGE_SIZE) + 1)
+/** el-pagination 翻页回调：页码 → offset。 */
+function onPage(n: number) {
+  offset.value = (n - 1) * PAGE_SIZE
   void load()
 }
-
-const pageStart = computed(() => (total.value === 0 ? 0 : offset.value + 1))
-const pageEnd = computed(() => Math.min(offset.value + PAGE_SIZE, total.value))
 
 // --------------------------------------------------------------------------- //
 // detail 翻译
@@ -225,7 +221,7 @@ function detailLines(row: AuditRow): string[] {
 </script>
 
 <template>
-  <div>
+  <div class="list-page">
     <div class="head">
       <div>
         <h1 class="page-title">审计日志</h1>
@@ -243,8 +239,28 @@ function detailLines(row: AuditRow): string[] {
         placeholder="按操作人登录名筛"
         @input="onSearchInput"
       />
-      <AppSelect v-model="filterAction" :options="actionOptions" @change="applyFilter" />
-      <AppSelect v-model="filterType" :options="typeOptions" @change="applyFilter" />
+      <el-select
+                v-model="filterAction"
+                @change="applyFilter"
+    >
+      <el-option
+        v-for="o in actionOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
+      <el-select
+                v-model="filterType"
+                @change="applyFilter"
+    >
+      <el-option
+        v-for="o in typeOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
       <input
         v-model="filterKeyword"
         class="input search"
@@ -298,13 +314,13 @@ function detailLines(row: AuditRow): string[] {
     </div>
 
     <div class="pager">
-      <span class="muted">
-        第 {{ pageStart }}–{{ pageEnd }} 条 / 共 {{ total }} 条
-      </span>
-      <div class="pager-btns">
-        <button class="btn btn-sm" :disabled="offset === 0" @click="page(-1)">上一页</button>
-        <button class="btn btn-sm" :disabled="pageEnd >= total" @click="page(1)">下一页</button>
-      </div>
+      <el-pagination
+        layout="total, prev, pager, next"
+        :total="total"
+        :page-size="PAGE_SIZE"
+        :current-page="currentPage"
+        @current-change="onPage"
+      />
     </div>
 
     <ToastStack :items="toasts" @dismiss="dismiss" />

@@ -58,6 +58,16 @@ export interface MyProfile {
 
 export const fetchMyProfile = () => get<MyProfile>('/api/v1/qa/me/profile')
 
+/**
+ * P2-18：本人自助改密。成功后旧 token 全部失效 ——
+ * 调用方（面板）负责清除本地凭据并回到登录页。
+ */
+export const changeMyPassword = (oldPassword: string, newPassword: string) =>
+  postJson<{ ok: boolean; message: string }>('/api/v1/qa/me/password', {
+    old_password: oldPassword,
+    new_password: newPassword,
+  })
+
 export const listSessions = () => get<SessionInfo[]>('/api/v1/qa/sessions')
 
 export const getSessionHistory = (sessionId: string) =>

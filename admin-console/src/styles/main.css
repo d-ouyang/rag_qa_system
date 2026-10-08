@@ -388,3 +388,35 @@ table.grid th.num {
   text-align: center;
   color: var(--text-3);
 }
+
+/* ---------- P2-17：「列表滚动、分页固定页底」统一规则 ----------
+   列表页根容器 .list-page（flex 列、占满视口剩余高度）：
+     head / filters 固定 → .card.table-wrap flex:1 内部滚动 → .pager 固定页底。
+   之前 pager 排在页面流里，列表一长就要滚到页底才能翻页（用户指出）。 */
+.list-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.list-page > .table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.list-page > .pager {
+  flex: 0 0 auto;
+  padding-top: 10px;
+}
+
+/* Element Plus 暗色变量向本项目主题对齐（面板底色/边框用现有变量） */
+html.dark {
+  --el-bg-color: var(--surface, #171b24);
+  --el-bg-color-overlay: var(--surface-2, #1c212c);
+  --el-border-color: var(--border-strong, #2f3646);
+  --el-border-color-light: var(--border, #232833);
+  --el-fill-color-blank: var(--bg-app, #12151c);
+  --el-text-color-primary: var(--text-1, #e8eaed);
+  --el-text-color-regular: var(--text-2, #9aa3b2);
+  --el-color-primary: var(--primary, #4a6cf7);
+}

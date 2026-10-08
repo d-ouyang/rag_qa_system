@@ -73,6 +73,9 @@ ACTION_LABELS: Final[dict[str, str]] = {
     # 三件事的严重程度完全不同，混在一条动作里筛不出来。
     "user.token_quota.change": "变更月度 token 额度",
     "user.password.reset": "重置密码",
+    # P2-18：本人自助改密 —— 与管理员重置（reset）是**两条不同的路径**
+    # （前者要验旧密码、后者生成一次性临时密码），审计里必须分得开。
+    "user.password.change": "本人修改密码",
     "user.password.must_change": "开关强制改密",
     # P2-14c：知识库写操作。target_type 用 `document`（不是 `kb`）——
     # 因为审计要能回答「谁动了这份文档」，而 `kb` 这个粒度回答不了。

@@ -16,7 +16,6 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import ModalDialog from '@/components/ModalDialog.vue'
-import AppSelect from '@/components/AppSelect.vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
@@ -343,12 +342,30 @@ async function removePos(p: PositionRow) {
       <div class="two">
         <label class="field">
           <span>上级部门</span>
-          <AppSelect v-model="deptForm.parent_id" :options="parentSelectOptions" />
+          <el-select
+                v-model="deptForm.parent_id"
+    >
+      <el-option
+        v-for="o in parentSelectOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
           <span v-if="deptEditing" class="hint">下拉里已经排除了它自己和它的下级（防环）</span>
         </label>
         <label class="field">
           <span>负责人</span>
-          <AppSelect v-model="deptForm.leader_user_id" :options="leaderSelectOptions" />
+          <el-select
+                v-model="deptForm.leader_user_id"
+    >
+      <el-option
+        v-for="o in leaderSelectOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
         </label>
       </div>
       <label class="field">
@@ -386,7 +403,16 @@ async function removePos(p: PositionRow) {
         </label>
         <label class="field">
           <span>序列</span>
-          <AppSelect v-model="posForm.sequence" :options="sequenceOptions" />
+          <el-select
+                v-model="posForm.sequence"
+    >
+      <el-option
+        v-for="o in sequenceOptions"
+        :key="String(o.value)"
+        :label="o.label"
+        :value="o.value"
+      />
+            </el-select>
         </label>
       </div>
       <p v-if="posError" class="form-error">{{ posError }}</p>

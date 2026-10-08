@@ -276,23 +276,30 @@ def list_users(
     role: str | None = None,
     status: str | None = None,
     include_resigned: bool = False,
-    limit: int = 200,
+    limit: int = 20,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """
     员工列表。默认**不含离职** —— 人事找人时，已离职的人不该混在里面。
 
     ⚠️ `status` 与 `include_resigned` 的关系：显式传 `status` 时以后者为准
     （要看离职的人就传 `status=resigned`），两个参数同时给是调用方自己的选择。
+
+    ⚠️ P2-17 起真分页：`total` 是**同过滤条件的总数**（`repo.count_users`），
+    不再是被 limit 截断后的行数 —— 截断值当 total，分页器会显示一个不存在的世界。
     """
-    rows = repo.list_users(
+    flt = dict(
         department_id=department_id,
         role=role,
         status=status,
         keyword=keyword,
         include_resigned=include_resigned or status == repo.STATUS_RESIGNED,
-        limit=limit,
     )
-    return {"items": [u.to_dict() for u in rows], "total": len(rows)}
+    rows = repo.list_users(**flt, limit=limit, offset=offset)
+    return {
+        "items": [u.to_dict() for u in rows],
+        "total": repo.count_users(**flt),
+    }
 
 
 @router.post("/users", summary="新建员工", status_code=status.HTTP_201_CREATED)

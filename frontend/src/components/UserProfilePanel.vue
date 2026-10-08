@@ -15,8 +15,54 @@
  * 数据在**打开时**拉一次（不是常驻轮询）：面板是低频查看动作，
  * 打开时最新即可；后台放着不动时数字过期无妨。
  */
-import { ref, watch } from 'vue'
-import { fetchMyProfile, type MyProfile } from '@/api/qa'
+import { computed, ref, watch } from 'vue'
+import { changeMyPassword, fetchMyProfile, type MyProfile } from '@/api/qa'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
+
+/**
+ * P2-18：面板内嵌的修改密码表单。
+ * 成功后旧 token 全部失效 —— 清本地凭据、回登录页（auth.reset 已有该逻辑）。
+ * 🔴 不做「改完还停留在面板」：token 已失效，留在面板里下一步操作必然 401。
+ */
+const mode = ref<'info' | 'password'>('info')
+const oldPwd = ref('')
+const newPwd = ref('')
+const newPwd2 = ref('')
+const pwdError = ref('')
+const pwdSaving = ref(false)
+
+function switchMode(m: 'info' | 'password') {
+  mode.value = m
+  pwdError.value = ''
+  oldPwd.value = ''
+  newPwd.value = ''
+  newPwd2.value = ''
+}
+
+const passwordsMatch = computed(() => newPwd.value === newPwd2.value)
+
+async function submitPassword() {
+  pwdError.value = ''
+  if (!passwordsMatch.value) {
+    pwdError.value = '两次输入的新密码不一致'
+    return
+  }
+  pwdSaving.value = true
+  try {
+    const res = await changeMyPassword(oldPwd.value, newPwd.value)
+    // 成功 → 清凭据回登录页。后端 token_version+1 后旧 token 必然 401，
+    // 与其等下一次请求被打回，不如现在就干净地退出。
+    window.alert(res.message || '密码已修改，请重新登录')
+    // 登出后 App.vue 的登录态分流会自动渲染登录页（主应用没有 router）
+    await auth.logout()
+  } catch (e) {
+    pwdError.value = e instanceof Error && e.message ? e.message : '修改失败，请稍后重试'
+  } finally {
+    pwdSaving.value = false
+  }
+}
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -56,12 +102,38 @@ function onClose() {
     <div v-if="open" class="profile-mask" @click.self="onClose">
       <div class="profile-panel" role="dialog" aria-label="个人信息">
         <header class="pp-head">
-          <h2>个人信息</h2>
+          <h2>{{ mode === 'info' ? '个人信息' : '修改密码' }}</h2>
           <button class="pp-close" aria-label="关闭" @click="onClose">×</button>
         </header>
 
         <p v-if="loading" class="pp-state">加载中…</p>
         <p v-else-if="error" class="pp-state pp-error">{{ error }}</p>
+
+        <!-- P2-18：改密表单 -->
+        <div v-else-if="mode === 'password'" class="pp-pwd-form">
+          <label class="pp-field">
+            <span>当前密码</span>
+            <input v-model="oldPwd" type="password" autocomplete="current-password" />
+          </label>
+          <label class="pp-field">
+            <span>新密码</span>
+            <input v-model="newPwd" type="password" autocomplete="new-password" />
+          </label>
+          <label class="pp-field">
+            <span>确认新密码</span>
+            <input v-model="newPwd2" type="password" autocomplete="new-password" />
+          </label>
+          <p v-if="!passwordsMatch && newPwd2" class="pp-warn">两次输入的新密码不一致</p>
+          <p v-if="pwdError" class="pp-error">{{ pwdError }}</p>
+          <p class="pp-note muted">改密成功后会退出登录，请用新密码重新登录。</p>
+          <div class="pp-actions">
+            <button class="pp-btn" :disabled="pwdSaving" @click="switchMode('info')">返回</button>
+            <button class="pp-btn pp-btn--primary" :disabled="pwdSaving || !oldPwd || !newPwd || !newPwd2"
+                    @click="submitPassword">
+              {{ pwdSaving ? '提交中…' : '确认修改' }}
+            </button>
+          </div>
+        </div>
 
         <template v-else-if="profile">
           <!-- 基本信息 -->
@@ -81,6 +153,9 @@ function onClose() {
               <div class="pp-row"><dt>手机</dt><dd class="mono">{{ profile.profile.phone ?? '—' }}</dd></div>
               <div class="pp-row"><dt>入职时间</dt><dd>{{ profile.profile.joined_at.slice(0, 10) }}</dd></div>
             </dl>
+            <div class="pp-actions">
+              <button class="pp-btn pp-btn--primary" @click="switchMode('password')">修改密码</button>
+            </div>
           </section>
 
           <!-- 本月用量 -->
@@ -189,6 +264,73 @@ function onClose() {
 .pp-section {
   padding: 12px 0;
   border-top: 1px solid var(--border, #eee);
+}
+
+/* P2-18：改密表单 */
+.pp-pwd-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.pp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pp-field span {
+  font-size: 12px;
+  color: var(--text-3, #888);
+}
+
+.pp-field input {
+  padding: 8px 10px;
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  background: var(--bg-app, #fff);
+  color: inherit;
+  font-size: 13px;
+}
+
+.pp-field input:focus {
+  outline: none;
+  border-color: var(--primary, #4a6cf7);
+}
+
+.pp-warn {
+  color: #d9a13c;
+  font-size: 12px;
+  margin: 0;
+}
+
+.pp-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pp-btn {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #ddd);
+  background: none;
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pp-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pp-btn--primary {
+  background: var(--primary, #4a6cf7);
+  border-color: var(--primary, #4a6cf7);
+  color: #fff;
 }
 
 .pp-id {

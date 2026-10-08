@@ -525,6 +525,90 @@ def delete_session(session_id: str, actor: Actor = Depends(current_actor)) -> di
     return {"session_id": session_id, "cleared": True}
 
 
+class ChangeMyPasswordBody(BaseModel):
+    """自助改密请求体。旧密码/新密码都收字符串 —— 明文只在请求瞬间存在。"""
+
+    old_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=1)
+
+
+@router.post("/me/password", summary="本人自助修改密码（验旧密码 + 11b 全套策略）")
+def change_my_password(
+    body: ChangeMyPasswordBody, actor: Actor = Depends(current_actor)
+) -> dict[str, Any]:
+    """
+    主应用个人信息面板的「修改密码」入口（P2-18）。
+
+    流程与 11b 的其他路径**共用同一套判据**（本文件不重写任何一条）：
+        ① `policy.verify` 验旧密码 —— 接受 ok / must_change / **expired** 三种结果
+          （过期用户正是来改密的，`expired` 在登录路径被拦、在改密路径放行，
+          这是 11b 原文「到期后只放行『改密』与『登出』」的那扇门）；
+        ② `policy.validate_strength` 新密码强度；
+        ③ `policy.hits_history` 不能与最近 N 次重复；
+        ④ `repo.update_password`（token_version+1 → 全部旧 token 失效）
+          + `add_password_history`（本人改密 changed_by=None）。
+
+    成功后**调用方必须清除本地凭据重新登录**（旧 token 已失效是特性不是缺陷）。
+    """
+    from core import password_policy as policy
+    from core import user_repo
+
+    record = user_repo.get(actor.id)
+    if record is None:
+        raise HTTPException(status_code=401, detail="账号不存在或已被移除")
+
+    # ① 旧密码。verify 会顺带做锁定/停用判定 —— 锁定的人不能改密（走解锁流程）。
+    outcome = policy.verify(record, body.old_password)
+    if not outcome.ok and outcome.code not in (policy.CODE_MUST_CHANGE,
+                                               policy.CODE_EXPIRED):
+        # 🔴 与登录同一条纪律：错误文案不区分「密码错/已锁定」，防用户名枚举
+        raise HTTPException(status_code=400, detail=outcome.message or "密码验证失败")
+
+    # ② 新密码强度（11b：长度/复杂度/不能含用户名等）
+    violations = policy.validate_strength(
+        body.new_password,
+        username=record.username,
+        employee_no=record.employee_no,
+    )
+    if violations:
+        raise HTTPException(status_code=400, detail="；".join(violations))
+
+    # ③ 不能复用最近用过的密码（11b 历史策略）
+    if policy.hits_history(
+        body.new_password,
+        user_repo.list_recent_password_hashes(actor.id, settings.PASSWORD_HISTORY_KEEP),
+        limit=settings.PASSWORD_HISTORY_KEEP,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"不能与最近 {settings.PASSWORD_HISTORY_KEEP} 次用过的密码相同",
+        )
+
+    # ④ 落库（update_password 自带 token_version+1 / 解锁 / password_changed_at）
+    new_hash = policy.hash_password(body.new_password)
+    user_repo.update_password(actor.id, new_hash)
+    user_repo.add_password_history(actor.id, new_hash)
+
+    from core import audit_repo
+    audit_repo.record(
+        actor_user_id=actor.id,
+        actor_username=actor.username,
+        actor_role=actor.role,
+        action="user.password.change",
+        target_type="user",
+        target_id=actor.id,
+        target_label=record.display_name,
+        detail={"self": True},
+        ip=actor.client_ip,
+    )
+
+    return {
+        "ok": True,
+        "message": "密码已修改，请使用新密码重新登录",
+        "token_version_bumped": True,
+    }
+
+
 @router.get("/me/profile", summary="本人信息面板：基本资料 + 当月/历史用量")
 def my_profile(actor: Actor = Depends(current_actor)) -> dict[str, Any]:
     """

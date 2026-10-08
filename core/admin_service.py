@@ -885,6 +885,10 @@ class PasswordBoard:
     expired: list[dict[str, Any]]
     stale_login: list[dict[str, Any]]
     locked: list[dict[str, Any]]
+    # P2-17：**全部在职人员**（不筛桶）。用户要看「全部的人」——
+    # 五个桶都是筛过的子集，没有哪个视图能总览；「并集去重」也不对
+    # （密码状态健康的人不在任何桶里，并集会把他们漏掉）。
+    all_people: list[dict[str, Any]]
     generated_at: datetime
 
     def to_dict(self) -> dict[str, Any]:
@@ -900,7 +904,9 @@ class PasswordBoard:
                 "expired": len(self.expired),
                 "stale_login": len(self.stale_login),
                 "locked": len(self.locked),
+                "all": len(self.all_people),
             },
+            "all_people": self.all_people,
             "generated_at": self.generated_at.isoformat(sep=" ", timespec="seconds"),
             "policy": {
                 "expire_days": settings.PASSWORD_EXPIRE_DAYS,
@@ -964,5 +970,9 @@ def password_board(actor: Actor, *, now: datetime | None = None,
         expired=expired,
         stale_login=stale,
         locked=locked,
+        # 「全部人员」= 全部在职（不筛桶）。_brief 的字段与各桶一致，
+        # 前端一张表能同时渲染两种视图。
+        all_people=[_brief(r, stamp) for r in repo.list_users(
+            status=repo.STATUS_ACTIVE, include_resigned=False)],
         generated_at=stamp,
     )

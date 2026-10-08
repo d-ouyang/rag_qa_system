@@ -31,18 +31,19 @@
  * 所以「已锁定」这一桶里的人，重置完仍然要等锁定到期（或让人等一会儿）。
  * 不做「顺手解锁」是有意的 —— 否则攻击者只要能让管理员重置一次就绕过了节流。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import ModalDialog from '@/components/ModalDialog.vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { formatDateTime, newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
+
 import type { BoardItem, PasswordBoard } from '@/api/admin'
 import { ApiError } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 
-type BucketKey = 'must_change' | 'expired' | 'expiring_soon' | 'stale_login' | 'locked'
+type BucketKey = 'must_change' | 'expired' | 'expiring_soon' | 'stale_login' | 'locked' | 'all'
 
 interface BucketMeta {
   key: BucketKey
@@ -72,6 +73,13 @@ const BUCKETS: BucketMeta[] = [
     tone: 'muted',
     desc: '连续输错被节流，锁定到期自动解除（重置密码不解锁）',
   },
+  {
+    // P2-17：用户要看「全部的人」——五桶都是筛过的子集，没有一个视图能总览。
+    key: 'all',
+    label: '全部人员',
+    tone: 'muted',
+    desc: '所有在职人员的密码状态一览（不筛选）',
+  },
 ]
 
 // ---------- 数据 ----------
@@ -92,17 +100,30 @@ function dismiss(id: number) {
 
 const cards = computed(() => {
   const b = board.value
-  return BUCKETS.map((meta) => ({
-    ...meta,
-    count: b ? b.counts[meta.key] : 0,
-    items: b ? b[meta.key] : [],
-  }))
+  return BUCKETS.map((meta) => {
+    if (meta.key === 'all') {
+      // 「全部人员」= 后端下发的**全部在职人员**（board.all_people）。
+      // 🔴 不是五桶并集：密码状态健康的人不在任何桶里，并集会把他们漏掉
+      //   （实测：9 个在职只有 6 人挂在桶里，并集少 3 人 —— 那不是「全部」）。
+      return { ...meta, count: b ? b.all_people.length : 0, items: b ? b.all_people : [] }
+    }
+    return { ...meta, count: b ? b.counts[meta.key] : 0, items: b ? b[meta.key] : [] }
+  })
 })
 
 const activeMeta = computed(() => BUCKETS.find((m) => m.key === activeKey.value) ?? BUCKETS[0])
 const activeItems = computed(() => {
   const card = cards.value.find((c) => c.key === activeKey.value)
   return card ? card.items : []
+})
+
+// P2-17：客户端分页（看板是全量数据，一次拉回、前端切页）
+const PAGE_SIZE = 20
+const pageNum = ref(1)
+watch(activeKey, () => (pageNum.value = 1))
+const pagedItems = computed(() => {
+  const start = (pageNum.value - 1) * PAGE_SIZE
+  return activeItems.value.slice(start, start + PAGE_SIZE)
 })
 
 const canReset = computed(() => auth.profile?.permissions.reset_password === true)
@@ -297,7 +318,7 @@ function doDisable(item: BoardItem) {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="item in activeItems" :key="item.id">
+          <tr v-for="item in pagedItems" :key="item.id">
             <td>
               <div class="who">
                 <strong>{{ item.display_name }}</strong>
@@ -341,6 +362,16 @@ function doDisable(item: BoardItem) {
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div class="pager">
+      <el-pagination
+        layout="total, prev, pager, next"
+        :total="activeItems.length"
+        :page-size="PAGE_SIZE"
+        :current-page="pageNum"
+        @current-change="(n: number) => (pageNum = n)"
+      />
     </div>
 
     <!-- 一次性临时密码：只出现一次 -->
