@@ -619,7 +619,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
               <el-select
                 v-if="!isSelf(row.id)"
                 class="inline"
-                :model-value="row.status"
+                :model-value="row.status" placeholder="状态"
                 @change="(v: string | number | null | undefined) => changeStatus(row, v as UserStatus)"
     >
       <el-option
@@ -632,7 +632,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
               <el-select
                 v-if="!isSelf(row.id)"
                 class="inline"
-                :model-value="row.role"
+                :model-value="row.role" placeholder="角色"
                 @change="(v: string | number | null | undefined) => changeRole(row, v as Role)"
     >
       <el-option
@@ -656,7 +656,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
               <el-select
                 v-if="!isSelf(row.id) && kbRoleOptions.length"
                 class="inline"
-                :model-value="row.kb_role"
+                :model-value="row.kb_role" placeholder="权限"
                 @change="(v: string | number | null | undefined) => changeKbRole(row, v as KbRole)"
     >
       <el-option
@@ -725,7 +725,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
         <label class="field">
           <span>部门</span>
           <el-select
-                v-model="form.department_id"
+                v-model="form.department_id" placeholder="部门"
     >
       <el-option
         v-for="o in deptFormOptions"
@@ -738,7 +738,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
         <label class="field">
           <span>职位</span>
           <el-select
-                v-model="form.position_id"
+                v-model="form.position_id" placeholder="职位"
     >
       <el-option
         v-for="o in posOptions"
@@ -752,7 +752,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
       <label v-if="!editing" class="field">
         <span>系统角色</span>
         <el-select
-                v-model="form.role"
+                v-model="form.role" placeholder="角色"
     >
       <el-option
         v-for="o in formRoleOptions"

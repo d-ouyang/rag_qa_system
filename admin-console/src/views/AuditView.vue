@@ -232,43 +232,55 @@ function detailLines(row: AuditRow): string[] {
       <button class="btn" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新' }}</button>
     </div>
 
-    <div class="card filters">
-      <input
-        v-model="filterActor"
-        class="input search"
-        placeholder="按操作人登录名筛"
-        @input="onSearchInput"
-      />
-      <el-select
-                v-model="filterAction"
-                @change="applyFilter"
-    >
-      <el-option
-        v-for="o in actionOptions"
-        :key="String(o.value)"
-        :label="o.label"
-        :value="o.value"
-      />
-            </el-select>
-      <el-select
-                v-model="filterType"
-                @change="applyFilter"
-    >
-      <el-option
-        v-for="o in typeOptions"
-        :key="String(o.value)"
-        :label="o.label"
-        :value="o.value"
-      />
-            </el-select>
-      <input
-        v-model="filterKeyword"
-        class="input search"
-        placeholder="在对象与明细里搜"
-        @input="onSearchInput"
-      />
-      <button class="btn btn-ghost" @click="resetFilters">清空筛选</button>
-    </div>
+    <el-form :inline="true" class="card filters filters-form">
+      <el-form-item>
+        <el-input
+          v-model="filterActor"
+          placeholder="按操作人登录名筛"
+          clearable
+          @input="onSearchInput"
+        />
+      </el-form-item>
+      <el-form-item>
+        <el-select
+          v-model="filterAction"
+          placeholder="全部动作"
+          @change="applyFilter"
+        >
+          <el-option
+            v-for="o in actionOptions"
+            :key="String(o.value)"
+            :label="o.label"
+            :value="o.value"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item>
+        <el-select
+          v-model="filterType"
+          placeholder="全部对象"
+          @change="applyFilter"
+        >
+          <el-option
+            v-for="o in typeOptions"
+            :key="String(o.value)"
+            :label="o.label"
+            :value="o.value"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item>
+        <el-input
+          v-model="filterKeyword"
+          placeholder="在对象与明细里搜"
+          clearable
+          @input="onSearchInput"
+        />
+      </el-form-item>
+      <el-form-item>
+        <button class="btn btn-ghost" @click="resetFilters">清空筛选</button>
+      </el-form-item>
+    </el-form>
 
     <div class="card table-wrap">
       <table class="grid">

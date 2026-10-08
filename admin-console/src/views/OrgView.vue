@@ -344,7 +344,7 @@ async function removePos(p: PositionRow) {
         <label class="field">
           <span>上级部门</span>
           <el-select
-                v-model="deptForm.parent_id"
+                v-model="deptForm.parent_id" placeholder="上级部门"
     >
       <el-option
         v-for="o in parentSelectOptions"
@@ -358,7 +358,7 @@ async function removePos(p: PositionRow) {
         <label class="field">
           <span>负责人</span>
           <el-select
-                v-model="deptForm.leader_user_id"
+                v-model="deptForm.leader_user_id" placeholder="部门负责人"
     >
       <el-option
         v-for="o in leaderSelectOptions"
@@ -405,7 +405,7 @@ async function removePos(p: PositionRow) {
         <label class="field">
           <span>序列</span>
           <el-select
-                v-model="posForm.sequence"
+                v-model="posForm.sequence" placeholder="所属序列"
     >
       <el-option
         v-for="o in sequenceOptions"
