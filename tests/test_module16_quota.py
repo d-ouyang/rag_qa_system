@@ -688,10 +688,17 @@ check("看板行只带后端算好的判定字段（前端零判定）",
       all(("usage_percent" in r and "status" in r and "status_label" in r)
           for r in board_resp["rows"]),
       "")
-check("不限额度的行 usage_percent 是 null（不是 0%）",
-      any(r["usage_percent"] is None and r["effective_quota"] == 0
+# 全局默认 2026-10-08 起是 100000（用户拍板），所以「不限额度的行」可能不存在 ——
+# 断言改判「每行的百分比与 policy 口径一致」；只有真出现 0 额度的行才验 null。
+check("🔴 看板每行的百分比与 effective_quota 口径一致（前端零判定的前提）",
+      all(
+          (r["usage_percent"] is None) == (r["effective_quota"] <= 0)
+          and (r["usage_percent"] is None
+               or abs(r["usage_percent"]
+                      - qp.usage_percent(r["billable_tokens"], r["effective_quota"])) < 1e-6)
           for r in board_resp["rows"]),
-      "没有不限额度的行可对照（全局默认 >0 时此断言恒真前提失效）")
+      str([(r["username"], r["effective_quota"], r["usage_percent"])
+           for r in board_resp["rows"]])[:180])
 
 # --- 部门筛选 ---
 _row = board_resp["rows"][0]
@@ -716,9 +723,13 @@ check("🔴 /quota/me 只统计**调用者本人**的用量（15e：admin 看自
 check("/quota/me 永远不含「还能不能问」字段（15c 的刻意缺席在端点层同样成立）",
       not any(k in _me_admin for k in ("can_ask", "allowed", "blocked", "remaining_ask")),
       f"键={sorted(_me_admin)}")
-check("未设额度时 /quota/me 的横幅为空（不打扰）",
-      _me_admin["effective_quota"] == 0 and _me_admin["banner"] == "",
-      f"quota={_me_admin['effective_quota']} banner={_me_admin['banner']!r}")
+# 全局默认 2026-10-08 起是 100000：未设个人额度 → 生效额度=全局默认；
+# 管理员本人当前 0 用量 → 远低于 warn 线 → 横幅仍应为空（不打扰）。
+_default_q = int(settings.TOKEN_QUOTA_DEFAULT_MONTHLY)
+check("未设个人额度时生效额度=全局默认，0 用量横幅为空（不打扰）",
+      _me_admin["effective_quota"] == _default_q and _me_admin["banner"] == "",
+      f"quota={_me_admin['effective_quota']} (期望 {_default_q}) "
+      f"banner={_me_admin['banner']!r}")
 
 # --- 真链路复跑一次（重启后端后的新路由）——走 repo 不走 HTTP（HTTP 已在浏览器验收覆盖）
 

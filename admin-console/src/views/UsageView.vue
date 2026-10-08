@@ -13,6 +13,7 @@
  *    有对账行的看板，漏算会自己站出来。
  */
 import { computed, onMounted, ref } from 'vue'
+import AppSelect from '@/components/AppSelect.vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
@@ -59,6 +60,11 @@ interface UsageBoard {
 
 const board = ref<UsageBoard | null>(null)
 const departments = ref<api.DepartmentRow[]>([])
+// P2-18：部门筛选选项（空值 = 全部部门）
+const deptFilterOptions = computed(() => [
+  { value: null, label: '全部部门' },
+  ...departments.value.map((d) => ({ value: d.id, label: d.name })),
+])
 const filterDept = ref<number | null>(null)
 
 const rows = computed(() => {
@@ -119,10 +125,7 @@ onMounted(load)
           · 阈值 {{ board?.warn_percent ?? '—' }}% 提醒 / {{ board?.over_percent ?? '—' }}% 已超额
         </p>
       </div>
-      <select v-model.number="filterDept" class="select" @change="load">
-        <option :value="null">全部部门</option>
-        <option v-for="d in departments" :key="d.id" :value="d.id">{{ d.name }}</option>
-      </select>
+      <AppSelect v-model="filterDept" :options="deptFilterOptions" @change="load" />
     </div>
 
     <div v-if="board" class="card table-wrap">

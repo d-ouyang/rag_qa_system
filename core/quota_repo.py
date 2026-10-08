@@ -397,6 +397,37 @@ def usage_by_session(session_id: str) -> dict[str, int]:
     }
 
 
+def usage_total_by_user(user_id: int) -> dict[str, int]:
+    """
+    某人的**历史总用量**（不筛期间，全期）—— 个人信息面板用（P2-16a）。
+
+    ⚠️ 与 `usage_by_user` 的区别：那个答「这个月用了多少」（按 `m.create_time`
+    落月），这个答「从第一天到现在总共用了多少」。两者都从 `chat_message`
+    明细出发（口径见文件头），只是是否带期间条件的差别。
+
+    ⚠️ 会话被删 → 该会话的消息没了 → 历史总量会**随之变小**。
+    这是口径的固有边界，不是 bug：本项目的删除是硬删（12c 的会话删除），
+    「历史总量」因此是「现存明细的累计」，不是「曾经发生过的所有请求」。
+    面板上叫「历史总用量」而不叫「累计消耗」，就是为了不把话说满。
+    """
+    sql = """
+        SELECT
+            COALESCE(SUM(m.usage_input_token), 0)  AS input_tokens,
+            COALESCE(SUM(m.usage_output_token), 0) AS output_tokens,
+            COUNT(*)                               AS requests
+        FROM chat_message m
+        JOIN session s ON s.id = m.session_id
+        WHERE s.user_id = :uid AND m.role = 'assistant'
+    """
+    rows = _query(sql, {"uid": user_id})
+    r = rows[0] if rows else {}
+    return {
+        "input_tokens": int(r.get("input_tokens", 0)),
+        "output_tokens": int(r.get("output_tokens", 0)),
+        "requests": int(r.get("requests", 0)),
+    }
+
+
 def unattributed_total(
     *, when: date | None = None, start_day: int = 1
 ) -> dict[str, int]:
@@ -521,4 +552,5 @@ __all__ = [
     "usage_board",
     "usage_by_session",
     "usage_by_user",
+    "usage_total_by_user",
 ]

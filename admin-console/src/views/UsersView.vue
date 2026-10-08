@@ -19,6 +19,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import ModalDialog from '@/components/ModalDialog.vue'
+import AppSelect from '@/components/AppSelect.vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { formatDateTime, newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
@@ -404,6 +405,45 @@ function changeQuota(row: UserRow, raw: string) {
   )
 }
 
+/**
+ * P2-18：AppSelect 的选项表。空值选项用 `null` 当 value（「全部/—」）——
+ * 用空字符串会与真实的空串枚举值冲突，用 null 语义干净。
+ */
+const deptOptions = computed(() => [
+  { value: null, label: '全部部门' },
+  ...departments.value.map((d) => ({ value: d.id, label: d.name })),
+])
+const roleOptions = computed(() => [
+  { value: '', label: '全部角色' },
+  ...Object.entries(ROLE_LABEL).map(([key, label]) => ({ value: key, label })),
+])
+const statusOptions = computed(() => [
+  { value: '', label: '全部状态' },
+  ...Object.entries(STATUS_LABEL).map(([key, label]) => ({ value: key, label })),
+])
+const posOptions = computed(() => [
+  { value: null, label: '—' },
+  ...positions.value.map((x) => ({
+    value: x.id,
+    label: x.level ? `${x.name}（${x.level}）` : x.name,
+  })),
+])
+const deptFormOptions = computed(() => [
+  { value: null, label: '—' },
+  ...departments.value.map((d) => ({ value: d.id, label: d.name })),
+])
+const statusInlineOptions = [
+  { value: 'active', label: '在职' },
+  { value: 'disabled', label: '停用' },
+  { value: 'resigned', label: '离职' },
+]
+const roleInlineOptions = [
+  { value: 'user', label: '普通员工' },
+  { value: 'hr', label: '人事' },
+  { value: 'admin', label: '系统管理员' },
+]
+const formRoleOptions = roleInlineOptions
+
 const canReset = computed(() => auth.profile?.permissions.reset_password === true)
 const isSelf = (id: number) => auth.profile?.id === id
 
@@ -435,18 +475,9 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
         placeholder="搜索姓名 / 登录名 / 工号 / 邮箱"
         @input="onSearchInput"
       />
-      <select v-model="filterDept" class="select" @change="load">
-        <option :value="null">全部部门</option>
-        <option v-for="d in departments" :key="d.id" :value="d.id">{{ d.name }}</option>
-      </select>
-      <select v-model="filterRole" class="select" @change="load">
-        <option value="">全部角色</option>
-        <option v-for="(label, key) in ROLE_LABEL" :key="key" :value="key">{{ label }}</option>
-      </select>
-      <select v-model="filterStatus" class="select" @change="load">
-        <option value="">全部状态</option>
-        <option v-for="(label, key) in STATUS_LABEL" :key="key" :value="key">{{ label }}</option>
-      </select>
+      <AppSelect v-model="filterDept" :options="deptOptions" @change="load" />
+      <AppSelect v-model="filterRole" :options="roleOptions" @change="load" />
+      <AppSelect v-model="filterStatus" :options="statusOptions" @change="load" />
       <label class="check">
         <input v-model="includeResigned" type="checkbox" @change="load" />
         <span>含离职</span>
@@ -533,26 +564,20 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
               >
                 重置密码
               </button>
-              <select
+              <AppSelect
                 v-if="!isSelf(row.id)"
-                class="select inline"
-                :value="row.status"
-                @change="changeStatus(row, ($event.target as HTMLSelectElement).value as UserStatus)"
-              >
-                <option value="active">在职</option>
-                <option value="disabled">停用</option>
-                <option value="resigned">离职</option>
-              </select>
-              <select
+                class="inline"
+                :model-value="row.status"
+                :options="statusInlineOptions"
+                @change="(v) => changeStatus(row, v as UserStatus)"
+              />
+              <AppSelect
                 v-if="!isSelf(row.id)"
-                class="select inline"
-                :value="row.role"
-                @change="changeRole(row, ($event.target as HTMLSelectElement).value as Role)"
-              >
-                <option value="user">普通员工</option>
-                <option value="hr">人事</option>
-                <option value="admin">系统管理员</option>
-              </select>
+                class="inline"
+                :model-value="row.role"
+                :options="roleInlineOptions"
+                @change="(v) => changeRole(row, v as Role)"
+              />
               <!--
                 P2-14f：知识库写权限下拉。
                 ⚠️ **option 全部来自后端 `/options` 的 `kb_roles`** ——
@@ -564,16 +589,13 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
                 后端也拒「把自己降档」（降权后恢复要找别人），但 UI 直接不给入口
                 更好：让人先撞一次403 才知道规矩，体验差。
               -->
-              <select
+              <AppSelect
                 v-if="!isSelf(row.id) && kbRoleOptions.length"
-                class="select inline"
-                :value="row.kb_role"
-                @change="changeKbRole(row, ($event.target as HTMLSelectElement).value as KbRole)"
-              >
-                <option v-for="o in kbRoleOptions" :key="o.value" :value="o.value">
-                  {{ o.short_label ?? o.label }}
-                </option>
-              </select>
+                class="inline"
+                :model-value="row.kb_role"
+                :options="kbRoleOptions.map((o) => ({ value: o.value, label: o.short_label ?? o.label }))"
+                @change="(v) => changeKbRole(row, v as KbRole)"
+              />
               <span v-if="isSelf(row.id)" class="muted self">（自己）</span>
             </td>
           </tr>
@@ -622,28 +644,16 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
       <div class="two">
         <label class="field">
           <span>部门</span>
-          <select v-model="form.department_id" class="select">
-            <option :value="null">—</option>
-            <option v-for="d in departments" :key="d.id" :value="d.id">{{ d.name }}</option>
-          </select>
+          <AppSelect v-model="form.department_id" :options="deptFormOptions" />
         </label>
         <label class="field">
           <span>职位</span>
-          <select v-model="form.position_id" class="select">
-            <option :value="null">—</option>
-            <option v-for="p in positions" :key="p.id" :value="p.id">
-              {{ p.level ? `${p.name}（${p.level}）` : p.name }}
-            </option>
-          </select>
+          <AppSelect v-model="form.position_id" :options="posOptions" />
         </label>
       </div>
       <label v-if="!editing" class="field">
         <span>系统角色</span>
-        <select v-model="form.role" class="select">
-          <option value="user">普通员工</option>
-          <option value="hr">人事</option>
-          <option value="admin">系统管理员</option>
-        </select>
+        <AppSelect v-model="form.role" :options="formRoleOptions" />
         <span class="hint">建号后会签发一个一次性临时密码，他首次登录必须改掉</span>
       </label>
       <!--

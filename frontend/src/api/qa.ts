@@ -23,6 +23,41 @@ export interface MyQuota {
 
 export const fetchMyQuota = () => get<MyQuota>('/api/v1/qa/quota/me')
 
+/** P2-16a：个人信息面板（基本资料 + 当月/历史用量）。数字全部后端算好，前端只渲染。 */
+export interface MyProfile {
+  profile: {
+    display_name: string
+    username: string
+    employee_no: string
+    email: string | null
+    phone: string | null
+    department: string | null
+    position: string | null
+    role: string
+    role_label: string
+    kb_role: string
+    joined_at: string
+  }
+  month_usage: {
+    input_tokens: number
+    output_tokens: number
+    cache_read_tokens: number
+    billable_tokens: number
+    effective_quota: number
+    usage_percent: number | null
+    status: 'ok' | 'warn' | 'over'
+    status_label: string
+  }
+  total_usage: {
+    input_tokens: number
+    output_tokens: number
+    requests: number
+    billable_tokens: number
+  }
+}
+
+export const fetchMyProfile = () => get<MyProfile>('/api/v1/qa/me/profile')
+
 export const listSessions = () => get<SessionInfo[]>('/api/v1/qa/sessions')
 
 export const getSessionHistory = (sessionId: string) =>

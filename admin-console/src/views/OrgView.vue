@@ -16,6 +16,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import ModalDialog from '@/components/ModalDialog.vue'
+import AppSelect from '@/components/AppSelect.vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
@@ -109,6 +110,19 @@ const parentOptions = computed(() => {
   const forbidden = deptEditing.value ? forbiddenParents(deptEditing.value.id) : new Set<number>()
   return departments.value.filter((d) => !forbidden.has(d.id))
 })
+
+// P2-18：AppSelect 选项表（空值选项用 null 当 value）。
+// ⚠️ parentSelectOptions 基于 **parentOptions**（已排除自己与子孙）而不是 departments
+//    —— 部门树防环的那道前端拦截不能因为换下拉组件而丢掉。
+const parentSelectOptions = computed(() => [
+  { value: null, label: '（无，作为一级部门）' },
+  ...parentOptions.value.map((d) => ({ value: d.id, label: d.name })),
+])
+const leaderSelectOptions = computed(() => [
+  { value: null, label: '（未指定）' },
+  ...users.value.map((u) => ({ value: u.id, label: u.display_name })),
+])
+const sequenceOptions = Object.entries(SEQUENCE_LABEL).map(([key, label]) => ({ value: key, label }))
 
 function openDeptCreate() {
   deptEditing.value = null
@@ -329,18 +343,12 @@ async function removePos(p: PositionRow) {
       <div class="two">
         <label class="field">
           <span>上级部门</span>
-          <select v-model="deptForm.parent_id" class="select">
-            <option :value="null">（无，作为一级部门）</option>
-            <option v-for="d in parentOptions" :key="d.id" :value="d.id">{{ d.name }}</option>
-          </select>
+          <AppSelect v-model="deptForm.parent_id" :options="parentSelectOptions" />
           <span v-if="deptEditing" class="hint">下拉里已经排除了它自己和它的下级（防环）</span>
         </label>
         <label class="field">
           <span>负责人</span>
-          <select v-model="deptForm.leader_user_id" class="select">
-            <option :value="null">（未指定）</option>
-            <option v-for="u in users" :key="u.id" :value="u.id">{{ u.display_name }}</option>
-          </select>
+          <AppSelect v-model="deptForm.leader_user_id" :options="leaderSelectOptions" />
         </label>
       </div>
       <label class="field">
@@ -378,9 +386,7 @@ async function removePos(p: PositionRow) {
         </label>
         <label class="field">
           <span>序列</span>
-          <select v-model="posForm.sequence" class="select">
-            <option v-for="(label, key) in SEQUENCE_LABEL" :key="key" :value="key">{{ label }}</option>
-          </select>
+          <AppSelect v-model="posForm.sequence" :options="sequenceOptions" />
         </label>
       </div>
       <p v-if="posError" class="form-error">{{ posError }}</p>

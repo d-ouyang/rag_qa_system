@@ -18,6 +18,7 @@
  * 而「排查」正是这个页面存在的理由。
  */
 import { computed, onMounted, ref } from 'vue'
+import AppSelect from '@/components/AppSelect.vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { formatDateTime, newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
@@ -30,6 +31,15 @@ const PAGE_SIZE = 30
 const rows = ref<AuditRow[]>([])
 const total = ref(0)
 const actions = ref<{ value: string; label: string }[]>([])
+// P2-18：AppSelect 选项表
+const actionOptions = computed(() => [
+  { value: '', label: '全部动作' },
+  ...actions.value.map((a) => ({ value: a.value, label: a.label })),
+])
+const typeOptions = computed(() => [
+  { value: '', label: '全部对象' },
+  ...targetTypes.value.map((t) => ({ value: t, label: TYPE_LABEL[t] ?? t })),
+])
 const targetTypes = ref<string[]>([])
 const loading = ref(false)
 const toasts = ref<ToastItem[]>([])
@@ -233,14 +243,8 @@ function detailLines(row: AuditRow): string[] {
         placeholder="按操作人登录名筛"
         @input="onSearchInput"
       />
-      <select v-model="filterAction" class="select" @change="applyFilter">
-        <option value="">全部动作</option>
-        <option v-for="a in actions" :key="a.value" :value="a.value">{{ a.label }}</option>
-      </select>
-      <select v-model="filterType" class="select" @change="applyFilter">
-        <option value="">全部对象</option>
-        <option v-for="t in targetTypes" :key="t" :value="t">{{ TYPE_LABEL[t] ?? t }}</option>
-      </select>
+      <AppSelect v-model="filterAction" :options="actionOptions" @change="applyFilter" />
+      <AppSelect v-model="filterType" :options="typeOptions" @change="applyFilter" />
       <input
         v-model="filterKeyword"
         class="input search"

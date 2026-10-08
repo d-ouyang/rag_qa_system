@@ -44,10 +44,12 @@ async function logout() {
 <template>
   <div class="shell">
     <aside class="sidebar">
+      <!-- P2-17：换成锅圈食汇 logo（与主应用 5173 同一份资产 /gq_logo.jpg）。
+           圆角 + contain 裁切：jpg 不是透明底，contain 防止拉伸变形。 -->
       <div class="brand">
-        <div class="brand-mark">RA</div>
+        <img class="brand-logo" src="/gq_logo.jpg" alt="锅圈食汇" />
         <div class="brand-text">
-          <strong>RAG 管理端</strong>
+          <strong>锅圈食汇 · 管理端</strong>
           <span class="muted">员工 · 组织 · 密码</span>
         </div>
       </div>
@@ -103,16 +105,12 @@ async function logout() {
   padding: 18px 16px;
   border-bottom: 1px solid var(--border);
 }
-.brand-mark {
+.brand-logo {
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: var(--primary);
-  color: #fff;
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  font-size: 13px;
+  object-fit: cover; /* jpg 不透明底：cover 裁切成方形徽标，contain 会留白边 */
+  flex-shrink: 0;
 }
 .brand-text {
   display: flex;

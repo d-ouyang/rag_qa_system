@@ -525,6 +525,86 @@ def delete_session(session_id: str, actor: Actor = Depends(current_actor)) -> di
     return {"session_id": session_id, "cleared": True}
 
 
+@router.get("/me/profile", summary="本人信息面板：基本资料 + 当月/历史用量")
+def my_profile(actor: Actor = Depends(current_actor)) -> dict[str, Any]:
+    """
+    主应用左下角个人信息面板的数据源（P2-16a）。
+
+    ⚠️ 只返回**调用者本人**的信息（没有 user_id 参数 —— 想看别人请去管理端，
+       而那里只有管理员能进）。手机号沿用 user_repo 的脱敏规则。
+
+    ⚠️ 「历史总用量」的口径是**现存明细的累计**（会话被删则随之变小，
+       见 `quota_repo.usage_total_by_user` 的 docstring）——
+       面板文案因此叫「历史总用量」，不叫「累计消耗」。
+    """
+    from core import quota_repo
+    from core import user_repo
+
+    record = user_repo.get(actor.id)
+    if record is None:
+        # token 有效但用户没了（手工删库的残留，与 12b 同款 fail-closed）
+        raise HTTPException(status_code=401, detail="账号不存在或已被移除")
+
+    dept = user_repo.get_department(record.department_id) if record.department_id else None
+    pos = user_repo.get_position(record.position_id) if record.position_id else None
+
+    month_rows = quota_repo.usage_by_user(
+        user_id=actor.id, start_day=int(settings.TOKEN_QUOTA_PERIOD_START_DAY),
+    )
+    bucket = month_rows[0] if month_rows else None
+    effective = quota_policy.effective_quota(
+        bucket.quota_override if bucket else 0,
+        int(settings.TOKEN_QUOTA_DEFAULT_MONTHLY),
+    )
+    month_used = quota_policy.billable(
+        bucket.input_tokens if bucket else 0,
+        bucket.output_tokens if bucket else 0,
+        bucket.cache_read_tokens if bucket else 0,
+    )
+    total = quota_repo.usage_total_by_user(actor.id)
+
+    return {
+        "profile": {
+            "display_name": record.display_name,
+            "username": record.username,
+            "employee_no": record.employee_no,
+            "email": record.email,
+            "phone": user_repo.mask_phone(record.phone),
+            "department": dept.name if dept else None,
+            "position": pos.name if pos else None,
+            "role": record.role,
+            "role_label": {"admin": "系统管理员", "hr": "人事", "user": "普通员工"}.get(
+                record.role, record.role),
+            # kb_role 决定他在知识库能干什么（14a）——面板上说明一句比让人猜好
+            "kb_role": record.kb_role,
+            "joined_at": record.create_time.isoformat(sep=" ", timespec="seconds"),
+        },
+        "month_usage": {
+            "input_tokens": bucket.input_tokens if bucket else 0,
+            "output_tokens": bucket.output_tokens if bucket else 0,
+            "cache_read_tokens": bucket.cache_read_tokens if bucket else 0,
+            "billable_tokens": month_used,
+            "effective_quota": effective,
+            "usage_percent": quota_policy.usage_percent(month_used, effective),
+            "status": quota_policy.status_of(
+                month_used, effective,
+                warn_percent=int(settings.TOKEN_QUOTA_WARN_PERCENT),
+                over_percent=int(settings.TOKEN_QUOTA_OVER_PERCENT),
+            ),
+            "status_label": quota_policy.describe(
+                quota_policy.status_of(month_used, effective)),
+        },
+        # 全期（口径=现存明细累计；会话删除会让它变小，见 docstring）
+        "total_usage": {
+            "input_tokens": total["input_tokens"],
+            "output_tokens": total["output_tokens"],
+            "requests": total["requests"],
+            "billable_tokens": quota_policy.billable(
+                total["input_tokens"], total["output_tokens"]),
+        },
+    }
+
+
 @router.get("/quota/me", summary="本人本月 token 用量与横幅文案（只提醒不阻断）")
 def my_quota(actor: Actor = Depends(current_actor)) -> dict[str, Any]:
     """

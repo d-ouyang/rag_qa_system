@@ -11,6 +11,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useSessionStore, type LocalSession } from '@/stores/sessions'
 import { useSettingsStore } from '@/stores/settings'
 import { useUiStore, type ActiveView } from '@/stores/ui'
+import UserProfilePanel from '@/components/UserProfilePanel.vue'
 
 const ui = useUiStore()
 const sessions = useSessionStore()
@@ -19,6 +20,9 @@ const auth = useAuthStore()
 
 /** 头像占位字符：用户名首字母（没有用户名时退化成问号，不显示空白） */
 const userInitial = computed(() => (auth.username || '?').slice(0, 1).toUpperCase())
+
+/** P2-16a：个人信息面板开关。数据在面板打开时自己拉，这里只管开关。 */
+const profileOpen = ref(false)
 
 /**
  * 退出登录。
@@ -270,14 +274,17 @@ function fmtTime(ts: number | null): string {
       </button>
     </div>
 
-    <!-- ④ 当前登录用户 + 退出登录 -->
-    <div class="user-bar">
+    <!-- ④ 当前登录用户 + 退出登录。P2-16a：整块可点 → 个人信息面板（退出按钮 stopPropagation 不受影响） -->
+    <div class="user-bar user-bar--clickable" role="button" tabindex="0"
+         title="查看个人信息"
+         @click="profileOpen = true"
+         @keydown.enter="profileOpen = true">
       <div class="user-avatar">{{ userInitial }}</div>
       <div class="user-meta">
         <span class="user-name" :title="auth.username">{{ auth.username || '未登录' }}</span>
         <span v-if="auth.expiresSoon" class="user-hint">登录即将过期</span>
       </div>
-      <button class="logout-btn" title="退出登录" aria-label="退出登录" @click="onLogout">
+      <button class="logout-btn" title="退出登录" aria-label="退出登录" @click.stop="onLogout">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
           <polyline points="16 17 21 12 16 7" />
@@ -286,6 +293,8 @@ function fmtTime(ts: number | null): string {
       </button>
     </div>
   </aside>
+
+  <UserProfilePanel :open="profileOpen" @close="profileOpen = false" />
 </template>
 
 <style scoped>
@@ -563,6 +572,20 @@ function fmtTime(ts: number | null): string {
   background: var(--bg-active);
   color: var(--primary);
   font-weight: 500;
+}
+
+/* P2-16a：用户区可点击打开个人信息面板。手型 + 键盘可达（role=button/tabindex）。 */
+.user-bar--clickable {
+  cursor: pointer;
+}
+
+.user-bar--clickable:hover .user-name {
+  color: var(--primary, #4a6cf7);
+}
+
+.user-bar--clickable:focus-visible {
+  outline: 2px solid var(--primary, #4a6cf7);
+  outline-offset: -2px;
 }
 
 /* 登录用户区：贴在侧边栏最底部，与功能入口用分割线隔开 */
