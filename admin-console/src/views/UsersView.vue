@@ -38,6 +38,15 @@ const positions = ref<api.PositionRow[]>([])
  * 前端那份只用于「下拉里显示什么」。两份清单漂了不报错（13d/14a 各踩过一次）。
  */
 const kbRoleOptions = ref<KbRoleOption[]>([])
+/**
+ * P2-15b：额度相关参数**全部后端下发**，前端不硬编码任何数字。
+ *
+ * ⚠️ 理由与 `kbRoleOptions` 同源：改了 `.env` 的阈值而界面没变，
+ * 管理员会以为「设了没用」。
+ * ⚠️ 取不到时给 `null` 而不是默认对象 —— 后端没下发就说明版本不匹配，
+ *    那时界面**不该假装知道阈值**（fail-closed 的同一种思路，只是这里只影响显示）。
+ */
+const quotaParams = ref<api.Options['token_quota'] | null>(null)
 const loading = ref(false)
 const toasts = ref<ToastItem[]>([])
 
@@ -73,6 +82,7 @@ async function loadOptions() {
   // P2-14f：五档标签与每档能力**全部后端派生**，前端只存不用来算权限。
   // 少了这一行的话下拉会是空的 —— 而空下拉不报错，只是「授权不了」。
   kbRoleOptions.value = opt.kb_roles ?? []
+  quotaParams.value = opt.token_quota ?? null
 }
 
 async function load() {
@@ -337,6 +347,63 @@ function changeKbRole(row: UserRow, kbRole: KbRole) {
   )
 }
 
+/**
+ * 额度单元格里显示什么。
+ *
+ * ⚠️ 刻意**不显示使用率**：15d 才有用量数据，现在这一列只回答「他的上限是多少」。
+ *   提前塞一个「用量 0%」进去会让人以为「额度是按用量算的」，
+ *   而它此刻还只是个人设置。
+ */
+function quotaText(row: UserRow): string {
+  const own = row.token_quota_monthly ?? 0
+  if (own > 0) return own.toLocaleString('zh-CN')
+  const def = quotaParams.value?.default_monthly ?? 0
+  if (def > 0) return `${def.toLocaleString('zh-CN')}（全局默认）`
+  return '不限'
+}
+
+/**
+ * P2-15b：下发 / 收回月度额度。
+ *
+ * 确认文案刻意写明三件事：
+ * ① **只提醒不阻断** —— 这是用户 2026-10-07 拍板的，管理员必须知道
+ * 「设了额度他不会用不了」，否则会以为这是个开关；
+ * ② 「0 = 不限，用全局默认」；
+ * ③ 「不会被踢下线」—— 与权限变更那条相反，容易让人以为要重新登录。
+ */
+function changeQuota(row: UserRow, raw: string) {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+    toast('error', '额度必须是不小于 0 的整数（0 表示不限）')
+    return
+  }
+  const own = row.token_quota_monthly ?? 0
+  if (n === own) {
+    // 值没变就别发请求：后端是幂等的（不落审计），
+    // 而这里省掉一次「改了但其实没改」的提示更清楚。
+    return
+  }
+  const target = n > 0 ? `${n.toLocaleString('zh-CN')} tokens / 月` : '不限（用全局默认）'
+  const was = own > 0 ? `${own.toLocaleString('zh-CN')} tokens / 月` : '不限（用全局默认）'
+  ask(
+    `把「${row.display_name}」的月度额度从「${was}」改为「${target}」？\n\n` +
+      `⚠️ 本项**只做提醒，不做阻断**：设了额度之后，` +
+      `他用得接近上限时会在页面顶部看到一条提醒横幅，` +
+      `但**他仍然可以继续提问，不会被禁用**。\n\n` +
+      `他不会因此被强制退出登录。`,
+    async () => {
+      try {
+        await api.setUserTokenQuota(row.id, n)
+        toast('ok', `${row.display_name} 的月度额度已改为「${target}」`)
+        await load()
+      } catch (e) {
+        toast('error', e instanceof ApiError ? e.message : '操作失败')
+        await load()
+      }
+    },
+  )
+}
+
 const canReset = computed(() => auth.profile?.permissions.reset_password === true)
 const isSelf = (id: number) => auth.profile?.id === id
 
@@ -400,6 +467,10 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
               知识库写权限
               <em class="th-hint" title="知识库是全公司共用的一个库（业务决策，不按人隔离读）。这一列决定谁能上传 / 删除 / 重建索引 —— 范围等于整库，不是他自己的文件。">?</em>
             </th>
+            <th>
+              月度额度
+              <em class="th-hint" title="每月可用的 token 上限。0 = 不限（用全局默认）。⚠️ 只做提醒、不做阻断：接近上限时他会在页面顶部看到提醒，但仍可继续提问。">?</em>
+            </th>
             <th>状态</th>
             <th>最近登录</th>
             <th class="ops">操作</th>
@@ -421,6 +492,32 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
             </td>
             <td>
               <span class="badge" :class="`badge-kb-${row.kb_role}`">{{ kbRoleLabel(row.kb_role) }}</span>
+            </td>
+            <td>
+              <!--
+                P2-15b：月度额度，行内 number 输入。
+                ⚠️ 显示**个人值**而不是「生效额度」：
+                   下拉/输入框里改的是个人覆盖值，把生效值放进去会让
+                   「全局默认 50000 的人」输入框里也显示 50000，
+                   他一确认就把全局默认**固化成个人值** ——
+                   以后改全局默认对他就不再生效，而没有人知道为什么。
+                   所以下拉只放个人值（0 = 不限/用全局默认），
+                   生效值显示在旁边的灰字里。
+              -->
+              <span v-if="!isSelf(row.id)" class="quota-edit">
+                <input
+                  class="input inline quota-input"
+                  type="number"
+                  min="0"
+                  step="1"
+                  :value="row.token_quota_monthly ?? 0"
+                  :title="`个人值。0 = 不限（当前全局默认 ${quotaParams?.default_monthly ?? 0}）`"
+                  @change="changeQuota(row, ($event.target as HTMLInputElement).value)"
+                  @focus="($event.target as HTMLInputElement).select()"
+                />
+                <span class="muted quota-eff">{{ quotaText(row) }}</span>
+              </span>
+              <span v-else class="mono">{{ quotaText(row) }}</span>
             </td>
             <td>
               <span class="badge" :class="`badge-${row.status}`">{{ STATUS_LABEL[row.status] }}</span>
@@ -481,7 +578,7 @@ function kbRoleLabel(v: KbRole | string | null | undefined): string {
             </td>
           </tr>
           <tr v-if="!rows.length">
-            <td colspan="9" class="empty">没有符合条件的员工</td>
+            <td colspan="10" class="empty">没有符合条件的员工</td>
           </tr>
         </tbody>
       </table>

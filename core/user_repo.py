@@ -146,6 +146,7 @@ class UserRecord:
     position_id: int | None
     role: str
     kb_role: str
+    token_quota_monthly: int
     status: str
     password_hash: str
     password_changed_at: datetime | None
@@ -179,6 +180,7 @@ class UserRecord:
             "position_id": self.position_id,
             "role": self.role,
             "kb_role": self.kb_role,
+            "token_quota_monthly": int(self.token_quota_monthly),
             "status": self.status,
             "must_change_password": bool(self.must_change_password),
             "token_version": int(self.token_version),
@@ -277,6 +279,11 @@ def _row_to_user(row: Any) -> UserRecord:
         # 降级成 none 的话，最坏结果是**所有人暂时没有写权限**（fail-closed），
         # 而不是所有人进不去。后者会让人往完全错误的方向排查。
         kb_role=getattr(row, "kb_role", None) or KB_ROLE_NONE,
+        # ⚠️ 同理：`token_quota_monthly` 是 0007刚加的列，
+        #   「迁移没跑」的窗口里降级成 0 = **不限**。
+        #   而这里降级的方向是安全的：额度读不到 → 当作不限 →
+        #   不提示任何人超了。反过来（降级成 1）会让所有人立刻"超了"。
+        token_quota_monthly=int(getattr(row, "token_quota_monthly", 0) or 0),
         status=row.status,
         password_hash=row.password_hash,
         password_changed_at=row.password_changed_at,
@@ -597,6 +604,53 @@ def set_kb_role(user_id: int, kb_role: str, *, updated_by: int | None = None) ->
         .values(
             kb_role=kb_role,
             token_version=user_table.c.token_version + 1,
+            updated_by=updated_by,
+            update_time=now_db(),
+        )
+    )
+    with session_scope() as session:
+        return session.execute(stmt).rowcount > 0
+
+
+def set_token_quota(user_id: int, quota_monthly: int, *, updated_by: int | None = None) -> bool:
+    """
+    改月度 token 额度（P2-15b）。返回是否命中一行。
+
+    --------------------------------------------------------------------------
+    🔴 **刻意**不 bump `token_version` —— 与上面四个写函数都不同
+    --------------------------------------------------------------------------
+    `set_role` / `set_status` / `set_kb_role` / `update_password` 都 `+1`，
+    理由统一是「**权限**字段变了，旧 token 里的旧值必须立刻失效」。
+
+    而额度**不是权限**：
+      · 它**不进 JWT**（D15 只把 `role` 与 `kb_role` 放进令牌）；
+      · 本项**只提醒不阻断**（用户 2026-10-07 拍板），
+        也就是说额度**在生效路径上根本不被读**—— 不存在「旧额度还在拦他」这回事。
+
+    所以 `+1` 在这里是**纯粹的成本**：管理员改一个数字，
+    那个员工正在写的对话当场401，而「额度」这件事他甚至看不到界面
+    （15d 才加横幅）。为了一个只改提醒文案的事把人踢下线，
+    是「按错的代价做对的防护」。
+
+    ⚠️ 将来若真做阻断（§3.6 说明那时判据要重新设计），
+      **这一行必须改** —— 而且要连同「额度进 JWT 还是每次查库」一起决定。
+      留这一条注释就是为了让那时的人知道这里动过。
+
+    --------------------------------------------------------------------------
+    值的合法性由 `core/quota_policy` 判定，服务层 `admin_service.set_token_quota`
+    负责校验；这里**不做校验**—— 与 `set_status`/`set_role` 同一条分工。
+    ⚠️ 但 `int()` 转换放在这里兜一道：`quota_monthly` 可能来自 JSON
+    （前端传字符串或浮点），而这一列是 `BIGINT NOT NULL`，
+    一个 `"abc"` 会在写库时抛 DataError —— 那条错误的可读性比400 差得多。
+    """
+    quota = int(quota_monthly)
+    if quota < 0:
+        raise ValueError("月度额度不能为负数（0 = 不限）")
+    stmt = (
+        update(user_table)
+        .where(user_table.c.id == user_id)
+        .values(
+            token_quota_monthly=quota,
             updated_by=updated_by,
             update_time=now_db(),
         )

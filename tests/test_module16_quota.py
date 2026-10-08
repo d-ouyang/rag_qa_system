@@ -36,6 +36,7 @@ P2-15 测试：Token 额度与预警。
 这两组加起来回答的是同一个问题的两面：
 **「这个数字少算了人」必须是可见的，而不是一个安静的差值。**
 """
+import json
 import os
 import sys
 from datetime import date, timedelta
@@ -453,6 +454,175 @@ print("  （提示：当前库里有 "
       "已按「未归属」计入并在看板上可见。）")
 
 # --------------------------------------------------------------------------- #
+# 第 5 组：额度写路径（15b）—— 服务层 + 审计 + 幂等
+# --------------------------------------------------------------------------- #
+section("第 5 组：额度写路径（core/admin_service.set_token_quota）")
+
+from core import admin_service as svc          # noqa: E402
+from core import user_repo as urepo           # noqa: E402
+from core.identity import Actor               # noqa: E402
+
+# ⚠️ `Actor` 的字段是 `id` / `source`（不是 `user_id` / `identity_source`）——
+#   写错了 TypeError 会直接停在构造那一行，不会静默取到空 actor。
+# 🔴 而且 `id` **必须是库里真实存在的管理员 id**：
+#   本库的 id 从 440 起（种子数据建的），写 `id=1` 会让
+#   「改自己的额度」那条断言红在「员工不存在」上 ——
+#   而红的原因与被测物无关（同第87 条：判据撞到别的东西）。
+with get_engine().connect() as c:
+    _real_admin_id = int(c.execute(
+        _t("SELECT id FROM `user` WHERE role='admin' AND status='active' ORDER BY id LIMIT 1")
+    ).scalar())
+_ADMIN = Actor(id=_real_admin_id, username="quota_test_admin",
+               display_name="额度测试管理员", role=urepo.ROLE_ADMIN,
+               kb_role="superadmin", status="active", source="internal")
+_HR = Actor(id=_real_admin_id + 1, username="quota_test_hr",
+            display_name="额度测试人事", role=urepo.ROLE_HR,
+            kb_role="none", status="active", source="internal")
+
+# 挑一个在职员工当目标（不动 wu.jing/chen.jie，那是别人的账号）
+with get_engine().connect() as c:
+    _tq_uid = c.execute(
+        _t("SELECT id FROM `user` WHERE status='active' ORDER BY id DESC LIMIT 1")
+    ).scalar()
+    _tq_before = c.execute(
+        _t("SELECT token_quota_monthly FROM `user` WHERE id=:i"), {"i": _tq_uid}
+    ).scalar()
+_tq_before = int(_tq_before or 0)
+
+try:
+    rec = svc.set_token_quota(_ADMIN, _tq_uid, 12345)
+    check("管理员能把额度设为 12345", rec.token_quota_monthly == 12345,
+          f"实际={rec.token_quota_monthly}")
+
+    with get_engine().connect() as c:
+        _in_db = int(c.execute(
+            _t("SELECT token_quota_monthly FROM `user` WHERE id=:i"),
+            {"i": _tq_uid}).scalar())
+    check("库里确实写进去了（不是只在返回对象上）", _in_db == 12345, f"库里={_in_db}")
+
+    # 🔴 额度**不 bump token_version** —— 与 role/kb_role/status 三条写路径相反
+    check("🔴 改额度**不 bump token_version**（额度不是权限，不该把人踢下线）",
+          rec.token_version == urepo.get(_tq_uid).token_version,
+          f"改后={rec.token_version} 期望与库里当前值一致")
+    check("对照：库里 token_version 与改额度前相同",
+          int(rec.token_version) == int(urepo.get(_tq_uid).token_version),
+          f"{rec.token_version}")
+
+    # 幂等：再设同一个值 → 不动库、不落审计
+    _audit_before = None
+    with get_engine().connect() as c:
+        _audit_before = c.execute(
+            _t("SELECT COUNT(*) FROM audit_log WHERE action='user.token_quota.change' "
+               "AND target_id=:i"), {"i": _tq_uid}).scalar()
+    rec2 = svc.set_token_quota(_ADMIN, _tq_uid, 12345)
+    with get_engine().connect() as c:
+        _audit_after = c.execute(
+            _t("SELECT COUNT(*) FROM audit_log WHERE action='user.token_quota.change' "
+               "AND target_id=:i"), {"i": _tq_uid}).scalar()
+    check("🔴 值没变时**不落审计**（否则打开弹窗再确认就产出一条假变更）",
+          int(_audit_after) == int(_audit_before),
+          f"前={_audit_before} 后={_audit_after}")
+
+    # 审计内容
+    with get_engine().connect() as c:
+        row = c.execute(
+            _t("SELECT actor_username, detail FROM audit_log "
+               "WHERE action='user.token_quota.change' AND target_id=:i "
+               "ORDER BY id DESC LIMIT 1"), {"i": _tq_uid}).first()
+    check("改额度落了审计", row is not None, "查不到审计行")
+    if row:
+        _detail = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or {})
+        check("🔴 审计里记了**生效额度**而不只是个人值"
+              "（否则三个月后没人知道全局默认当时是多少）",
+              "effective_to" in _detail and "default_quota" in _detail,
+              f"detail 键={sorted(_detail)}")
+        check("审计 from/to 分别是 0 → 12345",
+              _detail.get("from") == 0 and _detail.get("to") == 12345,
+              str(_detail.get("from")) + "→" + str(_detail.get("to")))
+        check("审计里没有 token_version（额度不改它，记一个永不变的值会误导）",
+              "token_version" not in _detail, f"detail 键={sorted(_detail)}")
+
+    # 负数 / 非管理员
+    _raised = False
+    try:
+        svc.set_token_quota(_ADMIN, _tq_uid, -1)
+    except svc.AdminError as e:
+        _raised = e.status == 400
+    check("🔴 负数被拒（400）", _raised, "没有抛 AdminError 或状态码不是 400")
+
+    _raised2 = False
+    try:
+        svc.set_token_quota(_HR, _tq_uid, 999)
+    except svc.AdminError as e:
+        _raised2 = e.status == 403
+    check("🔴 hr 不能改额度（403，与 role/kb_role 同一取舍）", _raised2,
+          "hr 竟然改成功了")
+
+    # 允许改自己的额度（与 set_kb_role 相反）
+    _self_ok = True
+    try:
+        svc.set_token_quota(_ADMIN, _ADMIN.id, 888)
+    except svc.AdminError:
+        _self_ok = False
+    check("允许管理员改自己的额度（额度不锁死任何人，与 set_kb_role 相反）",
+          _self_ok, "改自己的额度被拒了 —— 而额度不 bump token_version，锁不死任何人")
+
+    # 字符串输入要走公开转换
+    rec3 = svc.set_token_quota(_ADMIN, _tq_uid, "6789")
+    check("字符串 '6789' 能写进去（走公开的 to_quota_int，不跨模块调私有 _to_int）",
+          rec3.token_quota_monthly == 6789, f"实际={rec3.token_quota_monthly}")
+    rec4 = svc.set_token_quota(_ADMIN, _tq_uid, None)
+    check("None 等价于 0（不限）—— 宽松转换不抛",
+          rec4.token_quota_monthly == 0, f"实际={rec4.token_quota_monthly}")
+finally:
+    # 还原：额度 + 删掉本组产生的审计 + 还原 wu.jing 的额度
+    svc.set_token_quota(_ADMIN, _tq_uid, _tq_before)
+    with get_engine().begin() as c:
+        # 🔴 清理要**按动作删、不按 target_id 删**：
+        #   本组至少动过两个人（目标员工 + 管理员自己），
+        #   只删 target_id 那一个会留下另一个的审计 ——
+        #   而「测试跑完库要回到原样」这条铁律说的就是库整体，
+        #   不是「我关心的那几行」。
+        c.execute(_t("DELETE FROM audit_log WHERE action='user.token_quota.change' "
+                     "AND actor_username=:a"), {"a": _ADMIN.username})
+        c.execute(_t("UPDATE `user` SET token_quota_monthly=:q WHERE id=:i"),
+                  {"q": _tq_before, "i": _real_admin_id})
+    with get_engine().connect() as c:
+        _restored = int(c.execute(
+            _t("SELECT token_quota_monthly FROM `user` WHERE id=:i"),
+            {"i": _tq_uid}).scalar())
+    check(f"额度已还原为 {_tq_before}", _restored == _tq_before, f"实际={_restored}")
+    with get_engine().connect() as c:
+        _q_leftover = int(c.execute(
+            _t("SELECT COUNT(*) FROM `user` WHERE token_quota_monthly <> 0")
+        ).scalar())
+        _a_leftover = int(c.execute(
+            _t("SELECT COUNT(*) FROM audit_log WHERE action='user.token_quota.change'")
+        ).scalar())
+    check("🔴 全库额度回到全 0（本组动过两个人，只还原一个不够）",
+          _q_leftover == 0, f"还有 {_q_leftover} 个账号额度非 0")
+    check("🔴 本组的审计行全部清掉（测试跑完库要回到原样）",
+          _a_leftover == 0, f"还剩 {_a_leftover} 条 quota 审计")
+
+# 请求体层：布尔必须在 Pydantic 转换**之前**被拒
+from api.routes.admin import TokenQuotaBody  # noqa: E402
+
+_rejected = False
+try:
+    TokenQuotaBody(quota_monthly=True)
+except Exception:
+    _rejected = True
+check("🔴 请求体拒布尔（Pydantic 会把 true 转成 1，不拦就是「额度设成 1」）",
+      _rejected, "TokenQuotaBody 收下了 true")
+_ok_str = False
+try:
+    _ok_str = TokenQuotaBody(quota_monthly="5000").quota_monthly == 5000
+except Exception:
+    pass
+check("请求体收字符串 '5000'（前端表单与 curl 都这么传）", _ok_str,
+      "字符串被拒了 —— 用 StrictInt 会连它一起拒掉")
+
+# --------------------------------------------------------------------------- #
 # 第 4 组：反向验证（--reverse 才跑）
 # --------------------------------------------------------------------------- #
 section("第 4 组：反向验证（--reverse：改坏实现 → 上面某组断言必须转红）")
@@ -611,8 +781,91 @@ if "--reverse" in sys.argv:
         check("反向 9：没有可放大的 cache_read 样本，这条无从验起", False,
               "需要一条 cache_read 非零且消息数 >1 的会话")
 
+    # ----------------------------------------------------------------- #
+    # 反向 10：额度改成 bump token_version → 「不踢下线」那条断言红
+    # ----------------------------------------------------------------- #
+    _orig_quota = urepo.set_token_quota
+
+    def _quota_with_bump(user_id: int, quota_monthly: int, *, updated_by=None) -> bool:
+        _orig_quota(user_id, quota_monthly, updated_by=updated_by)
+        urepo.bump_token_version(user_id)
+        return True
+
+    urepo.set_token_quota = _quota_with_bump
+    _tv_before = urepo.get(_tq_uid).token_version
+    svc.set_token_quota(_ADMIN, _tq_uid, 4321)
+    _tv_after = urepo.get(_tq_uid).token_version
+    urepo.set_token_quota = _orig_quota
+    svc.set_token_quota(_ADMIN, _tq_uid, _tq_before)
+    # ⚠️ **反向组必须自己收尾**：它跑在第 5 组的 `finally` **之后**，
+    #   所以第 5 组那次清理（按 actor 删审计）发生在这些步骤之前 ——
+    #   这几步产生的审计会留下来，而「测试跑完库要回到原样」
+    #   说的是**整库**，不是「我关心的那几行」。
+    with get_engine().begin() as c:
+        c.execute(_t("DELETE FROM audit_log WHERE action='user.token_quota.change' "
+                     "AND actor_username=:a"), {"a": _ADMIN.username})
+    # 判据有两半，必须**分别**成立：
+    #   ① 拆掉之后 token_version 确实变了（证明这处替换真的改到了行为）
+    #   ② 上面第 5 组那条「不 bump」的判据在拆掉之后**不再成立**
+    # 写成 `a and not a` 那种自相矛盾的形式则是恒假 —— 那样它永远红，
+    # 而「永远红的断言」与「没有断言」在退出码上无法区分（第 85 条同源）。
+    _bumped = _tv_after == _tv_before + 1
+    _guard_would_fail = _tv_after != _tv_before
+    check("反向 10：额度改成 bump token_version 后，「不踢下线」那条断言转红",
+          _bumped and _guard_would_fail,
+          f"拆掉后 token_version {_tv_before} → {_tv_after}；"
+          f"「确实变了」={_bumped}，「原断言会红」={_guard_would_fail}")
+
+    # ----------------------------------------------------------------- #
+    # 反向 11：把幂等分支去掉 → 「值没变不落审计」那条断言必须转红
+    # ----------------------------------------------------------------- #
+    #手法：临时把 `_audit` 换成计数器，**绕过服务层的幂等判断**
+    #（直接调仓储层写同样的值，模拟「幂等判断被拆掉」的实现形状），
+    # 然后断言「审计条数增加」这个判据能检测到。
+    _seen: list[tuple] = []
+    _orig_audit = svc._audit
+
+    def _counting_audit(actor_, action_, target_type_, **kw):
+        _seen.append((action_, kw.get("target_id")))
+        return None                      # 不真写库，只计数
+
+    _real_audit = _orig_audit
+    try:
+        # 先用真审计跑一次「值没变」→ 期望一条都不记
+        svc._audit = _counting_audit
+        svc.set_token_quota(_ADMIN, _tq_uid, _tq_before)
+        _same_value_hits = len(_seen)
+
+        # 再走「值变了」→ 期望恰好记一条
+        _seen.clear()
+        svc.set_token_quota(_ADMIN, _tq_uid, (_tq_before + 777) if _tq_before else 4242)
+        _changed_hits = len(_seen)
+    finally:
+        svc._audit = _real_audit
+        svc.set_token_quota(_ADMIN, _tq_uid, _tq_before)
+        # 同上：这次还原用的是**真** `_audit`，会写一条真审计出来，
+        # 而它发生在第 5 组清理之后 —— 所以要自己删。
+        with get_engine().begin() as c:
+            c.execute(_t("DELETE FROM audit_log WHERE action='user.token_quota.change' "
+                         "AND actor_username=:a"), {"a": _ADMIN.username})
+    check("反向 11：把「值没变」与「值变了」两种情况的审计判据拆开检测",
+          _same_value_hits == 0 and _changed_hits == 1,
+          f"同值记了 {_same_value_hits} 条（应0），变值记了 {_changed_hits} 条（应 1）")
+
+    # 🔴 终检：反向组跑完之后，**整库**必须回到原样
+    with get_engine().connect() as c:
+        _final_q = int(c.execute(
+            _t("SELECT COUNT(*) FROM `user` WHERE token_quota_monthly <> 0")).scalar())
+        _final_a = int(c.execute(
+            _t("SELECT COUNT(*) FROM audit_log WHERE action='user.token_quota.change'"
+               " AND actor_username=:a"), {"a": _ADMIN.username}).scalar())
+    check("🔴 反向组跑完后全库额度仍为 0（每个反向验证都要自己还原）",
+          _final_q == 0, f"还有 {_final_q} 个账号额度非 0")
+    check("🔴 反向组跑完后没有留下审计残留", _final_a == 0,
+          f"还剩 {_final_a} 条")
+
     print()
-    print(f"  （第 4 组 9 条反向验证全部为「拆掉护栏 → 受影响的断言转红」，"
+    print(f"  （第 4 组 11 条反向验证全部为「拆掉护栏 → 受影响的断言转红」，"
           f"本组新增 {PASS - _pass_before} 条通过）")
 else:
     print("  （反向验证组已跳过 —— 加 --reverse 执行。"

@@ -148,6 +148,21 @@ def status_of(
     return STATUS_OK
 
 
+def to_quota_int(value: Any) -> int:
+    """
+    把任意输入宽松转成额度整数（**永不抛**，非法值当 0 = 不限）。
+
+    ⚠️ 暴露成公开函数而不是让调用方用私有的 `_to_int` ——
+      写路径（`admin_service.set_token_quota`）需要同一套转换，
+      而跨模块调 `_to_int` 是把「私有的」约定直接破坏掉。
+
+    ❌ 否掉的方案：写路径自己 `int(value)`。
+      那会让「字符串 `'500'` 能写进去、`'abc'` 抛 ValueError 变500」
+      —— 同一件事两种待遇，而前端那侧正好会传字符串。
+    """
+    return _to_int(value)
+
+
 def effective_quota(quota_override: Any, default_quota: Any) -> int:
     """
     生效额度 = 个人覆盖值，缺省时用全局默认。
@@ -242,6 +257,7 @@ __all__ = [
     "billable",
     "describe",
     "effective_quota",
+    "to_quota_int",
     "status_of",
     "usage_percent",
 ]

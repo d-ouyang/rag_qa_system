@@ -51,6 +51,7 @@ from config.settings import settings
 from core import audit_repo
 from core import kb_acl
 from core import password_policy as policy
+from core import quota_policy
 from core import user_repo as repo
 from core.db import now_db
 from core.identity import Actor
@@ -470,6 +471,95 @@ def set_kb_role(actor: Actor, user_id: int, kb_role: str) -> repo.UserRecord:
                 "from_label": kb_acl.KB_ROLE_LABELS.get(record.kb_role, record.kb_role),
                 "to_label": kb_acl.KB_ROLE_LABELS.get(target, target),
                 "token_version": after.token_version},
+    )
+    return after
+
+
+# --------------------------------------------------------------------------- #
+# Token 额度（P2-15b）
+# --------------------------------------------------------------------------- #
+def set_token_quota(actor: Actor, user_id: int, quota_monthly: Any) -> repo.UserRecord:
+    """
+    改某人的月度 token 额度。**只提醒不阻断**（用户 2026-10-07 拍板）。
+
+    --------------------------------------------------------------------------
+    为什么 `require_admin` 而不是 `require_staff`
+    --------------------------------------------------------------------------
+    与 `set_role` / `set_kb_role` 同一条理由（D10）：hr 能改员工资料，
+    但**不能改额度**。理由不是不信任 hr，而是**后果不对称** ——
+    资料填错了员工自己能看出来；额度填错了，
+    员工看到的只是一条横幅（「你已用完本月额度」），
+    而他不会想到那条横幅背后的数字是别人刚填错的。
+
+    ⚠️ 但因为本项**不阻断**，这条限制的实际影响只是
+    「别让 hr 顺手把某个部门的额度清零」，而不是一道锁。
+
+    --------------------------------------------------------------------------
+    🔴 为什么**允许改自己的**额度 —— 与 `set_kb_role` 相反
+    --------------------------------------------------------------------------
+    `set_kb_role` 禁止降自己的权，理由是「降权会让 token 立刻失效，
+    而恢复要找别人改，一个人把自己锁在外面时那个『另一个人』未必存在」。
+
+    而额度**不 bump token_version**（理由见 `user_repo.set_token_quota`），
+    所以「把额度改小」不会让任何人掉线、不会锁死任何功能 ——
+    最坏的结果只是他自己接下来会看到一条横幅。
+    用一个不成立的危害去禁止一个无害的操作，只会逼出荒唐的后果
+    （「唯一一个想给自己设额度的人恰好是管理员，于是他必须找同事」）。
+
+    ⚠️ 所以这里**只加一条提示**：改自己的额度时在审计 detail 里标出来
+    （`self=True`），让事后回看的人知道这一条是「自己给自己设的」。
+
+    --------------------------------------------------------------------------
+    为什么**值没变就不动库、也不落审计**
+    --------------------------------------------------------------------------
+    与 `set_kb_role` / `set_role` 同一取舍：不变的「变更」若也产出一条
+    「改了额度」的审计，几天后没人信这条审计。
+    管理端下拉框默认选中当前值 —— 用户点一下确认就产生一条假审计。
+    """
+    _require(actor.role == repo.ROLE_ADMIN, "只有系统管理员能改token 额度", status=403)
+
+    # ⚠️ **不接受负数**。判据放在服务层而不是仓储层：
+    #   仓储层抛 ValueError 会变成 500（没人读那条堆栈），
+    #   而这里是明确的 400 + 可读原因。
+    #   `to_quota_int` 宽松（字符串/浮点都能吃），但**负数在这里是硬错误** ——
+    #   `quota_policy` 里 `effective_quota` 把 ≤0 都当「不限」，
+    #   而 -1 在用户眼里是「倒欠我token」，两者不能混。
+    # ⚠️ 这里**不拦布尔**：`TokenQuotaBody` 的 `mode="before"` 校验器已经拦了，
+    #   而 Pydantic 会先把 `true` 转成 `1` —— 到了这里它已经是普通整数，
+    #   写一个 `isinstance(raw, bool)` 分支只会是**永远不执行的死代码**，
+    #   而死代码比没有代码更坏：它看起来在防什么。
+    quota = quota_policy.to_quota_int(quota_monthly)
+    if quota < 0:
+        raise AdminError("额度不能为负数（0 表示不限）", status=400)
+
+    record = _load_user(user_id)
+    if quota == record.token_quota_monthly:
+        # 幂等：值没变就不动库、不落审计（理由见文档字符串）
+        return record
+
+    repo.set_token_quota(user_id, quota, updated_by=actor.id)
+    logger.info("Token 额度变更 | actor=%s | id=%s | %s → %s | self=%s",
+                actor.username, user_id, record.token_quota_monthly, quota,
+                actor.is_self(user_id))
+    after = _load_user(user_id)
+    _audit(
+        actor, "user.token_quota.change", "user",
+        target_id=user_id, target_label=_user_label(record),
+        detail={
+            "from": int(record.token_quota_monthly),
+            "to": quota,
+            # ⚠️ 记**生效额度**而不只是个人值：审计要能回答
+            # 「当时他到底被限制在多少」，而 0 的含义是「用全局默认」，
+            # 只记 0 的话，三个月后没人知道全局默认当时是多少。
+            "effective_from": quota_policy.effective_quota(
+                record.token_quota_monthly, settings.TOKEN_QUOTA_DEFAULT_MONTHLY),
+            "effective_to": quota_policy.effective_quota(
+                quota, settings.TOKEN_QUOTA_DEFAULT_MONTHLY),
+            "default_quota": int(settings.TOKEN_QUOTA_DEFAULT_MONTHLY),
+            "self": actor.is_self(user_id),
+            # 刻意**不记** token_version：额度不 bump 它（见user_repo），
+            # 记一个永不变的值进审计只会让人误以为「它会变」。
+        },
     )
     return after
 

@@ -216,9 +216,18 @@ label.field .hint {
 }
 
 /* 表格：管理端的主视图 */
+/** 表格容器：列多时横向滚动（P2-15b 起表格有 10 列）。 */
+.table-wrap {
+  overflow-x: auto;
+}
+
 table.grid {
   width: 100%;
   border-collapse: collapse;
+  /* P2-15b：第 10 列（月度额度）进来之后，窄屏会把「部门/职位」
+     压成竖排单字。给一个最小宽度让外层卡片横向滚动，
+     而不是把文字拆开 —— 竖排单字比滚动条难读得多。 */
+  min-width: 1080px;
 }
 table.grid th {
   text-align: left;
@@ -233,6 +242,10 @@ table.grid td {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
+  /* P2-15b：与 th 的 nowrap 对齐 —— 不加的话「总部职能中心」这类
+     四字部门名在窄列里被折成竖排单字，比横向滚动难读得多。
+     溢出由 .table-wrap 的横向滚动兜底。 */
+  white-space: nowrap;
 }
 table.grid tbody tr:hover {
   background: var(--bg-hover);
@@ -325,6 +338,25 @@ table.grid th.num {
   background: var(--danger-soft);
   color: var(--danger);
   border-color: rgba(240, 97, 109, 0.32);
+}
+
+/**
+ * P2-15b：月度额度的行内编辑。
+ * `.quota-eff` 显示**生效值**（含「全局默认」来源），刻意用弱化色 ——
+ * 它是给人看的上下文，不是可编辑值；可编辑的只有左边的输入框。
+ */
+.quota-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.quota-input {
+  width: 96px;
+  text-align: right;
+}
+.quota-eff {
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 /** 表头里的「?」提示气泡（P2-14f：知识库权限那一列的说明）。 */

@@ -90,6 +90,15 @@ export interface ActorProfile {
   role: Role
   /** P2-14a新增：知识库写权限档位。**与 `role` 正交**，不是它的子集。 */
   kb_role: KbRole
+  /**
+   * P2-15b：个人月度 token 额度。`0` = 不限（用全局默认）。
+   *
+   * ⚠️ **与「生效额度」不是一回事**：生效额度 =
+   * `token_quota_monthly > 0 ? 它 : options.token_quota.default_monthly`。
+   * 界面要显示「生效额度」时必须走那条计算，不能直接显示这个字段 ——
+   * 显示 0 而实际生效的是 50000，管理员会以为「他没额度」而去改一个没用的数。
+   */
+  token_quota_monthly: number
   status: UserStatus
   identity_source: string
   permissions: {
@@ -119,6 +128,15 @@ export interface UserRow {
   role: Role
   /** P2-14a：知识库写权限档位（与 `role` 正交）。 */
   kb_role: KbRole
+  /**
+   * P2-15b：个人月度 token 额度。`0` = 不限（用全局默认）。
+   *
+   * ⚠️ **与「生效额度」不是一回事**：生效额度 =
+   * `token_quota_monthly > 0 ? 它 : options.token_quota.default_monthly`。
+   * 界面要显示「生效额度」时必须走那条计算，不能直接显示这个字段 ——
+   * 显示 0 而实际生效的是 50000，管理员会以为「他没额度」而去改一个没用的数。
+   */
+  token_quota_monthly: number
   status: UserStatus
   must_change_password: boolean
   token_version: number
@@ -165,6 +183,27 @@ export interface Options {
    * `tests/test_module12_kb_role.py` 第 6 组逐档比对两边的 capabilities。
    */
   kb_roles: KbRoleOption[]
+  /**
+   * P2-15b：额度相关参数**全部后端下发**，前端不硬编码任何数字。
+   *
+   * ⚠️ 理由与 `kb_roles` 同源：改了 `.env` 的阈值而界面没变，
+   * 管理员会以为「设了没用」。而额度直接决定「谁超了」这个显示，
+   * 前端写死一份就是又一份会自己漂的清单。
+   */
+  token_quota: {
+    /** 全局默认月度额度；`0` = 不限。 */
+    default_monthly: number
+    /** 用到这个百分比开始提醒（`quota_policy.STATUS_WARN`）。 */
+    warn_percent: number
+    /** 用到这个百分比算「已用完」（`STATUS_OVER`）。 */
+    over_percent: number
+    /** 结算周期起始日（1 = 自然月）。 */
+    period_start_day: number
+    /** 档位中文标签由后端 `quota_policy.STATUS_LABELS` 一处给出。 */
+    status_labels: Record<'ok' | 'warn' | 'over', string>
+    /** 输入下界（0 = 不限）；上界故意不给 —— 给个人类可读上界只会被人当「建议额度」。 */
+    min_monthly: number
+  }
   password_policy: {
     min_length: number
     expire_days: number
@@ -268,6 +307,23 @@ export function setUserRole(id: number, role: Role): Promise<UserRow> {
  */
 export function setUserKbRole(id: number, kbRole: KbRole): Promise<UserRow> {
   return patchJson<UserRow>(`/api/v1/admin/users/${id}/kb-role`, { kb_role: kbRole })
+}
+
+/**
+ * P2-15b：下发月度 token 额度。
+ *
+ * ⚠️ 类型是 `number`（不是 `0 | 50000 | 100000` 那样的联合类型）：
+ * 额度是**连续的数字**而不是档位名，枚举它既写不完也没有正当理由。
+ * 判据在后端（负数 400、只有管理员能改），前端只负责
+ * 「把明显不合理的挡掉」——而**不要**在前端重复一遍判据。
+ *
+ * ⚠️ 这条接口**不会让人用不了系统**（只提醒不阻断，用户 2026-10-07 拍板），
+ * 所以界面上**不要**写「禁用后他将无法提问」这类话。
+ */
+export function setUserTokenQuota(id: number, quotaMonthly: number): Promise<UserRow> {
+  return patchJson<UserRow>(`/api/v1/admin/users/${id}/token-quota`, {
+    quota_monthly: quotaMonthly
+  })
 }
 
 // --------------------------------------------------------------------------- //

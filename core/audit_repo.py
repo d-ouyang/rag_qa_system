@@ -67,6 +67,11 @@ ACTION_LABELS: Final[dict[str, str]] = {
     # 不复用 user.role.change —— 审计里分不清「改了能不能进后台」与
     # 「改了能不能删知识库」，而这两件事的严重程度完全不同。
     "user.kb_role.change": "变更知识库写权限",
+    # P2-15b：额度是**独立维度**，单列动作名 ——
+    # 不复用 user.role.change / user.kb_role.change：
+    # 「改了能进后台」「改了能删知识库」「改了每月能用多少」
+    # 三件事的严重程度完全不同，混在一条动作里筛不出来。
+    "user.token_quota.change": "变更月度 token 额度",
     "user.password.reset": "重置密码",
     "user.password.must_change": "开关强制改密",
     # P2-14c：知识库写操作。target_type 用 `document`（不是 `kb`）——

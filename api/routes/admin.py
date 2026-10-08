@@ -35,12 +35,13 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from config.settings import settings
 from core import admin_service as svc
 from core import audit_repo
 from core import kb_acl
+from core import quota_policy
 from core import user_repo as repo
 from core.identity import Actor, require_admin, require_staff
 
@@ -101,6 +102,44 @@ class KbRoleBody(BaseModel):
     `kb_roles` 字典，前端下拉的数据源来自那里（不接受自由输入）。
     """
     kb_role: str
+
+
+class TokenQuotaBody(BaseModel):
+    """
+    下发月度 token 额度的请求体。
+
+    ⚠️ 类型是 `int` 而不是枚举/`StrictInt`，**故意的** ——
+    `token_quota_monthly` 的语义是「token 数量」，不是档位名：
+    合法范围只有一个下界（不能为负），而上界没有（`BIGINT`）。
+    所以用 `int` 让 FastAPI 做类型转换（`"500"` → 500），
+    负数与非法字符串交给服务层给中文报错（与 `KbRoleBody` 同一取舍）。
+
+    ❌ 否掉的方案一：用 `NonNegativeInt` 约束。
+    那会让 Pydantic 直接返回 422 英文消息，
+    而这一版的错误文案要与服务层其它地方一致（`kb_role 只能是 [...]` 那种）。
+    负数的判断留在服务层，那里能给出「0 表示不限」这个上下文。
+
+    ❌ 否掉的方案二：用 `StrictInt`。
+    它能拒掉布尔与字符串，但**字符串也得拒** ——
+    而字符串恰恰是最该收下的那一种（前端表单、curl 手测、
+    其它语言客户端传的都是 `"5000"`）。为一个次要输入牺牲主要输入不划算。
+
+    --------------------------------------------------------------------------
+    🔴 为什么必须显式拒bool（Pydantic 会替你转，所以拒的地方不是这里）
+    --------------------------------------------------------------------------
+    `int` 字段收到 JSON `true` 会被转成 `1`、收到 `false` 转成 `0` ——
+    也就是说「把额度设成 1 token」这个荒谬操作，会因为前端传了
+    `quota_monthly: true` 而悄悄发生，而界面显示的是「1」。
+    所以这里用 `mode="before"` 的校验器在转换**之前**看一眼。
+    """
+    quota_monthly: int
+
+    @field_validator("quota_monthly", mode="before")
+    @classmethod
+    def _reject_bool(cls, raw: Any) -> Any:
+        if isinstance(raw, bool):
+            raise ValueError("额度不能是布尔值")
+        return raw
 
 
 class MustChangeBody(BaseModel):
@@ -197,6 +236,24 @@ def read_options(actor: Actor = Depends(require_staff)) -> dict[str, Any]:
              "capabilities": kb_acl.capabilities(v)}
             for v in sorted(kb_acl.KB_ROLES)
         ],
+        # 🔴 P2-15b：额度相关参数**全部**从后端下发，前端不硬编码任何数字。
+        # 前端要展示「当前生效额度是多少」「超了之后会变成什么样」，
+        # 而这些都由 `settings` 与 `quota_policy` 决定 ——
+        # 前端写死一份的话，改了 `.env` 的阈值而界面没变，
+        # 管理员会以为「设了没用」。
+        "token_quota": {
+            # `default_monthly` 是全局默认（`user.token_quota_monthly = 0` 时用它）
+            "default_monthly": int(settings.TOKEN_QUOTA_DEFAULT_MONTHLY),
+            "warn_percent": int(settings.TOKEN_QUOTA_WARN_PERCENT),
+            "over_percent": int(settings.TOKEN_QUOTA_OVER_PERCENT),
+            "period_start_day": int(settings.TOKEN_QUOTA_PERIOD_START_DAY),
+            # 档位标签也由 `quota_policy` 一处给出（前端不自己写中文）
+            "status_labels": dict(quota_policy.STATUS_LABELS),
+            # 供前端做输入校验的下界（0 = 不限）；上界故意不给 ——
+            # `BIGINT` 的上界对界面没有意义，而给一个人类可读的上界
+            # 只会诱使人拿它当「建议额度」。
+            "min_monthly": 0,
+        },
         "password_policy": {
             "min_length": settings.PASSWORD_MIN_LENGTH,
             "expire_days": settings.PASSWORD_EXPIRE_DAYS,
@@ -350,6 +407,33 @@ def patch_kb_role(
 # --------------------------------------------------------------------------- #
 # 密码（13c）
 # --------------------------------------------------------------------------- #
+@router.patch(
+    "/users/{user_id}/token-quota",
+    summary="改月度token 额度（仅管理员，只提醒不阻断）",
+)
+def patch_token_quota(
+    user_id: int, body: TokenQuotaBody, actor: Actor = Depends(require_admin)
+) -> dict[str, Any]:
+    """
+    下发 / 收回某人的月度 token 额度。
+
+    ⚠️ **本接口不会让人用不了系统**。它只影响两件事：
+       ① 管理端看板上的使用率与档位显示；
+       ② 主应用顶部那条提醒横幅（15d 交付）。
+       没有「超额拒绝提问」这条路径 —— 用户2026-10-07 明确排除。
+
+    ⚠️ **不 bump `token_version`**（理由见 `user_repo.set_token_quota`）：
+       额度不是权限，改它不需要把人踢下线。
+       所以这个接口返回的 `token_version` 前后一致 ——
+       界面**不应该**把它当成「已生效」的信号。
+    """
+    try:
+        record = svc.set_token_quota(actor, user_id, body.quota_monthly)
+    except svc.AdminError as e:
+        raise _fail(e) from e
+    return record.to_dict()
+
+
 @router.post("/users/{user_id}/password/reset", summary="重置为一次性临时密码")
 def reset_password(user_id: int, actor: Actor = Depends(require_admin)) -> dict[str, Any]:
     """
