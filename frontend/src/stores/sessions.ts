@@ -19,6 +19,24 @@ function isAbortError(e: unknown): boolean {
     : e instanceof Error && e.name === 'AbortError'
 }
 
+/**
+ * 生成 uuid4 hex（32 位无连字符，与后端 uuid4().hex 同格式）。
+ *
+ * ⚠️ 不能直接用 `crypto.randomUUID()`：它只在**安全上下文**（HTTPS / localhost）
+ * 存在，而部署验收常态是「http://IP:端口」—— 非安全上下文下该方法是 undefined，
+ * 点「新建会话」直接 TypeError。降级走 `crypto.getRandomValues`（任何上下文都可用）
+ * 手工拼 RFC 4122 v4 位段。
+ */
+function uuid4Hex(): string {
+  if (typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '')
+  }
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x40 // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80 // variant 10xx
+  return Array.from(bytes, (x) => x.toString(16).padStart(2, '0')).join('')
+}
+
 export interface LocalSession {
   session_id: string
   /** 列表展示标题：自定义标题 > 首条用户消息 > 「新会话」 */
@@ -95,7 +113,7 @@ export const useSessionStore = defineStore('sessions', () => {
 
   /** 新建本地会话并切换为当前 */
   function createSession(): string {
-    const id = crypto.randomUUID().replace(/-/g, '')
+    const id = uuid4Hex()
     sessions.value.unshift({
       session_id: id,
       title: '新会话',

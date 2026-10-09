@@ -28,6 +28,7 @@ WORKDIR /app
 # 依赖单独一层：requirements 不变时走构建缓存，改业务代码不会重装一遍 torch。
 # 顺序不能反（先 COPY 全部再 pip install 的话，改任何 .py 都会让这一层失效）。
 COPY requirements.lock.txt ./
+# ⚠️ torch 单独一层：装完即缓存。lock 层失败重试时不用重下 196MB（2026-10-09 服务器实测）。
 # ⚠️ 必须先装 CPU 版 torch，再装 lock（联调实测踩到的坑，2026-09-24）：
 #   requirements.lock.txt 是在 macOS 上 `uv pip compile` 的，不含 torch 在 Linux 下的
 #   CUDA 传递依赖；在 Linux 容器里直接 pip install 整个 lock，pip 会为 torch 补解析出
@@ -36,11 +37,20 @@ COPY requirements.lock.txt ./
 #   先装 download.pytorch.org 的 +cpu 构建：它的 metadata 不含 nvidia 依赖，
 #   且按 PEP 440「2.14.0+cpu 满足 torch==2.14.0」，装 lock 时 pip 不会重装 torch、
 #   也不会再补拉 CUDA 包。extra-index-url 兜住 torch 自身的普通依赖（filelock 等）。
-RUN pip install --no-cache-dir \
+#   镜像源用腾讯云内网（mirrors.cloud.tencent.com），国内服务器直连 pypi.org 会超时。
+RUN pip install --no-cache-dir --timeout 600 --retries 10 \
       --index-url https://download.pytorch.org/whl/cpu \
-      --extra-index-url https://pypi.org/simple \
-      "torch==2.14.0" \
- && pip install --no-cache-dir -r requirements.lock.txt
+      --extra-index-url https://mirrors.cloud.tencent.com/pypi/simple \
+      "torch==2.14.0"
+
+# lock 用 uv 装而不是 pip：uv 并行下载 + 内置重试，国内网络下 pip 串行拉 200+ 个包的
+# 元数据动辄 40 分钟且偶发响应截断（JSONDecodeError），uv 快一个量级且抗抖动。
+# torch 已按上面装好（2.14.0+cpu 满足 lock 的 torch==2.14.0），uv 不会重装、不会补拉 CUDA。
+RUN pip install --no-cache-dir --timeout 600 --retries 10 uv \
+ && UV_HTTP_TIMEOUT=120 uv pip install --system \
+      --index-url https://mirrors.cloud.tencent.com/pypi/simple \
+      --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+      -r requirements.lock.txt
 
 # 锁版文件优先于 requirements.txt：后者是「能跑」的宽松版本，
 # lock 是「验过」的精确版本。镜像构建要可复现，只能用 lock。
