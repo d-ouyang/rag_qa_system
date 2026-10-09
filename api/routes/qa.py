@@ -85,6 +85,14 @@ class AskRequest(BaseModel):
         ),
         examples=["f47ac10b-58cc-4372-a567-0e02b2c3d479"],
     )
+    debug: bool | None = Field(
+        default=None,
+        description=(
+            "是否下发检索调试事件（P2-23，仅 /ask/stream 有效）："
+            "true 下发 `retrieval` 帧（改写后查询/候选清单/阈值与 top1 分数）；"
+            "不传时 admin 角色默认开启、其他角色关闭 —— 不传 debug 的调用方零可见变化"
+        ),
+    )
 
 
 class SourceItem(BaseModel):
@@ -287,6 +295,8 @@ def ask(request: AskRequest, actor: Actor = Depends(current_actor)) -> dict[str,
     description=(
         "逐 token 返回答案，Content-Type 为 application/x-ndjson，每行一个 JSON 对象：\n"
         '- 第一帧 `{"type":"meta", ...}`：意图、溯源资料、重写后的问题\n'
+        '- 可选帧 `{"type":"retrieval", ...}`：检索调试事件（P2-23；'
+        "请求体 debug=true 时下发，不传时 admin 角色默认开启）\n"
         '- 中间帧 `{"type":"chunk","content":"..."}`：答案文本增量\n'
         '- 最后一帧 `{"type":"done","elapsed_ms":...}`：完成标记'
     ),
@@ -316,9 +326,20 @@ def ask_stream(request: AskRequest, actor: Actor = Depends(current_actor)) -> St
     if get_memory_manager().is_foreign(session_id, owner_id=actor.id):
         raise HTTPException(status_code=403, detail="无权访问该会话")
 
+    # P2-23：debug 解析。语义是「显式 > 默认」：
+    #   · 显式传 true/false —— 照传（调用方明确知道自己要什么）；
+    #   · 不传（None）—— admin 默认开，其余角色关。
+    # 这样不传 debug 的存量调用方拿到的事件序列与 P2-23 之前逐字节一致。
+    stream_debug = request.debug if request.debug is not None else (actor.role == "admin")
+    if stream_debug:
+        logger.info("检索调试事件已开启 | session_id=%s 用户=%s debug=%s",
+                    session_id, actor.username, request.debug)
+
     def event_generator() -> Iterator[str]:
         """把 RAGChain.stream 的 dict 事件序列化为 NDJSON 行。"""
-        chain_stream = get_rag_chain().stream(request.question, session_id, owner_id=actor.id)
+        chain_stream = get_rag_chain().stream(
+            request.question, session_id, owner_id=actor.id, debug=stream_debug,
+        )
         try:
             # 先把 session_id 作为首帧发出去：客户端需要它做续聊
             yield json.dumps(

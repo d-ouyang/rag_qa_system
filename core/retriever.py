@@ -44,6 +44,7 @@ import logging
 import threading
 import time
 import urllib.request
+from pathlib import Path
 from typing import Any, Sequence
 
 from langchain.retrievers import ContextualCompressionRetriever
@@ -53,7 +54,7 @@ from langchain_core.retrievers import BaseRetriever
 from pydantic import ConfigDict
 
 from config.settings import settings
-from core.vector_store import VectorStoreManager, get_vector_store_manager
+from core.vector_store import VectorStoreManager, build_chunk_id, get_vector_store_manager
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,64 @@ RERANKER_HF_REPOS: dict[str, str] = {
 
 # CrossEncoder 的输入最大长度（超出会被截断，与 bge-reranker 的训练设置一致）
 RERANKER_MAX_LENGTH: int = 512
+
+
+def _candidate_brief(doc: Document) -> dict[str, Any]:
+    """
+    从切片里取出调试轨迹需要的两个展示键：chunk_id 与原始文件名。
+
+    ⚠️ 这里**刻意不 import rag_chain 的 _resolve_chunk_id**：
+    rag_chain 依赖本模块，反向 import 会成环。判定逻辑保持同构
+    （元数据有 chunk_id 直接用；没有则 doc_id + chunk_index 现拼），
+    由 tests/test_module5_retrieval_observability.py 的同构断言守着两处不漂移。
+    """
+    metadata = doc.metadata
+    chunk_id = metadata.get("chunk_id")
+    if not (isinstance(chunk_id, str) and chunk_id):
+        doc_id = metadata.get("doc_id")
+        chunk_index = metadata.get("chunk_index")
+        if isinstance(doc_id, int) and not isinstance(doc_id, bool) \
+                and isinstance(chunk_index, int) and not isinstance(chunk_index, bool):
+            chunk_id = build_chunk_id(doc_id, chunk_index)
+        else:
+            chunk_id = None
+    raw_name = metadata.get("file_name")
+    file_name = str(raw_name) if raw_name else Path(str(metadata.get("source", ""))).name
+    return {"chunk_id": chunk_id, "file_name": file_name}
+
+
+def _rerank_trace(
+    scored_all: Sequence[tuple[Document, float]],
+    *,
+    threshold: float | None,
+) -> dict[str, Any]:
+    """
+    汇总一次重排的调试轨迹（P2-23）。
+
+    :param scored_all: **阈值过滤前**的全量 (文档, 分数)，按分数降序
+    :param threshold: 本次重排生效的分数阈值（未启用为 None）
+    :return: {
+        threshold, top1_before_filter, filtered_count,
+        candidates: [{chunk_id, file_name, rerank_score, passed_threshold}, ...]
+    }
+    轨迹写在重排器实例的 `last_trace` 字段上（P2-23 观测用）。
+    """
+    candidates: list[dict[str, Any]] = []
+    for doc, score in scored_all:
+        candidates.append({
+            **_candidate_brief(doc),
+            "rerank_score": round(score, 6),
+            "passed_threshold": True if threshold is None else score >= threshold,
+        })
+    return {
+        "threshold": threshold,
+        "top1_before_filter": scored_all[0][1] if scored_all else None,
+        "filtered_count": (
+            0 if threshold is None
+            else sum(1 for _, score in scored_all if score < threshold)
+        ),
+        "candidates": candidates,
+    }
 
 
 def resolve_reranker_model_path(
@@ -116,6 +175,9 @@ class CrossEncoderReranker(BaseDocumentCompressor):
     top_k: int = 5                             # 精排后保留的条数
     score_threshold: float | None = None       # 重排分数阈值，低于它的候选直接丢弃
     model: Any = None                          # 延迟加载的 CrossEncoder 实例
+    # 最近一次重排的调试轨迹（P2-23）。⚠️ 共享实例上的「最近一次」口径：
+    # 并发请求会互相覆盖，低并发部署下可接受（见迭代文档 §7）。
+    last_trace: dict[str, Any] | None = None
 
     # CrossEncoder 不是 pydantic 能识别的标准类型，需开放任意类型
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -193,17 +255,32 @@ class CrossEncoderReranker(BaseDocumentCompressor):
             # 分数越高越相关 -> 降序
             scored.sort(key=lambda item: item[1], reverse=True)
 
+            # P2-23：阈值过滤**前**先记下原始 top1 —— 被全过滤时
+            # （scored 变空）分数区间会退化成 [0, 0]，原始 top1 就是
+            # 「拒答差多少分」的唯一证据，必须在过滤前抢救出来。
+            scored_all = list(scored)                 # 过滤前的全量（降序）
+            top1_before_filter = scored_all[0][1] if scored_all else None
             if self.score_threshold is not None:
-                scored = [item for item in scored if item[1] >= self.score_threshold]
+                kept = [item for item in scored if item[1] >= self.score_threshold]
+                filtered_count = len(scored) - len(kept)
+                scored = kept
+            else:
+                filtered_count = 0
+
+            # 调试轨迹：基于过滤前的全量分数（scored 马上要被截断，先算）
+            self.last_trace = _rerank_trace(scored_all, threshold=self.score_threshold)
 
             selected = scored[:keep]
             logger.info(
-                "重排完成 | 候选=%d 保留=%d 耗时=%.2fs 分数区间=[%.4f, %.4f]",
+                "重排完成 | 候选=%d 保留=%d 耗时=%.2fs 分数区间=[%.4f, %.4f] "
+                "过滤前top1=%s 阈值过滤=%d",
                 len(documents),
                 len(selected),
                 time.perf_counter() - start,
                 selected[-1][1] if selected else 0.0,
                 selected[0][1] if selected else 0.0,
+                f"{top1_before_filter:.4f}" if top1_before_filter is not None else "无",
+                filtered_count,
             )
             return selected
         except Exception as e:
@@ -256,6 +333,8 @@ class SiliconFlowReranker(BaseDocumentCompressor):
     top_k: int = 5
     score_threshold: float | None = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
+    # 最近一次重排的调试轨迹（P2-23），与 CrossEncoderReranker 同口径
+    last_trace: dict[str, Any] | None = None
 
     def rerank(
         self,
@@ -300,15 +379,25 @@ class SiliconFlowReranker(BaseDocumentCompressor):
                 if 0 <= index < len(documents):
                     scored.append((documents[index], score))
             scored.sort(key=lambda item: item[1], reverse=True)
+            scored_all = list(scored)                 # 过滤前的全量（降序）
+            top1_before_filter = scored_all[0][1] if scored_all else None
             if self.score_threshold is not None:
-                scored = [item for item in scored if item[1] >= self.score_threshold]
+                kept = [item for item in scored if item[1] >= self.score_threshold]
+                filtered_count = len(scored) - len(kept)
+                scored = kept
+            else:
+                filtered_count = 0
+            self.last_trace = _rerank_trace(scored_all, threshold=self.score_threshold)
             selected = scored[:keep]
             logger.info(
-                "远程重排完成 | 模型=%s 候选=%d 保留=%d 耗时=%.2fs",
+                "远程重排完成 | 模型=%s 候选=%d 保留=%d 耗时=%.2fs "
+                "过滤前top1=%s 阈值过滤=%d",
                 self.model_path,
                 len(documents),
                 len(selected),
                 time.perf_counter() - start,
+                f"{top1_before_filter:.4f}" if top1_before_filter is not None else "无",
+                filtered_count,
             )
             return selected
         except Exception as e:
@@ -551,6 +640,20 @@ class RAGRetriever:
     # ------------------------------------------------------------------ #
     # 状态信息
     # ------------------------------------------------------------------ #
+    def get_last_rerank_trace(self) -> dict[str, Any] | None:
+        """
+        取最近一次重排的调试轨迹（P2-23）。
+
+        供 rag_chain 在拒答分支 / debug 事件里读取「过滤前 top1 分数、
+        被阈值过滤的候选清单」。⚠️ 两个已知口径（都不修，见迭代文档 §7）：
+            · 「最近一次」是共享实例上的口径，并发请求会互相覆盖；
+            · 重排关闭（USE_RERANKER=False）时恒为 None —— 此时没有
+              阈值过滤，也就没有「差多少分」这个问题。
+        """
+        if self.reranker is None:
+            return None
+        return self.reranker.last_trace
+
     def get_retriever_info(self) -> dict[str, Any]:
         """返回检索器当前配置（供日志 / 状态页 / 接口展示）。"""
         return {

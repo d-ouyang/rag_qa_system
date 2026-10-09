@@ -21,6 +21,38 @@ export interface SourceItem {
   vector_similarity?: number | null
 }
 
+/**
+ * 检索调试事件里的单个候选（P2-23，retrieval 帧的 candidates 项）。
+ *
+ * `passed_threshold=false` 的条目**只在 debug 事件里出现**：
+ * 它们被阈值过滤掉了、没进回答 —— 正是「拒答差多少分」的证据。
+ */
+export interface RetrievalCandidate {
+  chunk_id?: string | null
+  file_name?: string | null
+  rerank_score?: number | null
+  vector_similarity?: number | null
+  passed_threshold: boolean
+}
+
+/** 检索调试事件（/ask/stream debug=true 时下发，P2-23） */
+export interface RetrievalDebug {
+  /** 改写后的独立问题（检索实际用的查询） */
+  rewritten_query?: string | null
+  intent?: string
+  route?: string
+  /** 候选清单（含被阈值过滤掉的），按分数降序 */
+  candidates: RetrievalCandidate[]
+  /** 生效的重排分数阈值（未启用为 null） */
+  threshold?: number | null
+  /** 阈值过滤前的原始 top1 分数（拒答时唯一可见的「差多少分」证据） */
+  top1_before_filter?: number | null
+  /** 被阈值过滤掉的条数 */
+  filtered_count?: number
+  /** 最终进入回答的条数（0 = 拒答） */
+  docs_returned?: number
+}
+
 /** 切片详情（GET /api/v1/chunks/{chunk_id}，对应后端 ChunkDetail） */
 export interface ChunkDetail {
   chunk_id: string
@@ -72,6 +104,8 @@ export interface ChatMessage {
   ts?: number
   /** assistant 消息携带的溯源资料 */
   sources?: SourceItem[]
+  /** 本轮检索调试详情（流式 retrieval 帧返回，P2-23；仅 debug 开启时有） */
+  retrieval_debug?: RetrievalDebug
   /** assistant 消息的意图识别结果（流式 meta 帧返回） */
   intent?: string
   /** 本轮 token 用量与耗时（done 帧返回，历史接口按轮回填） */
@@ -85,6 +119,7 @@ export interface ChatMessage {
 export type StreamFrame =
   | { type: 'session'; session_id: string }
   | { type: 'meta'; intent: string; route: string; intent_source: string; standalone_question?: string | null; sources?: SourceItem[] }
+  | ({ type: 'retrieval' } & RetrievalDebug)
   | { type: 'chunk'; content: string }
   | { type: 'done'; elapsed_ms?: number; usage?: TurnUsage; session_usage?: SessionUsage }
   | { type: 'error'; status?: number; detail: string }

@@ -217,6 +217,11 @@ export const useSessionStore = defineStore('sessions', () => {
           assistantMsg.sources = (frame.sources ?? []) as SourceItem[]
           lastMeta.value.intent = frame.intent
           lastMeta.value.route = frame.route
+        } else if (frame.type === 'retrieval') {
+          // P2-23 检索调试事件：admin 默认下发，存到消息上供「检索详情」面板展示。
+          // 剥掉 type 再存，ChatMessage.retrieval_debug 的形状与事件体一致。
+          const { type: _type, ...debug } = frame
+          assistantMsg.retrieval_debug = debug
         } else if (frame.type === 'chunk') {
           enqueueChunk(frame.content)
         } else if (frame.type === 'done') {

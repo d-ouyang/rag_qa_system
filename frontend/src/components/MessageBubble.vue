@@ -16,6 +16,24 @@ const props = defineProps<{ message: ChatMessage; index: number }>()
 const sessions = useSessionStore()
 const ui = useUiStore()
 const showSources = ref(false)
+/** 检索详情面板展开态（P2-23；消息带 retrieval_debug 才有得展） */
+const showDebug = ref(false)
+
+/** 分数统一 4 位小数展示；null/undefined 显示 —（阈值未启用、轨迹缺失等） */
+function fmtScore(v?: number | null): string {
+  return typeof v === 'number' ? v.toFixed(4) : '—'
+}
+
+/**
+ * top1 距阈值还差多少（仅 top1 存在、阈值启用、且 top1 未过阈值时给出）。
+ * 拒答气泡上这就是「差多少分」的直接答案。
+ */
+const scoreGap = computed<number | null>(() => {
+  const d = props.message.retrieval_debug
+  if (!d || typeof d.top1_before_filter !== 'number' || typeof d.threshold !== 'number') return null
+  if (d.top1_before_filter >= d.threshold) return null
+  return d.threshold - d.top1_before_filter
+})
 
 /** v-focus：编辑输入框插入即聚焦 */
 const vFocus = { mounted: (el: HTMLElement) => el.focus() }
@@ -259,6 +277,52 @@ async function loadChunk(id: string): Promise<void> {
                     <pre class="chunk-content">{{ openedData.content }}</pre>
                   </template>
                 </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- 检索详情（P2-23）：流式 retrieval 调试帧到达才有（admin 默认开启）。
+               🔴 拒答气泡（sources 为空）同样可见 —— 本面板的核心价值：
+               拒答时能看到「检索到了什么、top1 距阈值差多少分」。 -->
+          <template v-if="message.role === 'assistant' && message.retrieval_debug">
+            <button class="sources-toggle" @click="showDebug = !showDebug">
+              检索详情 {{ showDebug ? '▲' : '▼' }}
+            </button>
+            <div v-if="showDebug" class="retrieval-debug">
+              <div class="debug-row">
+                <span class="debug-key">改写后查询</span>
+                <span class="debug-val">{{ message.retrieval_debug.rewritten_query || '（无）' }}</span>
+              </div>
+              <div class="debug-row">
+                <span class="debug-key">意图</span>
+                <span class="debug-val">{{ message.retrieval_debug.intent }}（{{ message.retrieval_debug.route }}）</span>
+              </div>
+              <div class="debug-row">
+                <span class="debug-key">阈值</span>
+                <span class="debug-val">{{ fmtScore(message.retrieval_debug.threshold) }}</span>
+              </div>
+              <div class="debug-row">
+                <span class="debug-key">top1 分数（过滤前）</span>
+                <span class="debug-val">
+                  {{ fmtScore(message.retrieval_debug.top1_before_filter) }}<template v-if="scoreGap != null">（距阈值还差 {{ scoreGap.toFixed(4) }}）</template>
+                </span>
+              </div>
+              <div v-if="message.retrieval_debug.candidates.length" class="debug-candidates">
+                <div
+                  v-for="(c, i) in message.retrieval_debug.candidates"
+                  :key="i"
+                  class="debug-cand"
+                  :class="{ failed: !c.passed_threshold }"
+                >
+                  <span class="cand-name" :title="c.chunk_id ?? ''">{{ c.file_name || c.chunk_id || '（无键切片）' }}</span>
+                  <span class="cand-score">{{ fmtScore(c.rerank_score) }}</span>
+                  <span class="cand-pass">{{ c.passed_threshold ? '✓' : '✗' }}</span>
+                </div>
+              </div>
+              <div class="debug-foot">
+                候选 {{ message.retrieval_debug.candidates.length }} 条 ·
+                阈值过滤 {{ message.retrieval_debug.filtered_count ?? 0 }} 条 ·
+                进入回答 {{ message.retrieval_debug.docs_returned ?? 0 }} 条
               </div>
             </div>
           </template>
@@ -652,6 +716,72 @@ async function loadChunk(id: string): Promise<void> {
   margin-top: 8px;
   font-size: 12px;
   color: var(--primary);
+}
+
+/* ---------- 检索详情面板（P2-23） ---------- */
+.retrieval-debug {
+  margin-top: 6px;
+  background: var(--bg-content);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.debug-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  line-height: 1.6;
+}
+.debug-key {
+  color: var(--text-3);
+  flex-shrink: 0;
+  min-width: 7em;
+}
+.debug-val {
+  color: var(--text-1);
+  word-break: break-word;
+}
+.debug-candidates {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.debug-cand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+}
+/* 被阈值过滤掉的候选整行压灰，一眼与「进入回答的」区分开 */
+.debug-cand.failed {
+  color: var(--text-3);
+}
+.cand-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.cand-score {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.cand-pass {
+  flex-shrink: 0;
+  width: 1.2em;
+  text-align: center;
+}
+.debug-foot {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  color: var(--text-3);
+  font-size: 11px;
 }
 .sources {
   margin-top: 6px;

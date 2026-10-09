@@ -310,6 +310,75 @@ def _empty_context_result(inputs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _log_rejection(
+    standalone_question: str | None,
+    trace: dict[str, Any] | None,
+) -> None:
+    """
+    拒答分支的结构化 INFO 日志（P2-23）。
+
+    立项动机：p2.22 验收时 Q2 被阈值短路拒答，但被全过滤时
+    `重排完成` 的分数区间退化成 [0, 0]，原始 top1 不可见 ——
+    「差多少分」这个最关键的问题答不了。top1 从重排轨迹取
+    （retriever 在阈值过滤前抢救出来的那份），取不到时如实写「不可得」，
+    不编造 0.0（0.0 会被误读成「模型给了 0 分」）。
+    """
+    top1 = trace.get("top1_before_filter") if trace else None
+    threshold = trace.get("threshold") if trace else None
+    logger.info(
+        "拒答 | 原因=检索为空 | 改写后查询=%s | top1分数=%s | 阈值=%s",
+        (standalone_question or "").strip() or "（无）",
+        f"{top1:.4f}" if isinstance(top1, (int, float)) else "不可得",
+        f"{threshold:.4f}" if isinstance(threshold, (int, float)) else "未启用",
+    )
+
+
+def _retrieval_debug_event(
+    intent_result: IntentResult,
+    prepared: dict[str, Any],
+    trace: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    组装 NDJSON `retrieval` 调试事件（P2-23，/ask/stream debug=true 时下发）。
+
+    候选清单的来源优先级：
+        · 有重排轨迹 —— 直接用（含被阈值过滤掉的候选，passed_threshold=false，
+          这是「拒答差多少分」的核心数据）；
+        · 没有轨迹（重排关闭）—— 用返回 docs 的溯源信息凑，
+          全部标 passed_threshold=true（没有阈值就谈不上没过）。
+    """
+    if trace:
+        candidates = [dict(c) for c in trace.get("candidates") or []]
+        threshold = trace.get("threshold")
+        top1 = trace.get("top1_before_filter")
+        filtered_count = trace.get("filtered_count", 0)
+    else:
+        candidates = [
+            {
+                "chunk_id": s.get("chunk_id"),
+                "file_name": s.get("file_name"),
+                "rerank_score": s.get("rerank_score"),
+                "vector_similarity": s.get("vector_similarity"),
+                "passed_threshold": True,
+            }
+            for s in RAGChain._extract_sources(list(prepared.get("docs") or []))
+        ]
+        threshold = None
+        top1 = None
+        filtered_count = 0
+    return {
+        "type": "retrieval",
+        "rewritten_query": prepared.get("standalone_question"),
+        "intent": intent_result.intent.value,
+        "route": intent_result.route,
+        "candidates": candidates,
+        "threshold": threshold,
+        "top1_before_filter": top1,
+        "filtered_count": filtered_count,
+        "docs_returned": len(prepared.get("docs") or []),
+    }
+
+
 def _strip_leading_blank(text: str) -> str:
     """
     裁掉答案**开头**的空白，中间与结尾一律不动。
@@ -773,6 +842,11 @@ class RAGChain:
             _merge_usage(usage, prepared["rewrite_usage"])
             if not prepared["docs"]:
                 # 零召回短路：不进 LLM，固定拒答（防幻觉护栏，与流式同口径）
+                # P2-23：结构化日志留下「差多少分」的证据
+                _log_rejection(
+                    prepared["standalone_question"],
+                    self.retriever.get_last_rerank_trace(),
+                )
                 answer = _NO_CONTEXT_ANSWER
             else:
                 # 知识型意图（六类）统一走 RAG 生成；意图标签换回答组织指令
@@ -840,12 +914,14 @@ class RAGChain:
     # 对外：流式问答
     # ------------------------------------------------------------------ #
     def stream(self, question: str, session_id: str, *,
-              owner_id: int | None) -> Iterator[dict[str, Any]]:
+              owner_id: int | None, debug: bool = False) -> Iterator[dict[str, Any]]:
         """
         流式问答：逐段产出，最后产出一次完成事件。
 
         产出序列（dict，接口层序列化为 NDJSON 一行一个）：
             {"type": "meta",  ...}      第一帧：意图/溯源/重写后的问题
+            {"type": "retrieval", ...}  仅 debug=True：检索调试事件（P2-23，
+                                        meta 之后、chunk 之前；缓存命中与闲聊不下发）
             {"type": "chunk", "content": "..."}  × N：答案文本增量
             {"type": "done",  "elapsed_ms": ...} 最后一帧
 
@@ -902,8 +978,17 @@ class RAGChain:
                 "standalone_question": prepared["standalone_question"],
                 "sources": self._extract_sources(prepared["docs"]),
             }
+            # P2-23：检索调试事件（生成开始前下发；不传 debug 的调用方不会走到这）
+            if debug:
+                yield _retrieval_debug_event(
+                    intent_result, prepared, self.retriever.get_last_rerank_trace(),
+                )
             if not prepared["docs"]:
                 # 零召回短路：与同步链路同口径，不进 LLM，拒答作为唯一 chunk 下发
+                _log_rejection(
+                    prepared["standalone_question"],
+                    self.retriever.get_last_rerank_trace(),
+                )
                 yield {"type": "chunk", "content": _NO_CONTEXT_ANSWER}
                 answer = _NO_CONTEXT_ANSWER
             else:
