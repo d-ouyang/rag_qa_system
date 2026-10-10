@@ -1,0 +1,31 @@
+name: Deploy to server
+
+# 触发：推送到 main 即自动部署（最贴合「提交即上线」）。
+# 如需改为「只打 tag 才发布」，把下面两段 push 换成注释里的 tags 版本。
+on:
+  push:
+    branches: [main]
+  # 备选：仅 push tag 时发布（取消注释并注释上面的 branches 段）
+  # push:
+  #   tags: ['v*']
+
+# 串行部署：避免两次快速 push 在同一台 self-hosted runner 上打架
+concurrency:
+  group: deploy-qa
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # 指向在 42.192.111.82 上安装的自托管 runner
+    runs-on: self-hosted
+    timeout-minutes: 40
+
+    steps:
+      - name: Pull latest code and redeploy on server
+        run: |
+          set -euo pipefail
+          cd /opt/qa
+          # 先拉最新（含本 workflow 依赖的 scripts/deploy.sh），再交给部署脚本
+          git fetch --all --prune
+          git reset --hard origin/main
+          bash scripts/deploy.sh
