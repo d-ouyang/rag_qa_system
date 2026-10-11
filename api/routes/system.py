@@ -8,6 +8,9 @@
     GET /health       与 /api/v1/qa/health 等价的轻量状态（服务进程/版本）
     GET /memory       会话存储与 Redis 内存水位（容量预警，运维用）
     GET /queue        解析队列积压 + worker 存活 + 文档状态计数（运维用，P0-3）
+    GET /db           MySQL 连通探针 + 连接池状态 + 延迟（运维用，P2-10a）
+    GET /overview     聚合运维总览：db/queue/worker/memory/documents 一屏判读
+                      + overall(ok/degraded/down)（P2-10a）
 
 设计原则：
 1. 只读。配置来源是 .env + 环境变量（config/settings.py），修改配置应改
@@ -21,12 +24,15 @@
 """
 
 import logging
+import time
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter
 
 from config.settings import settings
 from core import document_repo as repo
+from core.db import check_connection, get_engine
 from core.identity import MODE_DEV, MODE_GATEWAY
 from core.memory_manager import get_memory_manager
 from core.queue import queue_depth, worker_alive
@@ -234,4 +240,152 @@ def queue_status() -> dict[str, Any]:
         "worker": worker,
         "documents": documents,
         "ping_timeout_seconds": settings.QUEUE_WORKER_PING_TIMEOUT_SECONDS,
+    }
+
+
+# ===========================================================================
+# P2-10a：显式 MySQL 探针 + 聚合运维总览
+# ===========================================================================
+# 为什么 /db 要显式存在：P2-10 之前 MySQL 挂了只能从 /queue 的
+# documents.error 或业务接口 500 **间接**推断 —— 监控没法直接盯「数据库通不通」。
+# check_connection() 在 core/db.py 里早就写好了（当时是给启动自检用的），
+# 这里只是给它一条路由，补上「延迟 + 连接池水位」两个运行期指标。
+#
+# 为什么 /overview 要存在：/queue 的 docstring 自己就承认了 ——
+# 「拆成三个接口，告警规则就得跨接口拼，而拼出来的规则没人维护」。
+# overview 把判读逻辑收进服务端一处，监控只需要盯 overall.status 一个词。
+
+
+@router.get(
+    "/db",
+    summary="MySQL 连通探针",
+    description=(
+        "对 MySQL 执行 `SELECT 1` 并返回：\n"
+        "- ok / detail：连通性与失败原因（复用 core/db.py 的 check_connection，不抛异常）；\n"
+        "- latency_ms：本次 SELECT 1 的往返耗时（含借连接，连接池命中时通常 <5ms）；\n"
+        "- pool：SQLAlchemy 连接池水位（QueuePool.status() 的原始字符串）。\n\n"
+        "判读建议：latency 持续升高而 ok=True，通常是连接池打满在排队；\n"
+        "pool.status 里 overflow 接近上限 + latency 高，说明该调 pool 配置或查慢查询。"
+    ),
+)
+def db_status() -> dict[str, Any]:
+    """MySQL 探针。与 /queue 同一条铁律：**被监控的东西坏了，正是它要报告的内容**。"""
+    t0 = time.perf_counter()
+    probe = check_connection()
+    latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+    # pool.status() 是 SQLAlchemy 的诊断接口，理论不抛，但探针接口一律防御到底
+    try:
+        pool: dict[str, Any] = {"status": get_engine().pool.status()}
+    except Exception as e:  # noqa: BLE001
+        pool = {"status": f"unavailable: {type(e).__name__}"}
+
+    return {
+        "db": {**probe, "latency_ms": latency_ms, "pool": pool},
+        "checked_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+@router.get(
+    "/overview",
+    summary="聚合运维总览（一屏判读）",
+    description=(
+        "把 db / queue / worker / memory / documents 五路信息聚合成一个视图，"
+        "并给出 **overall** 总体判级，监控只需要盯这一个字段：\n\n"
+        "- `ok`：全部正常；\n"
+        "- `down`：MySQL 不可达（真相源挂了，登录/问答/解析全部不可用）；\n"
+        "- `degraded`：服务还能答，但有组件异常 —— reasons 数组里写明每一条原因。\n\n"
+        "degraded 的三条判据：\n"
+        "1. Redis broker 不可达（新解析任务投不进队列）；\n"
+        "2. 有解析积压 且 worker 探测无应答（任务卡死前兆）；\n"
+        "3. Redis 内存水位 critical/fatal（写入可能已被只读保护）。\n\n"
+        "⚠️ 默认会做 worker 存活探测，**阻塞约 1 秒**；高频轮询请带 `?worker=false`"
+        " 跳过（此时判据 2 不参与判定）。\n\n"
+        "网关侧本接口**不在免 token 白名单**里 —— 监控脚本请在服务器本机直接打后端，"
+        "或在 qa 前端登录后由管理端调用。"
+    ),
+)
+def system_overview(worker: bool = True) -> dict[str, Any]:
+    """聚合视图。判读规则收在服务端这一处，不再让每个监控脚本自己拼。"""
+    t0 = time.perf_counter()
+
+    # ---- db（真相源）----
+    probe = check_connection()
+    db_ok = bool(probe.get("ok"))
+    try:
+        pool: dict[str, Any] = {"status": get_engine().pool.status()}
+    except Exception as e:  # noqa: BLE001
+        pool = {"status": f"unavailable: {type(e).__name__}"}
+    db_block = {**probe, "latency_ms": round((time.perf_counter() - t0) * 1000, 1), "pool": pool}
+
+    # ---- queue（broker 可达性 + 积压）----
+    depth = queue_depth()
+    broker_ok = bool(depth.get("ok"))
+    backlog = int(depth.get("depth") or 0) + int(depth.get("unacked") or 0)
+    queue_block = {
+        "name": depth.get("queue"),
+        "broker_ok": broker_ok,
+        "depth": depth.get("depth"),
+        "unacked": depth.get("unacked"),
+        "detail": depth.get("detail"),
+    }
+
+    # ---- worker（可选的阻塞探测）----
+    if worker:
+        worker_block: dict[str, Any] = worker_alive()
+        worker_checked = True
+    else:
+        worker_block = {
+            "ok": None,
+            "workers": [],
+            "detail": "调用方跳过了 worker 探测（?worker=false），本维度不参与 overall 判定",
+        }
+        worker_checked = False
+
+    # ---- documents（MySQL 真相源计数；失败不让整个接口 500）----
+    try:
+        documents: dict[str, Any] = repo.counts_by_status()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("overview 读文档状态计数失败：%s", e)
+        documents = {"error": f"{type(e).__name__}: {e}"}
+
+    # ---- memory（水位分级；memory 后端非 redis 时没有 redis_memory 键）----
+    try:
+        mem_report: dict[str, Any] = get_memory_manager().memory_report()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("overview 读记忆子系统报告失败：%s", e)
+        mem_report = {"error": f"{type(e).__name__}: {e}"}
+    redis_mem = mem_report.get("redis_memory") or {}
+    memory_block = {
+        "backend": mem_report.get("backend"),
+        "health": mem_report.get("health"),
+        "redis_memory_level": redis_mem.get("level"),
+    }
+
+    # ---- overall 判定（规则只在这一处）----
+    reasons: list[str] = []
+    if not db_ok:
+        status = "down"
+    else:
+        status = "ok"
+        if not broker_ok:
+            status = "degraded"
+            reasons.append(f"Redis broker 不可达：{depth.get('detail') or '原因未知'}")
+        if worker_checked and worker_block.get("ok") is False and backlog > 0:
+            status = "degraded"
+            reasons.append(f"有 {backlog} 条解析积压且无 worker 应答（任务将卡到孤儿超时）")
+        if redis_mem.get("level") in ("critical", "fatal"):
+            status = "degraded"
+            reasons.append(f"Redis 内存水位 {redis_mem.get('level')}（写入可能已被只读保护）")
+
+    return {
+        "overall": {"status": status, "reasons": reasons},
+        "db": db_block,
+        "queue": queue_block,
+        "worker": worker_block,
+        "documents": documents,
+        "memory": memory_block,
+        "worker_checked": worker_checked,
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
