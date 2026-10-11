@@ -76,6 +76,7 @@ from config.settings import settings
 from core import document_repo as repo
 from core import kb_acl
 from core import kb_service
+from core.bm25_index import invalidate_bm25_index
 from core.document_loader import DocumentLoader
 from core.identity import (
     Actor,
@@ -605,6 +606,8 @@ def _purge_document(record: repo.DocumentRecord) -> dict[str, Any]:
     if record_removed or deleted_chunks:
         from core.qa_cache import bump_kb_version
         bump_kb_version()
+        # P3-4：知识库内容变了 → BM25 索引置脏（与缓存版本号同一个触发点）
+        invalidate_bm25_index()
     return {
         "deleted_chunks": deleted_chunks,
         "file_removed": file_removed,

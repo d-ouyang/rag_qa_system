@@ -51,6 +51,15 @@ export interface RetrievalDebug {
   filtered_count?: number
   /** 最终进入回答的条数（0 = 拒答） */
   docs_returned?: number
+  /**
+   * 混合召回（P3-4）：BM25 命中条数。
+   * ⚠️ null 表示「混合检索没开」，不是「命中 0 条」—— 两种情况排查方向完全不同。
+   */
+  bm25_hits?: number | null
+  /** 混合召回：靠 BM25 补进来、向量没捞到的条数（null = 未开启混合检索） */
+  bm25_only?: number | null
+  /** 混合召回：RRF 融合后的 top1 chunk_id（null = 未开启混合检索） */
+  rrf_top?: string | null
 }
 
 /** 切片详情（GET /api/v1/chunks/{chunk_id}，对应后端 ChunkDetail） */

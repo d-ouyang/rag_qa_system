@@ -56,6 +56,7 @@ from typing import Any
 
 from config.settings import settings
 from core import document_repo as repo
+from core.bm25_index import invalidate_bm25_index
 from core.document_loader import DocumentLoader
 from core.vector_store import VectorStoreManager, build_chunk_id, get_vector_store_manager
 
@@ -216,6 +217,11 @@ def parse_and_index(
         "解析入库完成 | doc_id=%s | 文件=%s | 切片=%d | 清理旧切片=%d",
         doc_id, display_name, added, removed,
     )
+
+    # ---- 5. 通知 BM25 索引失效（P3-4）----
+    # 放在**成功之后**：写库失败时内容没变，置脏只会白重建一次。
+    # 且它是空操作安全的：worker 进程没有 BM25 实例，invalidate 直接跳过。
+    invalidate_bm25_index()
     return added
 
 

@@ -168,6 +168,16 @@ def _step_chroma(apply_changes: bool) -> bool:
 
     print(f"  ✓ 已清空（clear_all 后 count()={store.count()}）")
 
+    # P3-4 约定：库都清了，BM25 索引必须置脏。
+    # 本脚本是独立进程，置脏只影响它自己；后端进程内还持有旧索引 ——
+    # **清完库必须重启后端**，否则它的 BM25 还在按旧 chunk_id 命中。
+    try:
+        from core.bm25_index import invalidate_bm25_index
+
+        invalidate_bm25_index()
+    except Exception as e:  # noqa: BLE001
+        print(f"  BM25 置脏跳过（{type(e).__name__}: {e}）")
+
     # 再确认一遍：用「所有 doc_id 都是孤儿」的判定把库扫一遍，
     # 即使 clear_all 没生效也能被这一步逮住（比只信 count() 可靠）
     orphans = store.list_orphan_chunks(frozenset())

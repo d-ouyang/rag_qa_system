@@ -330,6 +330,19 @@ async function loadChunk(id: string): Promise<void> {
                   {{ fmtScore(message.retrieval_debug.top1_before_filter) }}<template v-if="scoreGap != null">（距阈值还差 {{ scoreGap.toFixed(4) }}）</template>
                 </span>
               </div>
+              <!-- P3-4 混合召回。bm25_hits === null 表示「混合检索没开」，
+                   这一整行不渲染 —— 不渲染比渲染成「BM25 0 条」诚实：
+                   后者是「开了但一条没命中」，排查方向完全不同。 -->
+              <div v-if="message.retrieval_debug.bm25_hits != null" class="debug-row">
+                <span class="debug-key">BM25 关键词召回</span>
+                <span class="debug-val">
+                  {{ message.retrieval_debug.bm25_hits }} 条<template v-if="message.retrieval_debug.bm25_only">（其中 {{ message.retrieval_debug.bm25_only }} 条为向量未捞到、BM25 独有）</template>
+                </span>
+              </div>
+              <div v-if="message.retrieval_debug.bm25_hits != null" class="debug-row">
+                <span class="debug-key">RRF 融合 top1</span>
+                <span class="debug-val">{{ message.retrieval_debug.rrf_top || '（无）' }}</span>
+              </div>
               <div v-if="message.retrieval_debug.candidates.length" class="debug-candidates">
                 <div
                   v-for="(c, i) in message.retrieval_debug.candidates"

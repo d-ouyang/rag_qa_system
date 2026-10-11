@@ -26,7 +26,7 @@
 | P3-1 | 额度拦截：block 档 + 提问预检 + 宽限单 + 429 错误体 + 前端拦截气泡 | api/core/frontend/admin-console | ✅ 完成（2026-10-11） | `v3.0.0-p3.1` |
 | P3-2 | 下载收敛：download 路由加 ACL + 配置开关 + 前端按 capabilities 显隐 | api/core/frontend | ✅ 完成（2026-10-11） | `v3.0.0-p3.2` |
 | P3-3 | 检索评测集 + 评测脚本（golden set + recall/MRR/拒答正确率） | scripts/data | ✅ 完成（2026-10-12） | `v3.0.0-p3.3` |
-| P3-4 | BM25 + RRF 混合检索（双路召回 → RRF 融合 → reranker 裁决不变） | core/api | ☐ 未开始 | 3.0.0-p3.4 |
+| P3-4 | BM25 + RRF 混合检索（双路召回 → RRF 融合 → reranker 裁决不变） | core/api | ✅ 完成（2026-10-12，**A/B 不达标 → `RETRIEVAL_HYBRID` 保持 false**） | `v3.0.0-p3.4` |
 | P3-5 | 上传大小定版 50M：前端 size 预检（✅ 2026-10-11 已落地，见 §3 P3-5）；超大文件本期不做 | frontend | ✅ 完成 | （随首个 3.0.0 tag 带出） |
 | P3-6 | 月度用量快照表（归档审计，不改判定路径） | core/worker/alembic | ☐ 可选 | 3.0.0-p3.6 |
 
@@ -149,6 +149,12 @@
 - `MRR@10` 提升 ≥ 0.05；
 - 拒答正确率不降（10/10 保持）。
 不达标：开关保留默认 false，迭代文档记录负结论与数字，**不为了做功能而开**。
+
+> **✅ 2026-10-12 完成（tag `v3.0.0-p3.4`）——判定：不达标，开关保持 false。**
+> A/B 实测：recall@20 +0.0（❌）/ mrr@10 +0.0（❌）/ 拒答 10/10（✅）。
+> 但 recall@5 **0.8944 → 0.9389（+4.45pp）**、hit@5 → 1.0、基线唯一失手的编号题被 BM25 救回 ——
+> recall@20 判据是在基线出来前写的，基线在 k=20 已摸天花板（hit@20=1.0），该口径结构性不可能 +5pp。
+> 详见 `docs/iterations/v3.0.0-p3.4-hybrid-retrieval.md` §5.3。
 
 **改动文件**：新增 `core/bm25_index.py`；`core/retriever.py`、`core/parsing.py`、`core/rag_chain.py`（debug 帧扩字段）、`config/settings.py`、`.env`/`.env.example`、`requirements.*`、`scripts/rechunk_kb.py`、`scripts/clean_orphan_chunks.py`、`scripts/reset_kb.py`、`frontend/src/types.ts`、`frontend/src/components/MessageBubble.vue`、`Makefile`。
 

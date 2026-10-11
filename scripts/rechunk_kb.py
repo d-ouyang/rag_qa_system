@@ -263,6 +263,24 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         print(f"  · 跳过（{type(e).__name__}: {e}）")
 
+    # P3-4：整库重灌 → BM25 索引必须置脏。
+    # 本脚本是独立进程，它的「置脏」只对本进程生效 —— 后端进程重启后
+    # 第一次检索会从零重建（它自己的索引在它进程里，早就脏了），
+    # 所以这里真正的作用是给**同一个进程内**连续跑的清理/检索兜底。
+    try:
+        from core.bm25_index import invalidate_bm25_index
+
+        invalidate_bm25_index()
+        print("  BM25 索引已置脏（后端进程下次检索前重建）")
+    except Exception as e:  # noqa: BLE001
+        print(f"  · BM25 置脏跳过（{type(e).__name__}: {e}）")
+
+    # P3-4：整库重建后 BM25 索引必须失效。置脏是进程内的 —— 本进程没有
+    # 索引实例时是空操作（worker / 一次性脚本的常态），真正在做检索的
+    # backend 进程会在下一次检索时自行重建。
+    invalidate_bm25_index()
+    print("  BM25 索引已置脏（下次检索前全量重建）")
+
     print("\n" + "=" * 68)
     print(f"  执行结束：{len(rows)} 篇 / 失败 {len(fails)} / 对账不一致 {len(mismatched)}")
     print(f"  向量库当前共 {store.count()} 条切片")
