@@ -126,17 +126,17 @@ onMounted(load)
         </p>
       </div>
       <el-select
-                v-model="filterDept"
-                placeholder="部门"
-                @change="load"
-    >
-      <el-option
-        v-for="o in deptFilterOptions"
-        :key="String(o.value)"
-        :label="o.label"
-        :value="o.value"
-      />
-            </el-select>
+        v-model="filterDept"
+        placeholder="部门"
+        @change="load"
+      >
+        <el-option
+          v-for="o in deptFilterOptions"
+          :key="String(o.value)"
+          :label="o.label"
+          :value="o.value"
+        />
+      </el-select>
     </div>
 
     <div v-if="board" class="card table-wrap">
@@ -216,6 +216,22 @@ onMounted(load)
 </template>
 
 <style scoped>
+/* 🔴 建页时漏了 .head（其他页各有 scoped 定义）——el-select 裸放在块级容器里
+   默认宽 100%，表现为「筛选框独占整行、与标题/表格无间距」。对齐 UsersView。 */
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.head .el-select {
+  width: 160px;
+  flex: 0 0 auto;
+  margin-top: 2px; /* 与页面标题基线齐平 */
+}
+
 .zero-block {
   margin-top: 16px;
   padding: 14px 16px;

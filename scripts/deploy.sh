@@ -35,6 +35,27 @@ docker image prune -f
 echo "==> [6/6] 等待全部 healthy 并探活"
 docker compose --profile full up -d --wait
 
+echo "==> [7/7] 构建并发布 admin-console 静态产物"
+# admin-console 不在 docker 镜像体系里：生产形态是静态文件（/var/www/admin，Caddy file_server）。
+# 服务器宿主机没有 node —— 用一次性 node 容器构建（node:22-alpine 与 gateway 大版本一致）；
+# npm 缓存挂 named volume，二次部署明显提速。静态站点失败不拖垮服务部署（只报错不 exit）。
+ADMIN_DIR="$REPO_DIR/admin-console"
+if [ -d "$ADMIN_DIR" ]; then
+  if docker run --rm \
+      -v "$ADMIN_DIR":/app -w /app \
+      -v admin_npm_cache:/root/.npm \
+      node:22-alpine sh -c "npm ci --no-audit --no-fund && npm run build"; then
+    mkdir -p /var/www/admin
+    rsync -a --delete "$ADMIN_DIR/dist/" /var/www/admin/
+    chmod -R a+rX /var/www/admin
+    echo "✅ admin-console 已发布到 /var/www/admin"
+  else
+    echo "❌ admin-console 构建失败（服务不受影响，但 admin.nianan.site 静态页面未更新）"
+  fi
+else
+  echo "跳过：无 admin-console 目录"
+fi
+
 HEALTH_URL="http://127.0.0.1:8080/api/health"
 if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
   echo "✅ 部署成功：$HEALTH_URL 正常"
