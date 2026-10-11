@@ -77,6 +77,8 @@ async function logout() {
           </div>
         </div>
         <button class="btn btn-ghost btn-sm logout" @click="logout">退出登录</button>
+        <!-- P2-9：ICP 备案号（合规：须展示于页面显著底部位置；链接工信部） -->
+        <a class="beian" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">皖ICP备2026034021号</a>
       </div>
     </aside>
 
@@ -186,6 +188,22 @@ async function logout() {
 .logout {
   width: 100%;
   justify-content: center;
+}
+
+/* P2-9：ICP 备案号——侧边栏底部，小字灰调不抢视线 */
+.beian {
+  display: block;
+  margin-top: 10px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-3, inherit);
+  opacity: 0.6;
+  text-decoration: none;
+}
+
+.beian:hover {
+  opacity: 1;
+  text-decoration: underline;
 }
 /* P2-19：content 改为 flex 列 + 不整页滚动 —— 「列表滚动、分页固定页底」
    的前提是每页自己管理滚动（.list-page flex:1），整页滚动会让 pager 被推出视口。

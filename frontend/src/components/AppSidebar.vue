@@ -296,6 +296,9 @@ function fmtTime(ts: number | null): string {
         </svg>
       </button>
     </div>
+
+    <!-- P2-9：ICP 备案号（合规：须展示于页面显著底部位置；链接工信部） -->
+    <a class="beian" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">皖ICP备2026034021号</a>
   </aside>
 
     <UserProfilePanel
@@ -652,5 +655,21 @@ function fmtTime(ts: number | null): string {
 .logout-btn:hover {
   background: var(--danger-light);
   color: var(--danger);
+}
+
+/* P2-9：ICP 备案号——侧边栏最底部，小字灰调不抢视线 */
+.beian {
+  display: block;
+  padding: 8px 0 10px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-3);
+  opacity: 0.7;
+  text-decoration: none;
+}
+
+.beian:hover {
+  opacity: 1;
+  text-decoration: underline;
 }
 </style>

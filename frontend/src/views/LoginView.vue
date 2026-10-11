@@ -86,6 +86,11 @@ async function submit() {
         {{ loading ? '登录中…' : '登录' }}
       </button>
     </form>
+
+    <!-- P2-9：ICP 备案号（合规要求：网站底部须展示备案号并链接工信部） -->
+    <footer class="beian">
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">皖ICP备2026034021号</a>
+    </footer>
   </div>
 </template>
 
@@ -212,5 +217,26 @@ async function submit() {
   text-align: center;
   font-size: 12px;
   color: var(--text-3);
+}
+
+/* P2-9：ICP 备案号（合规：须展示于页面底部；fixed 不依赖父级定位） */
+.beian {
+  position: fixed;
+  bottom: 10px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 12px;
+}
+
+.beian a {
+  color: inherit;
+  opacity: 0.55;
+  text-decoration: none;
+}
+
+.beian a:hover {
+  opacity: 0.9;
+  text-decoration: underline;
 }
 </style>
