@@ -48,13 +48,22 @@
   "statement": [
     {
       "effect": "allow",
-      "action": ["cos:PutObject", "cos:GetObject", "cos:ListBucket", "cos:AbortMultipartUpload"],
+      "action": [
+        "name/cos:PutObject",
+        "name/cos:GetObject",
+        "name/cos:GetBucket",
+        "name/cos:AbortMultipartUpload"
+      ],
       "resource": ["qcs::cos:ap-shanghai:uid/1259425324:qa-backup-1259425324/*",
                     "qcs::cos:ap-shanghai:uid/1259425324:qa-backup-1259425324/"]
     }
   ]
 }
 ```
+
+> ⚠️ 实测：action 必须带 `name/` 前缀（如 `name/cos:PutObject`），且列举对象的
+> action 名是 **`cos:GetBucket`** 而不是 ListBucket——写错任一个，策略分析器
+> 会报「无效的 action」。
 
 4. 建完**立刻**下载或复制 `SecretId` / `SecretKey`（只显示这一次）。
 
