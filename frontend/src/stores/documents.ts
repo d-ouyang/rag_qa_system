@@ -305,6 +305,12 @@ export const useDocumentStore = defineStore('documents', () => {
   const BATCH_MAX_FILES = 50
 
   /**
+   * 单文件大小上限（与后端 DOC_UPLOAD_MAX_BYTES 一致；前端先拦一道，省一趟必然 413 的上传）。
+   * 后端校验在 api/routes/documents.py `_accept_one_upload`，两处改动须同步。
+   */
+  const MAX_FILE_BYTES = 50 * 1024 * 1024
+
+  /**
    * 上传（p1.5c 起支持批量）：单个 File 或多文件/文件夹选出的 File 列表。
    *
    * 单个与批量统一走后端批量接口 —— 一个口径，不出现「单个走 A 接口、
@@ -323,6 +329,15 @@ export const useDocumentStore = defineStore('documents', () => {
     }
     if (list.length > BATCH_MAX_FILES) {
       ui.toast(`一次最多提交 ${BATCH_MAX_FILES} 份文件（这次选了 ${list.length} 份），请分批`, 'error', 6000)
+      return
+    }
+    const oversized = list.filter((f) => f.size > MAX_FILE_BYTES)
+    if (oversized.length > 0) {
+      const names =
+        oversized.length <= 3
+          ? oversized.map((f) => f.name).join('、')
+          : `${oversized.slice(0, 3).map((f) => f.name).join('、')} 等 ${oversized.length} 份`
+      ui.toast(`单份文件不超过 50MB，以下文件超限：${names}`, 'error', 6000)
       return
     }
     submitting.value = true
