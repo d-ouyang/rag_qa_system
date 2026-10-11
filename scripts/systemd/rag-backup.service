@@ -1,0 +1,17 @@
+[Unit]
+Description=RAG QA 整站备份到 COS（mysqldump + upload + chroma_data）
+# 备份目标依赖 MySQL 容器：docker.service 起来才有得 dump
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# 服务器上项目固定部署在 /opt/qa（docs/部署方案-子域名.md）
+WorkingDirectory=/opt/qa
+ExecStart=/usr/bin/env bash /opt/qa/scripts/backup_to_cos.sh
+# dump + 打包 + 上传都是分钟级，超时给足余量
+TimeoutStartSec=900
+# 失败不静默：journalctl -u rag-backup 看原因
+# 🔴 状态通知走 timer 的 Persistent=true + 邮件/监控由人看 journal，本单元不 restart
+StandardOutput=journal
+StandardError=journal
