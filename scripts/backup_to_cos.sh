@@ -4,7 +4,7 @@
 #
 # 用法（在服务器上，项目根 /opt/qa）：
 #   sudo bash scripts/backup_to_cos.sh              # 全流程（dump + 打包 + 上传）
-#   sudo bash scripts/backup_to_cos.sh --public     # 走公网 endpoint（本机调试用）
+#   sudo bash scripts/backup_to_cos.sh --internal   # 确认内网可达的实例切内网 endpoint
 #
 # 前置（缺一不可，见 docs/备份方案-COS.md）：
 #   1. COS 桶已建（同地域 ap-shanghai，私有读写）
@@ -41,8 +41,13 @@ set -a; source "$ROOT/.env"; set +a
 : "${COS_SECRET_KEY:?请在 .env 配置 COS_SECRET_KEY}"
 : "${MYSQL_DATABASE:=rag_qa}"
 
-PUBLIC_MODE=0
-[ "${1:-}" = "--public" ] && PUBLIC_MODE=1
+# endpoint 选择：默认公网（cos.<region>.myqcloud.com）。
+# 🔴 实测 2026-10-11：这台轻量解析不了 *.internal.tencentcos.com（no such host），
+#    内网域名不是想走就能走（取决于实例 DNS/网络形态）。而 COS 只收「外网下行」
+#    流量费，**上传（写入）永远免费**，每日几十 MB 走公网成本为 0——默认公网。
+#    确认内网可达的实例可用 --internal 切换（免去极端情况下的公网依赖）。
+INTERNAL_MODE=0
+[ "${1:-}" = "--internal" ] && INTERNAL_MODE=1
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 WORK="$(mktemp -d /tmp/qa-backup-$STAMP-XXXXXX)"
@@ -75,11 +80,11 @@ echo "$LOG_PREFIX [2/3] tar upload/ + chroma_data/ → $DATA_FILE"
 # -h：models 若是软链不跟进（模型不属于备份范围，可重新下载）
 tar --exclude='upload/.tmp-*' -czf "$WORK/$DATA_FILE" -C "$ROOT" upload chroma_data
 
-# ---- 3. 上传 COS（同地域默认走内网 endpoint：免外网下行流量费）----
-if [ "$PUBLIC_MODE" = "1" ]; then
-    ENDPOINT="cos.$COS_REGION.tencentcos.com"
-else
+# ---- 3. 上传 COS（默认公网 endpoint——上传免费；--internal 切内网）----
+if [ "$INTERNAL_MODE" = "1" ]; then
     ENDPOINT="cos.$COS_REGION.internal.tencentcos.com"
+else
+    ENDPOINT="cos.$COS_REGION.myqcloud.com"
 fi
 PREFIX="qa-backup/$(date +%Y/%m/%d)"
 echo "$LOG_PREFIX [3/3] 上传 cos://$COS_BUCKET/$PREFIX/（endpoint=$ENDPOINT）"
