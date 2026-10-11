@@ -80,8 +80,18 @@ COS 控制台 → 该桶 → 基础配置 → 生命周期 → 添加规则：
 
 ```bash
 # 1) 装 coscli（腾讯云官方 CLI）
-curl -fsSL https://github.com/tencentyun/coscli/releases/latest/download/coscli-linux -o /usr/local/bin/coscli
-chmod +x /usr/local/bin/coscli
+# ⚠️ 服务器直连 GitHub 不稳，推荐 Mac（挂代理）下载后 scp 上去。
+#    资产名带版本号，`releases/latest/download/<名>` 会 404；升级时先查最新 tag。
+#    版本快照 2026-10-11：v1.0.9。
+#    服务器直连试探（可先试）：curl -fsSL --connect-timeout 10 --max-time 120 \
+#      -o /tmp/coscli https://github.com/tencentyun/coscli/releases/download/v1.0.9/coscli-v1.0.9-linux-amd64
+#    Mac 侧：
+curl -fsSL -o /tmp/coscli-linux \
+  https://github.com/tencentyun/coscli/releases/download/v1.0.9/coscli-v1.0.9-linux-amd64
+scp /tmp/coscli-linux ubuntu@42.192.111.82:/tmp/coscli
+#    服务器侧：
+sudo mv /tmp/coscli /usr/local/bin/coscli
+sudo chmod +x /usr/local/bin/coscli
 
 # 2) .env 追加四个变量（密钥不进 git）
 cat >> /opt/qa/.env << 'EOF'
