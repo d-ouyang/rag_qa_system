@@ -480,7 +480,12 @@ def set_kb_role(actor: Actor, user_id: int, kb_role: str) -> repo.UserRecord:
 # --------------------------------------------------------------------------- #
 def set_token_quota(actor: Actor, user_id: int, quota_monthly: Any) -> repo.UserRecord:
     """
-    改某人的月度 token 额度。**只提醒不阻断**（用户 2026-10-07 拍板）。
+    改某人的月度 token 额度。
+
+    ⚠️ P3-1（2026-10-11）起额度**会拦人**：本月已用 ≥ 限量时提问接口返回 429
+    （判据 `quota_policy.can_ask`，档位由 `TOKEN_QUOTA_OVER_ACTION` 控制）。
+    也就是说「额度填错了」的后果从「看到一条横幅」升级成「问不了」——
+    下面那段「后果不对称」的论证只会被加强，不会被推翻。
 
     --------------------------------------------------------------------------
     为什么 `require_admin` 而不是 `require_staff`

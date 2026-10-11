@@ -96,10 +96,31 @@ export interface SessionUsage {
   requests: number
 }
 
+/**
+ * P3-1：被额度拦下的那一轮（HTTP 429 + code=quota_exceeded）。
+ *
+ * 与「请求失败」分开的原因：失败是**偶发的、可重试的**，
+ * 额度用完是**确定的、重试一定还是同一个结果**。
+ * 两者混成一句「⚠️ 请求失败」会让用户反复点发送 ——
+ * 而这一次，正确的动作是去找管理员改额度，不是一个按钮能解决的。
+ */
+export interface QuotaBlockedInfo {
+  used: number
+  quota: number
+  /** 账期 `YYYY-MM`，报错时说清是哪个月的额度用完了 */
+  period?: string | null
+  message: string
+}
+
 /** 会话内消息（GET /api/v1/qa/sessions/{id} 与前端本地流式拼接共用） */
 export interface ChatMessage {
   role: Role
   content: string
+  /**
+   * P3-1：这一轮被额度拦截时的详情。非空即渲染成「额度已用完」气泡，
+   * **不渲染成普通错误**（见 `QuotaBlockedInfo` 注释）。
+   */
+  quota_blocked?: QuotaBlockedInfo | null
   /** 提问时间（Unix 秒；assistant 消息与同轮 user 消息相同） */
   ts?: number
   /** assistant 消息携带的溯源资料 */

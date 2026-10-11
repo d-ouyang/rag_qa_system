@@ -301,10 +301,14 @@ class Settings(BaseSettings):
     TOKEN_QUOTA_WARN_PERCENT : int = 80
     # 「已超额」的判定百分比（100 = 用满即算超）。
     TOKEN_QUOTA_OVER_PERCENT : int = 100
-    # 超额行为档位。**唯一合法值是 "notify"**（用户 2026-10-07 拍板只提醒不阻断）；
+    # 超额行为档位（P3-1 起两档）：
+    #   notify = 只提醒不阻断（2026-10-07 拍板，横幅 + 看板标红，提问照常）；
+    #   block  = 本月已用 >= 限量时，/ask 与 /ask/stream 预检返回 429
+    #            （2026-10-11 拍板，系统已对外上线；判据见 quota_policy.can_ask）。
     # 合法值清单在 core/quota_policy.OVER_ACTIONS（判定唯一处）。
     # ⚠️ 配错值会让**启动直接失败**（见下方 validate_over_action）——
     #   宁可起不来，也不要「以为配了阻断、其实什么都没发生」。
+    # ⚠️ 默认值仍是 notify：**升级不改行为**，要拦得显式配 block。
     TOKEN_QUOTA_OVER_ACTION  : str = "notify"
     # 看板与聚合的默认统计自然月起点偏移（0 = 当月 1 号）。
     # 留成配置是为了将来要「按结算周期」时不用改代码。

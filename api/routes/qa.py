@@ -255,6 +255,108 @@ def _session_missing_or_forbidden(session_id: str, owner_id: int | None) -> HTTP
 
 
 # --------------------------------------------------------------------------- #
+# 额度（P3-1：预检；P2-15d：横幅）
+# --------------------------------------------------------------------------- #
+def _quota_snapshot(actor: Actor) -> dict[str, Any]:
+    """
+    取「这个人此刻的用量 / 生效额度 / 档位 / 账期」。
+
+    ⚠️ 抽出来是因为**两处要用同一个口径**：`/quota/me` 的横幅与 `/ask` 的预检。
+    两处各写一遍 `usage_by_user → billable → effective_quota` 就是标准的
+    「两份清单各自漂」—— 漂起来的症状最难查：横幅说没超、提问却被拦，
+    而两边代码看着都对。
+
+    `period` 用 `YYYY-MM`：429 错误体要带上它，否则用户拿着「额度已用完」
+    去问管理员，两边对不上是哪个月。
+
+    ⚠️ **break-glass（`actor.id is None`）返回 `attributable=False`**：
+    这个人不在 `user` 表里（`quota_repo.usage_by_user(user_id=None)` 会退成
+    「全员看板」），按人计量对他根本不成立。调用方据此**跳过**预检 ——
+    不能拿 `rows[0]`（那是别人的、而且是按用量排序的第一个人）。
+    """
+    from core import quota_repo  # 局部导入：与 my_quota 同款，避免模块级环
+
+    if actor.id is None:
+        return {
+            "attributable": False, "used": 0, "effective_quota": 0,
+            "status": quota_policy.STATUS_OK, "period": "",
+        }
+    rows = quota_repo.usage_by_user(
+        user_id=actor.id, start_day=int(settings.TOKEN_QUOTA_PERIOD_START_DAY),
+    )
+    bucket = rows[0] if rows else None
+    used = quota_policy.billable(
+        bucket.input_tokens if bucket else 0,
+        bucket.output_tokens if bucket else 0,
+        bucket.cache_read_tokens if bucket else 0,
+    )
+    effective = quota_policy.effective_quota(
+        bucket.quota_override if bucket else 0,
+        int(settings.TOKEN_QUOTA_DEFAULT_MONTHLY),
+    )
+    return {
+        "attributable": True,
+        "used": used,
+        "input_tokens": bucket.input_tokens if bucket else 0,
+        "output_tokens": bucket.output_tokens if bucket else 0,
+        "cache_read_tokens": bucket.cache_read_tokens if bucket else 0,
+        "effective_quota": effective,
+        "usage_percent": quota_policy.usage_percent(used, effective),
+        "status": quota_policy.status_of(
+            used, effective,
+            warn_percent=int(settings.TOKEN_QUOTA_WARN_PERCENT),
+            over_percent=int(settings.TOKEN_QUOTA_OVER_PERCENT),
+        ),
+        "period": _current_period(),
+    }
+
+
+def _current_period() -> str:
+    """当前账期 `YYYY-MM`（与 `quota_repo.period_bounds` 同一套「自然月 + 起始日」口径）。"""
+    from core import quota_repo
+
+    start, _end = quota_repo.period_bounds(
+        None, start_day=int(settings.TOKEN_QUOTA_PERIOD_START_DAY))
+    return f"{start.year:04d}-{start.month:02d}"
+
+
+def _quota_precheck(actor: Actor) -> None:
+    """
+    提问前的额度预检（P3-1）。**只在 block 档生效**，notify 档一行不拦。
+
+    调用位置必须是「越权预检之后、进 RAG 链之前」：
+    越权的人先被 403 拒掉，不必为他查一次用量；而额度超了的人
+    不该让他白跑一次检索与一次 LLM（那正是要省的钱）。
+
+    429 错误体的形状（前端按 `code` 特化，不解析文案）：
+        {"code": "quota_exceeded", "used": .., "quota": .., "period": "2026-10",
+         "message": "本月 token 额度已用完，请联系管理员调整。"}
+    """
+    if settings.TOKEN_QUOTA_OVER_ACTION != quota_policy.OVER_ACTION_BLOCK:
+        return
+    snap = _quota_snapshot(actor)
+    if not snap["attributable"]:
+        # break-glass / 不可归属身份：按人计量不成立，放行（见 _quota_snapshot 注释）
+        logger.warning("跳过额度预检：身份不可归属（id=None）| 用户=%s", actor.username)
+        return
+    allowed, message = quota_policy.can_ask(snap["used"], snap["effective_quota"])
+    if allowed:
+        return
+    logger.info("额度拦截提问 | 用户=%s 已用=%s 限量=%s 账期=%s",
+                actor.username, snap["used"], snap["effective_quota"], snap["period"])
+    raise HTTPException(
+        status_code=429,
+        detail={
+            "code": quota_policy.QUOTA_EXCEEDED_CODE,
+            "used": snap["used"],
+            "quota": snap["effective_quota"],
+            "period": snap["period"],
+            "message": message,
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
 # 接口实现
 # --------------------------------------------------------------------------- #
 @router.post(
@@ -273,6 +375,8 @@ def ask(request: AskRequest, actor: Actor = Depends(current_actor)) -> dict[str,
     # token 与一次检索。
     if get_memory_manager().is_foreign(session_id, owner_id=actor.id):
         raise HTTPException(status_code=403, detail="无权访问该会话")
+    # P3-1 额度预检：block 档下超额 → 429（在越权之后、进 RAG 链之前）
+    _quota_precheck(actor)
     logger.info("收到问答请求 | session_id=%s 用户=%s query=%.24s",
                 session_id, actor.username, request.question)
     try:
@@ -325,6 +429,14 @@ def ask_stream(request: AskRequest, actor: Actor = Depends(current_actor)) -> St
     #（前端 createSession() 每次都生成新 UUID），拒绝等于把新会话堵死。
     if get_memory_manager().is_foreign(session_id, owner_id=actor.id):
         raise HTTPException(status_code=403, detail="无权访问该会话")
+
+    # P3-1 额度预检：**必须在返回 StreamingResponse 之前**。
+    # 一旦 StreamingResponse 构造完成，200 头就已经发出去了，
+    # 之后只能作为流里的一帧错误下发 —— 那时客户端「先看到成功、再读到失败」。
+    # 在这里判，429 就是干净的 HTTP 429。
+    # 判定通过后本轮**不再复查**（宽限单语义，见 quota_policy.can_ask）：
+    # 这一轮照常答完照常计费，超出的部分体现在下一问被拦。
+    _quota_precheck(actor)
 
     # P2-23：debug 解析。语义是「显式 > 默认」：
     #   · 显式传 true/false —— 照传（调用方明确知道自己要什么）；
@@ -727,50 +839,43 @@ def my_profile(actor: Actor = Depends(current_actor)) -> dict[str, Any]:
     }
 
 
-@router.get("/quota/me", summary="本人本月 token 用量与横幅文案（只提醒不阻断）")
+@router.get("/quota/me", summary="本人本月 token 用量与横幅文案")
 def my_quota(actor: Actor = Depends(current_actor)) -> dict[str, Any]:
     """
     主应用顶部横幅的数据源（15d）。
 
-    ⚠️ **这个端点永远不拒绝提问**。它的全部输出就是一段事实描述
-       （`quota_policy.banner_text`：只描述事实、不劝阻、不威胁）——
-       用户拍板「只提醒不阻断」，所以这里没有「还能不能问」这个字段，
-       前端拿不到、也就长不出禁用按钮。
+    横幅文案由后端 `quota_policy.banner_text()` 生成 —— **前端只显示，不自己拼**。
+    P3-1 起文案按 `TOKEN_QUOTA_OVER_ACTION` 分档：
+        · notify → 明说「不会限制你继续使用」（2026-10-07 口径）；
+        · block  → over 档改为「超出后无法继续提问」（本端点仍然不拒绝任何请求，
+                   它只是**描述事实**，真正拦人的是 `/ask` 的预检）。
+
+    ⚠️ 这里**仍然没有**「还能不能问」这个字段。刻意如此：
+    它若返回 `can_ask=false`，前端会长出「禁用输入框」，
+    而禁用的判据在前端重写一遍就是两份清单 —— 拦截只发生在服务端预检，
+    前端负责的是**被拒之后**怎么展示（429 特化气泡）。
 
     ⚠️ 档位判定在后端（`status_of`），前端只负责显示 ——
        同一个百分比两个口径的教训（15a）不再犯第二遍。
     """
-    from core import quota_repo
-
-    rows = quota_repo.usage_by_user(
-        user_id=actor.id, start_day=int(settings.TOKEN_QUOTA_PERIOD_START_DAY),
-    )
-    bucket = rows[0] if rows else None
-    used = quota_policy.billable(
-        bucket.input_tokens if bucket else 0,
-        bucket.output_tokens if bucket else 0,
-        bucket.cache_read_tokens if bucket else 0,
-    )
-    effective = quota_policy.effective_quota(
-        bucket.quota_override if bucket else 0,
-        int(settings.TOKEN_QUOTA_DEFAULT_MONTHLY),
-    )
-    status = quota_policy.status_of(
-        used, effective,
-        warn_percent=int(settings.TOKEN_QUOTA_WARN_PERCENT),
-        over_percent=int(settings.TOKEN_QUOTA_OVER_PERCENT),
-    )
+    snap = _quota_snapshot(actor)
+    status = snap["status"] if snap["attributable"] else quota_policy.STATUS_OK
     return {
-        "used": used,
-        "input_tokens": bucket.input_tokens if bucket else 0,
-        "output_tokens": bucket.output_tokens if bucket else 0,
-        "cache_read_tokens": bucket.cache_read_tokens if bucket else 0,
-        "effective_quota": effective,
-        "usage_percent": quota_policy.usage_percent(used, effective),
+        "used": snap["used"],
+        "input_tokens": snap.get("input_tokens", 0),
+        "output_tokens": snap.get("output_tokens", 0),
+        "cache_read_tokens": snap.get("cache_read_tokens", 0),
+        "effective_quota": snap["effective_quota"],
+        "usage_percent": quota_policy.usage_percent(
+            snap["used"], snap["effective_quota"]),
         "status": status,
         "status_label": quota_policy.describe(status),
         # 横幅文案（可能为空 = 不打扰）。前端**只显示**它，不自己拼。
-        "banner": quota_policy.banner_text(used, effective),
+        "banner": quota_policy.banner_text(
+            snap["used"], snap["effective_quota"],
+            status=status,
+            over_action=settings.TOKEN_QUOTA_OVER_ACTION,
+        ),
     }
 
 

@@ -11,7 +11,28 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import * as qaApi from '@/api/qa'
+import { ApiError } from '@/api/http'
 import type { ChatMessage, SessionUsage, SourceItem } from '@/types'
+
+/**
+ * P3-1：把 429 额度拦截从「请求失败」里挑出来。
+ *
+ * 判据只看 **HTTP 码 + code**，不看文案 —— 后端改一个字就失效的判据不是判据。
+ * 数字从 `payload`（detail 原样带出）读，读不到就按 0 渲染；
+ * 宁可显示「已用 0 / 限量 0」，也不要因为字段缺失整条气泡消失。
+ */
+function asQuotaBlocked(e: unknown): ChatMessage['quota_blocked'] {
+  if (!(e instanceof ApiError) || e.status !== 429) return null
+  if (e.code !== 'quota_exceeded') return null
+  const p = (e.payload ?? {}) as Record<string, unknown>
+  const num = (v: unknown) => (typeof v === 'number' ? v : 0)
+  return {
+    used: num(p.used),
+    quota: num(p.quota),
+    period: typeof p.period === 'string' ? p.period : null,
+    message: typeof p.message === 'string' && p.message ? p.message : '本月 token 额度已用完。',
+  }
+}
 
 function isAbortError(e: unknown): boolean {
   return e instanceof DOMException
@@ -245,9 +266,16 @@ export const useSessionStore = defineStore('sessions', () => {
             : '（已停止生成）'
         }
       } else {
-        assistantMsg.content +=
-          (assistantMsg.content ? '\n\n' : '') +
-          `⚠️ 请求失败：${e instanceof Error ? e.message : String(e)}`
+        // P3-1：额度拦截是**确定性的失败**，渲染成专用气泡而不是「请求失败」
+        const blocked = asQuotaBlocked(e)
+        if (blocked) {
+          assistantMsg.quota_blocked = blocked
+          assistantMsg.content = ''
+        } else {
+          assistantMsg.content +=
+            (assistantMsg.content ? '\n\n' : '') +
+            `⚠️ 请求失败：${e instanceof Error ? e.message : String(e)}`
+        }
       }
     } finally {
       flushPending()

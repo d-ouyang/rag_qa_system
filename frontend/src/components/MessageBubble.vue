@@ -24,6 +24,13 @@ function fmtScore(v?: number | null): string {
   return typeof v === 'number' ? v.toFixed(4) : '—'
 }
 
+/** 额度气泡里的千分位数字（P3-1）。非数字一律 0，不把 NaN 显示给用户 */
+function fmtNum(v?: number | null): string {
+  return typeof v === 'number' && Number.isFinite(v)
+    ? v.toLocaleString('zh-CN')
+    : '0'
+}
+
 /**
  * top1 距阈值还差多少（仅 top1 存在、阈值启用、且 top1 未过阈值时给出）。
  * 拒答气泡上这就是「差多少分」的直接答案。
@@ -225,8 +232,24 @@ async function loadChunk(id: string): Promise<void> {
           </div>
         </template>
         <template v-else>
+          <!-- P3-1 额度拦截气泡：与普通「⚠️ 请求失败」分开。
+               这里的失败是**确定的**（重试仍是同一个 429），
+               所以给的出路不是「再试一次」，而是「找管理员改额度」。 -->
+          <div v-if="message.quota_blocked" class="quota-blocked">
+            <span class="quota-blocked__icon">◉</span>
+            <div class="quota-blocked__body">
+              <div class="quota-blocked__title">
+                额度已用完（已用 {{ fmtNum(message.quota_blocked.used) }} /
+                限量 {{ fmtNum(message.quota_blocked.quota) }}）
+                <span v-if="message.quota_blocked.period" class="quota-blocked__period">
+                  {{ message.quota_blocked.period }}
+                </span>
+              </div>
+              <div class="quota-blocked__msg">{{ message.quota_blocked.message }}</div>
+            </div>
+          </div>
           <!-- 流式等待首帧：意图识别 + LLM 首包需要数秒，先给明确的占位反馈 -->
-          <div v-if="message.streaming && !message.content" class="thinking">
+          <div v-else-if="message.streaming && !message.content" class="thinking">
             正在思考<span class="dots"><i /><i /><i /></span>
           </div>
           <div v-else class="content">{{ message.content }}<span v-if="message.streaming" class="cursor" /></div>
@@ -454,6 +477,41 @@ async function loadChunk(id: string): Promise<void> {
   border: 1px solid var(--border);
   border-top-left-radius: 4px;
   align-self: flex-start;
+}
+
+/* ----- P3-1 额度拦截气泡 -----
+   与顶部横幅（.quota-banner）同色系但更实：横幅是提醒，这里是「这一轮没有回答」，
+   视觉上必须能一眼区分「答了」与「没答」。 */
+.quota-blocked {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #f0616d 12%, transparent);
+  border: 1px solid color-mix(in srgb, #f0616d 35%, transparent);
+}
+.quota-blocked__icon {
+  font-size: 13px;
+  color: #e5737d;
+  line-height: 1.75;
+}
+.quota-blocked__body {
+  min-width: 0;
+}
+.quota-blocked__title {
+  color: #e5737d;
+  font-weight: 600;
+}
+.quota-blocked__period {
+  margin-left: 6px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+.quota-blocked__msg {
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 13px;
 }
 .content {
   white-space: pre-wrap;

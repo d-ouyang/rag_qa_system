@@ -417,7 +417,7 @@ def patch_kb_role(
 # --------------------------------------------------------------------------- #
 @router.patch(
     "/users/{user_id}/token-quota",
-    summary="改月度token 额度（仅管理员，只提醒不阻断）",
+    summary="改月度token 额度（仅管理员；超出后提问将被拦截）",
 )
 def patch_token_quota(
     user_id: int, body: TokenQuotaBody, actor: Actor = Depends(require_admin)
