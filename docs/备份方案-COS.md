@@ -92,6 +92,11 @@ scp /tmp/coscli-linux ubuntu@42.192.111.82:/tmp/coscli
 #    服务器侧：
 sudo mv /tmp/coscli /usr/local/bin/coscli
 sudo chmod +x /usr/local/bin/coscli
+#    🔴 coscli 首次运行会强制进交互式初始化（生成 /root/.coscli/config.yaml），
+#    备份脚本用 sudo 跑 → 必须以 sudo 身份 init 一次，否则脚本卡在交互：
+sudo coscli config init
+#    交互问答：secret id / secret key 粘贴子用户的；region 填 ap-shanghai；其余回车默认。
+#    （脚本里 -e 已显式传内网 endpoint，会覆盖配置里的默认值。）
 
 # 2) .env 追加四个变量（密钥不进 git）
 cat >> /opt/qa/.env << 'EOF'
