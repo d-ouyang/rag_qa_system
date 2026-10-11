@@ -85,11 +85,9 @@ PREFIX="qa-backup/$(date +%Y/%m/%d)"
 echo "$LOG_PREFIX [3/3] 上传 cos://$COS_BUCKET/$PREFIX/（endpoint=$ENDPOINT）"
 
 coscli cp "$WORK/$MYSQL_FILE" "cos://$COS_BUCKET/$PREFIX/$MYSQL_FILE" \
-    -r "$COS_REGION" -e "$ENDPOINT" \
-    --secret-id "$COS_SECRET_ID" --secret-key "$COS_SECRET_KEY" >/dev/null
+    -e "$ENDPOINT" -i "$COS_SECRET_ID" -k "$COS_SECRET_KEY" --init-skip=true >/dev/null
 coscli cp "$WORK/$DATA_FILE" "cos://$COS_BUCKET/$PREFIX/$DATA_FILE" \
-    -r "$COS_REGION" -e "$ENDPOINT" \
-    --secret-id "$COS_SECRET_ID" --secret-key "$COS_SECRET_KEY" >/dev/null
+    -e "$ENDPOINT" -i "$COS_SECRET_ID" -k "$COS_SECRET_KEY" --init-skip=true >/dev/null
 
 # ---- 摘要 ----
 MYSQL_MB=$(du -m "$WORK/$MYSQL_FILE" | cut -f1)
