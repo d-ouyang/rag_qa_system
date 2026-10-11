@@ -41,3 +41,9 @@ gateway/.env
 # 里面是**能直接登录的密码**，绝不能进仓库。
 .seed-credentials.csv
 *credentials*.csv
+
+# P2-10b：coscli 的失败日志默认写在「当前工作目录」（coscli_output/），
+# 手动 sudo 跑备份时会以 root 落在 /opt/qa 下——属主 root 会让部署脚本的
+# git clean -fd 删不掉 → 整个 CI/CD 部署 exit 1（2026-10-11 实测翻车一次）。
+# 脚本已改用 --log-path 指到 /var/log/qa-backup/，这里再兜底忽略。
+coscli_output/

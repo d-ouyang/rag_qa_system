@@ -89,10 +89,18 @@ fi
 PREFIX="qa-backup/$(date +%Y/%m/%d)"
 echo "$LOG_PREFIX [3/3] 上传 cos://$COS_BUCKET/$PREFIX/（endpoint=$ENDPOINT）"
 
+# 🔴 coscli 失败日志默认写在「当前工作目录」/coscli_output/ —— 手动 sudo 跑时
+# 以 root 落在 /opt/qa 下，会让部署脚本的 git clean 删不掉而整链失败
+# （2026-10-11 实测）。显式指到 /var/log/qa-backup/，与 git 仓库彻底脱钩。
+LOG_DIR=/var/log/qa-backup
+mkdir -p "$LOG_DIR"
+
 coscli cp "$WORK/$MYSQL_FILE" "cos://$COS_BUCKET/$PREFIX/$MYSQL_FILE" \
-    -e "$ENDPOINT" -i "$COS_SECRET_ID" -k "$COS_SECRET_KEY" --init-skip=true >/dev/null
+    -e "$ENDPOINT" -i "$COS_SECRET_ID" -k "$COS_SECRET_KEY" --init-skip=true \
+    --log-path "$LOG_DIR/coscli.log" >/dev/null
 coscli cp "$WORK/$DATA_FILE" "cos://$COS_BUCKET/$PREFIX/$DATA_FILE" \
-    -e "$ENDPOINT" -i "$COS_SECRET_ID" -k "$COS_SECRET_KEY" --init-skip=true >/dev/null
+    -e "$ENDPOINT" -i "$COS_SECRET_ID" -k "$COS_SECRET_KEY" --init-skip=true \
+    --log-path "$LOG_DIR/coscli.log" >/dev/null
 
 # ---- 摘要 ----
 MYSQL_MB=$(du -m "$WORK/$MYSQL_FILE" | cut -f1)
