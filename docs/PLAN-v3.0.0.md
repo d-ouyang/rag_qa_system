@@ -25,7 +25,7 @@
 |------|------|--------|------|-----|
 | P3-1 | 额度拦截：block 档 + 提问预检 + 宽限单 + 429 错误体 + 前端拦截气泡 | api/core/frontend/admin-console | ✅ 完成（2026-10-11） | `v3.0.0-p3.1` |
 | P3-2 | 下载收敛：download 路由加 ACL + 配置开关 + 前端按 capabilities 显隐 | api/core/frontend | ✅ 完成（2026-10-11） | `v3.0.0-p3.2` |
-| P3-3 | 检索评测集 + 评测脚本（golden set + recall/MRR/拒答正确率） | scripts/data | ☐ 未开始 | 3.0.0-p3.3 |
+| P3-3 | 检索评测集 + 评测脚本（golden set + recall/MRR/拒答正确率） | scripts/data | ✅ 完成（2026-10-12） | `v3.0.0-p3.3` |
 | P3-4 | BM25 + RRF 混合检索（双路召回 → RRF 融合 → reranker 裁决不变） | core/api | ☐ 未开始 | 3.0.0-p3.4 |
 | P3-5 | 上传大小定版 50M：前端 size 预检（✅ 2026-10-11 已落地，见 §3 P3-5）；超大文件本期不做 | frontend | ✅ 完成 | （随首个 3.0.0 tag 带出） |
 | P3-6 | 月度用量快照表（归档审计，不改判定路径） | core/worker/alembic | ☐ 可选 | 3.0.0-p3.6 |
@@ -92,7 +92,13 @@
 
 ### P3-3 检索评测集 + 评测脚本（BM25 的前置，也是 P2-23 的验收工具）
 
-**现状事实**：全项目无任何 golden set / recall / MRR / 拒答评测；现有 35 文档 69 片，人工标注量可承受。
+**现状事实**：全项目无任何 golden set / recall / MRR / 拒答评测；现有 35 文档 **90 片**（⚠️ 原写 69 片是早期快照，2026-10-12 实测更正），人工标注量可承受。
+
+> **✅ 2026-10-12 完成（tag `v3.0.0-p3.3`）**：`data/eval/golden.jsonl` 40 条已标注并逐条反查校验；
+> `scripts/eval_retrieval.py` + `make eval-retrieval` 已就位；**基线已落盘**
+> `data/eval/results/20261012-001334-baseline.json`：
+> recall@5 **0.8944** / recall@10 **0.9389** / recall@20 **0.9389** / mrr@10 **0.8889** / 拒答 **10/10**。
+> 详情见 `docs/iterations/v3.0.0-p3.3-eval-set.md`。
 
 **方案**
 1. 评测集 `data/eval/golden.jsonl`，40 行，每行格式：
@@ -121,8 +127,12 @@
 
 **开工前准备清单（全部就绪才开始写代码，中途不停下来问）**
 1. 依赖：`requirements.in` 加 `rank-bm25` 与 `jieba`，`uv pip compile` 重新生成 lock 与 requirements.txt（照现有流程，不走裸 pip install）。
-2. 语料探底（一次性）：`python -c` 脚本从 Chroma `get()` 拉全量 chunk，确认 69 片全部有非空正文、chunk_id 无重复；结果记入迭代文档（这就是 BM25 建索引的输入，运行时同样以此为准）。
+2. 语料探底（一次性）：`python -c` 脚本从 Chroma `get()` 拉全量 chunk，确认全部切片有非空正文、chunk_id 无重复；结果记入迭代文档（这就是 BM25 建索引的输入，运行时同样以此为准）。
+   > **✅ 2026-10-12 已做（P3-3 期间顺手完成）**：**90 chunks / 35 files / doc_id 588~622**，正文全部非空、chunk_id 无重复。⚠️ 原写「69 片」是早期快照。
 3. 评测基线：P3-3 的 baseline JSON 已存在（没有就先跑 P3-3——这是硬前置，不是可选项）。
+   > **✅ 已有**：`data/eval/results/20261012-001334-baseline.json`（2026-10-12）。
+   > ⚠️ 基线里 `recall@10 == recall@20 == 0.9389`，**瓶颈在排序不在召回面** ——
+   > 而 BM25 的卖点是扩召回面。开工前先想清楚拿什么换 recall@20 的 +5pp。
 4. 配置占位：`.env` / `.env.example` 追加 `RETRIEVAL_HYBRID=false`、`RRF_K=60`（默认关，评测达标后才翻 true）。
 5. 分支：在 develop 分支开工（见 §4.1 分支策略）。
 

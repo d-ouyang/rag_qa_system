@@ -12,7 +12,13 @@ __pycache__/
 vector_db/
 chroma_data/
 upload/
-data/
+data/*
+# ⚠️ 例外：检索评测集与评测结果**必须入库**（P3-3）。
+#   golden.jsonl 是「尺子」本身 —— 尺子不进版本控制，就没法说明某个数字
+#   是哪把尺子量出来的；results/*.json 是 P3-4 A/B 的对照证据。
+#   ⚠️ gitignore 的规则是「父目录被排除后不再往下走」，所以这里不能写 `data/`
+#   （那样 `!data/eval/` 无效），必须写 `data/*` 把目录本身留着。
+!data/eval/
 app.log
 *.log
 .langchain_checkpoints.sqlite*
