@@ -28,7 +28,7 @@
 
 | 项 | 填什么 | 为什么 |
 |---|---|---|
-| 名称 | `qa-backup-<你的APPID>` | 桶名全服唯一，APPID 在「账号信息」页；后续填进 `.env` 的 `COS_BUCKET` 要带 APPID 后缀 |
+| 名称 | `qa-backup`（系统自动补全为 `qa-backup-1259425324`） | 桶名全服唯一；建完的完整桶名填进 `.env` 的 `COS_BUCKET` |
 | 地域 | **上海** | ⚠️ 必须与服务器同地域：内网传输免外网下行流量费，上传本身免费 |
 | 访问权限 | **私有读写** | 备份含用户数据，绝不能公共读 |
 | 多 AZ / 版本控制 | 都不开 | 备份已按天分层，开版本控制双倍存储费没有增益 |
@@ -49,8 +49,8 @@
     {
       "effect": "allow",
       "action": ["cos:PutObject", "cos:GetObject", "cos:ListBucket", "cos:AbortMultipartUpload"],
-      "resource": ["qcs::cos:ap-shanghai:uid/<你的APPID>:qa-backup-<你的APPID>/*",
-                    "qcs::cos:ap-shanghai:uid/<你的APPID>:qa-backup-<你的APPID>/"]
+      "resource": ["qcs::cos:ap-shanghai:uid/1259425324:qa-backup-1259425324/*",
+                    "qcs::cos:ap-shanghai:uid/1259425324:qa-backup-1259425324/"]
     }
   ]
 }
@@ -76,7 +76,7 @@ chmod +x /usr/local/bin/coscli
 
 # 2) .env 追加四个变量（密钥不进 git）
 cat >> /opt/qa/.env << 'EOF'
-COS_BUCKET=qa-backup-<APPID>
+COS_BUCKET=qa-backup-1259425324
 COS_REGION=ap-shanghai
 COS_SECRET_ID=<SecretId>
 COS_SECRET_KEY=<SecretKey>
