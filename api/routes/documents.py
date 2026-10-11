@@ -9,13 +9,16 @@
     GET    /                        列出知识库文档（**读 MySQL**，支持 ?status= &project_id=）
     GET    /stats                   向量库状态统计（后端类型/嵌入模型/总量）
     GET    /capabilities            **本人**的知识库写权限（14d：前端入口收敛的数据源）
-    GET    /download?doc_id=        下载原始文件（不允许直接暴露磁盘路径）
+    GET    /download?doc_id=        下载原始文件（P3-2：ACL + 开关两道闸门；不允许直接暴露磁盘路径）
     GET    /{doc_id}/chunks         查看某文档的全部切分片段
     POST   /{doc_id}/reparse        手动重新触发解析
     DELETE /{doc_id}                删除文档（磁盘 + Chroma + MySQL **三件事**）
 
 --------------------------------------------------------------------------
-**四条写路由的身份依赖**（P2-14c，2026-10-08 加）
+**四条写路由 + 一条下载路由的身份依赖**（P2-14c 加写四条，P3-2 加下载）
+⚠️ 下载是 GET —— 它是**唯一**挂 kb 守卫的读路由。
+   「知识库全公司共用、不隔离读」这条业务决策说的是「人人都能**问**」，
+   不包括「人人都能把原件整份拷走」。详见 `kb_acl.MIN_KB_ROLE_BY_ACTION[download]`。
 --------------------------------------------------------------------------
 14.0 的实测基线：这四条路由当时**一条身份依赖都没有** ——
 
@@ -74,7 +77,13 @@ from core import document_repo as repo
 from core import kb_acl
 from core import kb_service
 from core.document_loader import DocumentLoader
-from core.identity import Actor, current_actor, require_kb_delete, require_kb_upload
+from core.identity import (
+    Actor,
+    current_actor,
+    require_kb_delete,
+    require_kb_download,
+    require_kb_upload,
+)
 from core.parsing import resolve_storage_path
 from core.queue import enqueue_parse
 from core.vector_store import get_vector_store_manager
@@ -375,9 +384,14 @@ def my_kb_capabilities(actor: Actor = Depends(current_actor)) -> dict[str, Any]:
     # 判据全部由 kb_acl 派生，这里不做任何 if。
     # 档位值本身也回给前端：界面要显示「你当前是只读」这类说明，
     # 而让前端从 capabilities 反推档位是绕路（且三档能力完全相同，分不出来）。
+    caps = dict(kb_acl.capabilities(actor.kb_role))
+    # P3-2：下载是**唯一**一个「ACL ∩ 部署开关」的能力 ——
+    # 开关关掉时它必须 false（前端据此不渲染按钮），
+    # 但 kb_role 与其余能力不受影响（那个人并不是「没权限」，是功能没开）。
+    caps["download"] = caps["download"] and bool(settings.DOC_DOWNLOAD_ENABLED)
     return {
         "kb_role": actor.kb_role,
-        "capabilities": kb_acl.capabilities(actor.kb_role),
+        "capabilities": caps,
         "label": kb_acl.KB_ROLE_LABELS.get(
             actor.kb_role, kb_acl.KB_ROLE_LABELS[kb_acl.DEFAULT_KB_ROLE]
         ),
@@ -390,9 +404,22 @@ def my_kb_capabilities(actor: Actor = Depends(current_actor)) -> dict[str, Any]:
 @router.get(
     "/download",
     summary="下载原始文件",
-    description="按 doc_id 返回磁盘上的原始文件（浏览器会以原始文件名保存）。不允许直接暴露磁盘路径。",
+    description=(
+        "按 doc_id 返回磁盘上的原始文件（浏览器会以原始文件名保存）。不允许直接暴露磁盘路径。\n\n"
+        "P3-2：本路由有两个闸门，且**顺序是刻意的**：\n"
+        "  ① `DOC_DOWNLOAD_ENABLED=false` → **404**（功能未开放，不是「你没权限」）；\n"
+        "  ② kb ACL → 只读档（`kb_role=none`）**403**。\n"
+        "开关先判，是因为它关掉时连「有没有这个文档」都不该回答 —— "
+        "403 会诱导人去找管理员要权限，而管理员那边没有这个开关。"
+    ),
 )
-def download_document(doc_id: int = Query(..., description="文档 ID")) -> FileResponse:
+def download_document(
+    doc_id: int = Query(..., description="文档 ID"),
+    actor: Actor = Depends(require_kb_download),
+) -> FileResponse:
+    # ① 部署开关（在 ACL 之前：关掉时整个功能不存在）
+    if not settings.DOC_DOWNLOAD_ENABLED:
+        raise HTTPException(status_code=404, detail="下载功能未开放")
     record = repo.get(doc_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"文档不存在：doc_id={doc_id}")

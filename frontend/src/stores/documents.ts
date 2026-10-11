@@ -93,6 +93,15 @@ export const useDocumentStore = defineStore('documents', () => {
   const capabilities = ref<KbCapabilitiesResponse | null>(null)
   const canUpload = computed(() => capabilities.value?.capabilities.upload ?? false)
   const canDelete = computed(() => capabilities.value?.capabilities.delete ?? false)
+  /**
+   * P3-2：能否下载原始文件 = **知识库权限 ∩ 部署开关**（后端已合并好）。
+   *
+   * ⚠️ 前端**不读** `DOC_DOWNLOAD_ENABLED`（它不在任何接口里，也不该在）：
+   * 后端把这个开关并进 `capabilities.download` 再下发，
+   * 于是「功能没开」与「你没权限」在前端是**同一个 false** ——
+   * 这正是我们要的：两种情况下按钮的表现应该完全一样（不渲染）。
+   */
+  const canDownload = computed(() => capabilities.value?.capabilities.download ?? false)
 
   /** 首次加载 / 手动刷新时为 true（会显示「加载中…」）；后台轮询**不会**置它，否则表格每 2 秒闪一次 */
   const loading = ref(false)
@@ -487,6 +496,7 @@ export const useDocumentStore = defineStore('documents', () => {
     capabilities,
     canUpload,
     canDelete,
+    canDownload,
     loading,
     submitting,
     submittingName,

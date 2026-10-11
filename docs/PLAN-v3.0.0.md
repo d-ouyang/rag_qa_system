@@ -24,7 +24,7 @@
 | 任务 | 内容 | 涉及端 | 状态 | tag |
 |------|------|--------|------|-----|
 | P3-1 | 额度拦截：block 档 + 提问预检 + 宽限单 + 429 错误体 + 前端拦截气泡 | api/core/frontend/admin-console | ✅ 完成（2026-10-11） | `v3.0.0-p3.1` |
-| P3-2 | 下载收敛：download 路由加 ACL + 配置开关 + 前端按 capabilities 显隐 | api/core/frontend | ☐ 未开始 | 3.0.0-p3.2 |
+| P3-2 | 下载收敛：download 路由加 ACL + 配置开关 + 前端按 capabilities 显隐 | api/core/frontend | ✅ 完成（2026-10-11） | `v3.0.0-p3.2` |
 | P3-3 | 检索评测集 + 评测脚本（golden set + recall/MRR/拒答正确率） | scripts/data | ☐ 未开始 | 3.0.0-p3.3 |
 | P3-4 | BM25 + RRF 混合检索（双路召回 → RRF 融合 → reranker 裁决不变） | core/api | ☐ 未开始 | 3.0.0-p3.4 |
 | P3-5 | 上传大小定版 50M：前端 size 预检（✅ 2026-10-11 已落地，见 §3 P3-5）；超大文件本期不做 | frontend | ✅ 完成 | （随首个 3.0.0 tag 带出） |

@@ -444,7 +444,10 @@ def set_kb_role(actor: Actor, user_id: int, kb_role: str) -> repo.UserRecord:
         now_allowed = kb_acl.capabilities(target)
         lost = [a for a in was_allowed if was_allowed[a] and not now_allowed[a]]
         if lost:
-            names = {"upload": "上传", "delete": "删除", "reindex": "重建索引"}
+            # ⚠️ 动作名**必须**从 kb_acl 取（P3-2 修掉的真 bug）：
+            # 这里原本写死一份三键字典，而 `lost` 遍历的是 capabilities() 的键 ——
+            # 新加一个动作 → KeyError → 500，且当时的测试只断言「抛异常」所以是绿的。
+            names = kb_acl.ACTION_LABELS
             raise AdminError(
                 f"不能收回自己的知识库权限（会失去：{'、'.join(names[a] for a in lost)}）"
                 f" —— 降权会让你的登录立刻失效，而恢复要找别人改",

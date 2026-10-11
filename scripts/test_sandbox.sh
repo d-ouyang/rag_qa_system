@@ -172,10 +172,15 @@ echo
 if [ -n "${s:-}" ]; then
   echo "── 只跑 module${s} ─────────────────────────────────"
   # shellcheck disable=SC2086
+  _SF=""
   for f in tests/test_module${s}_*.py; do
     echo "--- $f"
-    "$PY" "$f" || { echo "❌ $f 失败"; exit 1; }
+    if ! "$PY" "$f"; then
+      echo "❌ $f 失败"
+      _SF="${_SF} ${f}"
+    fi
   done
+  [ -z "$_SF" ] || { echo "═══ 失败的脚本：${_SF} ═══"; exit 1; }
 else
   echo "── 跑全套回归 ────────────────────────────────────"
   TESTS="
@@ -195,9 +200,27 @@ else
     test_module12_audit
     test_module13_login
     test_module15_session_isolation
+    test_module18_download_gate
   "
+  # 🔴 **不在第一个失败处停下**（2026-10-11 改，P3-2 的教训）：
+  #    原来写的是 `|| { echo "❌ $t 失败"; exit 1; }`，于是
+  #    「只有一条失败」会变成「只剩一条被执行」—— 后面的模块**一次都没跑**。
+  #    实测：一条列注释漂移（module8）让 9/10/11/12/13/15 全部静默跳过三个版本，
+  #    而每轮看到的都是「82/1」，很容易被当成「就那一条老问题」。
+  #    现在跑完全部，最后再汇总：失败**可见**比失败**早停**重要得多。
+  FAILED=""
   for t in $TESTS; do
     echo "--- $t"
-    "$PY" "tests/${t}.py" || { echo "❌ ${t} 失败"; exit 1; }
+    if ! "$PY" "tests/${t}.py"; then
+      echo "❌ ${t} 失败"
+      FAILED="${FAILED} ${t}"
+    fi
   done
+  if [ -n "$FAILED" ]; then
+    echo
+    echo "═══ 失败的模块：${FAILED} ═══"
+    echo "  （沙箱是新库、无种子数据：module12_audit / module13_login 一类"
+    echo "   「依赖种子账号」的断言天然不成立 —— 先看是不是这个原因，见脚本头部「已知局限」）"
+    exit 1
+  fi
 fi

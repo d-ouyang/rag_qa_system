@@ -223,6 +223,15 @@ export interface KbCapabilitiesResponse {
     upload: boolean
     delete: boolean
     reindex: boolean
+    /**
+     * P3-2：能否下载原始文件。
+     *
+     * ⚠️ 这是**唯一一个不是纯 ACL 的能力**：后端下发的是
+     * `kb_acl.can_download(kb_role) && DOC_DOWNLOAD_ENABLED` 的结果。
+     * 前端不需要、也不该区分「你没权限」与「功能没开」——
+     * 两种情况下的界面是同一个：不显示下载按钮。
+     */
+    download: boolean
   }
   /** 中文长标签（带能力说明），直接显示给用户看 */
   label: string

@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 3.0.0-p3.1</div>
+    <div class="badge"><span class="live"></span>当前版本 3.0.0-p3.2</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -258,7 +258,7 @@
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
       <div class="stat" title="按「任务格」计数，不是按发布次数计数。P2-12 是 5 个子项，整格完成才 +1；2026-10-08 决策取消 12d（知识库不隔离读）并新增 P2-15，故任务格 14 → 15。P2-14 六格已全部交付（14a/14b/14c/14e/14f0/14df），整格完成，进度 9 → 10。**P2-15 五格全部交付（15a 口径 · 15b 写路径与界面 · 15c 仅提醒档 · 15d 看板与横幅 · 15e 越权收口）**，整格完成，进度 10 → 11。剩余待办：TLS（等 ICP 备案）与 P2-8~10。"><div class="k">2.0.0 大版本进度</div><div class="v">11<span class="u">/ 15</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">38<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">39<span class="u">个</span></div></div>
     </div>
   </section>
 
@@ -306,9 +306,9 @@
       <div class="bar-row">
         <div class="lbl">P3 收口与检索 <em>额度拦截 · 下载收敛 · 评测集 · 混合检索 · 上传定版 · 用量快照（第 6 版新增，共六格）</em></div>
         <div class="track" style="--seg:#d4537e">
-          <div class="seg done"></div><div class="seg"></div><div class="seg"></div><div class="seg"></div><div class="seg done"></div><div class="seg"></div>
+          <div class="seg done"></div><div class="seg done"></div><div class="seg"></div><div class="seg"></div><div class="seg done"></div><div class="seg"></div>
         </div>
-        <div class="num">2 / 6 子项</div>
+        <div class="num">3 / 6 子项</div>
       </div>
     </div>
     <div class="legend">
@@ -361,6 +361,26 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v3.0.0-p3.2",
+    date: "2026-10-11",
+    accent: "#58a6ff",
+    tagline: "知识库的原件，不再人人都能拷走",
+    problem: "知识库页面每份文档后面都有一个「下载」按钮，点了会把上传时的原始文件整份取回来。此前这个按钮对任何登录的人都有效 —— 上传、删除、重新解析这些会改动知识库的操作早就按权限收口了，唯独下载没有：它是个读取请求，而读取当时一律不设限。",
+    sections: [
+      { type: "added", items: [
+        { star: true, h: "下载按权限收口", t: "只有被授权维护知识库的人能下载原始文件；纯只读的用户点了会被告知没有权限。上传 / 删除 / 重新解析早就这么做了，下载是最后一处漏网的。" },
+        { star: true, h: "下载可以整个关掉", t: "部署时可以把下载功能整体关闭：页面上不再出现按钮，直接访问也会提示功能未开放。带宽紧张、要优先保证问答流畅时用得上。" }
+      ]},
+      { type: "fixed", items: [
+        { h: "自动化回归其实只跑了一半", t: "一条数据库注释不一致让整轮回归从第一个失败处停下，后面的检查连续三个版本一次都没执行过。现在改成跑完再汇总，并且那条注释也补上了。" },
+        { h: "管理员给自己降权会报错", t: "界面显示 500 而不是一句说明。权限动作的名字曾在一个地方被写死，新增动作时没有同步，现在名字与动作绑定在一起，漏改会直接被测出来。" }
+      ]},
+      { type: "boundary", items: [
+        { h: "关掉下载不等于关掉知识库", t: "关的是「把原件取走」这个出口，问答、检索、引用反查一切照旧。" }
+      ]}
+    ]
+  },
   {
     version: "v3.0.0-p3.1",
     date: "2026-10-11",

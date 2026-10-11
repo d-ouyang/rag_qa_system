@@ -98,7 +98,10 @@ DEFAULT_KB_ROLE = KB_ROLE_NONE
 ACTION_UPLOAD = "upload"
 ACTION_DELETE = "delete"
 ACTION_REINDEX = "reindex"
-ACTIONS = frozenset({ACTION_UPLOAD, ACTION_DELETE, ACTION_REINDEX})
+#: P3-2：下载**原始文件**。它是 GET，但**不是**「读知识库」——
+#: 见下面 `MIN_KB_ROLE_BY_ACTION` 里 `download` 那条注释。
+ACTION_DOWNLOAD = "download"
+ACTIONS = frozenset({ACTION_UPLOAD, ACTION_DELETE, ACTION_REINDEX, ACTION_DOWNLOAD})
 
 #: 动作 → 允许执行它的 `kb_role` 集合。
 #:
@@ -112,9 +115,44 @@ MIN_KB_ROLE_BY_ACTION: dict[str, frozenset[str]] = {
     ACTION_UPLOAD: frozenset({KB_ROLE_OPS, KB_ROLE_QA, KB_ROLE_DEV, KB_ROLE_SUPERADMIN}),
     ACTION_DELETE: frozenset({KB_ROLE_OPS, KB_ROLE_QA, KB_ROLE_DEV, KB_ROLE_SUPERADMIN}),
     ACTION_REINDEX: frozenset({KB_ROLE_QA, KB_ROLE_DEV, KB_ROLE_SUPERADMIN}),
+    # ---------------------------------------------------------------------- #
+    # 🔴 download：**除只读档之外**都能下（ops / qa / dev / superadmin）
+    # ---------------------------------------------------------------------- #
+    # 为什么不是「qa 及以上」（PLAN §P3-2 原文写的是 `can_qa 及以上`）：
+    #   · ops 是**日常维护知识库**的人（可上传、可删除）。他能删一份文档，
+    #     却不许把原件取回来核对 —— 这个组合没有任何人能解释得通，
+    #     而「没人能解释的权限表」迟早会被随手改掉。
+    #   · 真正要挡的是 `none`（**只读**档）：他能问、能看引用片段，
+    #     但不该把整份原件拷走 —— 那是**外带**，不是「读」。
+    #   · 与 `reindex` 的差别要记住：`reindex` 会弄坏**所有人**的答案，
+    #     所以只给 qa+；`download` 只影响下载者自己 + 服务器带宽。
+    #
+    # ⚠️ 这条还推翻了「读路由一律不挂守卫」这条旧规矩的一半 ——
+    #    下载是 GET，但它是**唯一**一个挂 kb 守卫的 GET 路由。
+    #    旧规矩的完整表述应该是「**问答检索**类读接口不隔离」，
+    #    14e 把它写成了「所有 GET 不挂守卫」—— 那是表述过宽，
+    #    P3-2 在测试里改成显式白名单（见 `tests/test_module12_write_acl.py` 2d）。
+    ACTION_DOWNLOAD: frozenset({KB_ROLE_OPS, KB_ROLE_QA, KB_ROLE_DEV, KB_ROLE_SUPERADMIN}),
 }
 
 # --------------------------------------------------------------------------- #
+#: 动作 → 中文短名。**给「会失去：上传、删除」这类句子用**。
+#:
+#: ⚠️ 2026-10-11（P3-2）实测逼出来的：管理端「管理员给自己降权」的那条报错里
+#: 原本写死了一份 `{"upload": "上传", "delete": "删除", "reindex": "重建索引"}`，
+#: 而它遍历的是 `capabilities()` 的键 —— 加了 `download` 之后直接
+#: **`KeyError: 'download'` → 500**（且当时的测试仍是绿的，因为它只断言「抛了异常」）。
+#:
+#: 这就是「第三份清单」的经典死法：**加一个动作要改 N 处，漏一处不报错**。
+#: 所以这张表**必须与 ACTIONS 同生共死** —— 由 `tests/test_module12_kb_role.py`
+#: 的「动作标签齐全」那条断言守着。
+ACTION_LABELS: dict[str, str] = {
+    ACTION_UPLOAD: "上传",
+    ACTION_DELETE: "删除",
+    ACTION_REINDEX: "重建索引",
+    ACTION_DOWNLOAD: "下载原文件",
+}
+
 # 中文标签（管理端下拉用）
 # --------------------------------------------------------------------------- #
 #: **长标签**：档位名 + 能力说明。用于徽章、确认弹窗、审计 detail ——
@@ -236,6 +274,10 @@ def can_reindex(kb_role: Any) -> bool:
     return can(kb_role, ACTION_REINDEX)
 
 
+def can_download(kb_role: Any) -> bool:
+    return can(kb_role, ACTION_DOWNLOAD)
+
+
 def describe(action: str) -> str:
     """
     拒权时给用户看的理由。**对外文案不含「你的 kb_role 是什么」**。
@@ -259,6 +301,7 @@ def describe(action: str) -> str:
         ACTION_UPLOAD: "上传知识库文档",
         ACTION_DELETE: "删除知识库文档",
         ACTION_REINDEX: "重建知识库索引",
+        ACTION_DOWNLOAD: "下载知识库原始文件",
     }.get(action, "该操作")
     return f"没有权限执行「{action_hint}」，请联系管理员开通知识库维护权限"
 
@@ -275,11 +318,18 @@ def capabilities(kb_role: Any) -> dict[str, bool]:
         "upload": can_upload(role),
         "delete": can_delete(role),
         "reindex": can_reindex(role),
+        # P3-2：下载。**这个键是「ACL ∩ 开关」之前的纯 ACL 结果** ——
+        # 开关（`DOC_DOWNLOAD_ENABLED`）是部署级配置，由路由层合并进来。
+        # 混进这里的话，「关掉下载」会让 capabilities 说 false，
+        # 而那不是「这个人没权限」，是「这个功能不存在」，两者前端提示不同。
+        "download": can_download(role),
     }
 
 
 __all__ = [
+    "ACTION_LABELS",
     "ACTION_DELETE",
+    "ACTION_DOWNLOAD",
     "ACTION_REINDEX",
     "ACTION_UPLOAD",
     "ACTIONS",
@@ -295,6 +345,7 @@ __all__ = [
     "MIN_KB_ROLE_BY_ACTION",
     "can",
     "can_delete",
+    "can_download",
     "can_reindex",
     "can_upload",
     "capabilities",

@@ -130,7 +130,13 @@ def check(name: str, condition: bool, detail: str = "") -> None:
 from fastapi import HTTPException  # noqa: E402
 
 from core import kb_acl  # noqa: E402
-from core.identity import Actor, require_kb_delete, require_kb_reindex, require_kb_upload  # noqa: E402
+from core.identity import (  # noqa: E402
+    Actor,
+    require_kb_delete,
+    require_kb_download,
+    require_kb_reindex,
+    require_kb_upload,
+)
 
 REPO_ROOT = Path(__file__).parent.parent
 DOCUMENTS_PY = REPO_ROOT / "api" / "routes" / "documents.py"
@@ -149,12 +155,15 @@ FAKE_USER_ID = 999001
 #: 「实现等于它自己」—— 恒真、零判别力（这正是 module15 记的
 #: 「验收脚本自己会骗人」的同一种病）。
 #: 代价是改档位时要改两处；收益是改错档位时测试会红。
+#: P3-2 增列 `download`：**除只读档外都能下**（ops 也能 —— 他能删一份文档，
+#: 却不能取回原件核对，这个组合没人解释得通）。判据注释见
+#: `core/kb_acl.py` 的 `MIN_KB_ROLE_BY_ACTION[download]`。
 EXPECTED = {
-    "none": {"upload": False, "delete": False, "reindex": False},
-    "ops": {"upload": True, "delete": True, "reindex": False},
-    "qa": {"upload": True, "delete": True, "reindex": True},
-    "dev": {"upload": True, "delete": True, "reindex": True},
-    "superadmin": {"upload": True, "delete": True, "reindex": True},
+    "none": {"upload": False, "delete": False, "reindex": False, "download": False},
+    "ops": {"upload": True, "delete": True, "reindex": False, "download": True},
+    "qa": {"upload": True, "delete": True, "reindex": True, "download": True},
+    "dev": {"upload": True, "delete": True, "reindex": True, "download": True},
+    "superadmin": {"upload": True, "delete": True, "reindex": True, "download": True},
 }
 
 
@@ -180,16 +189,18 @@ ACTION_DEP = {
     kb_acl.ACTION_UPLOAD: require_kb_upload,
     kb_acl.ACTION_DELETE: require_kb_delete,
     kb_acl.ACTION_REINDEX: require_kb_reindex,
+    kb_acl.ACTION_DOWNLOAD: require_kb_download,
 }
 
 # --------------------------------------------------------------------------- #
 # 打印五档矩阵（人读的输出，顺便让判据可见）
 # --------------------------------------------------------------------------- #
 print("== 五档权限矩阵（实测 vs 期望） ==")
-print(f"  {'kb_role':<12}{'upload':<9}{'delete':<9}{'reindex':<9}")
+print(f"  {'kb_role':<12}{'upload':<9}{'delete':<9}{'reindex':<9}{'download':<9}")
 for role in sorted(EXPECTED):
     caps = kb_acl.capabilities(role)
-    print(f"  {role:<12}{str(caps['upload']):<9}{str(caps['delete']):<9}{str(caps['reindex']):<9}")
+    print(f"  {role:<12}{str(caps['upload']):<9}{str(caps['delete']):<9}"
+          f"{str(caps['reindex']):<9}{str(caps['download']):<9}")
 
 
 # --------------------------------------------------------------------------- #
@@ -228,6 +239,9 @@ for role in sorted(EXPECTED):
     check(f"Actor(kb_role={role}).can_reindex_kb == can_reindex",
           a.can_reindex_kb == kb_acl.can_reindex(role),
           f"{a.can_reindex_kb} vs {kb_acl.can_reindex(role)}")
+    check(f"Actor(kb_role={role}).can_download_document == can_download",
+          a.can_download_document == kb_acl.can_download(role),
+          f"{a.can_download_document} vs {kb_acl.can_download(role)}")
 
 print("\n== 第 1d 组：fail-closed 不变量 ==")
 # 「判不出身份 → 什么都不给」是整个权限模型的地基。
@@ -517,10 +531,28 @@ check(f"写路由共 {len(KNOWN_WRITE_ROUTES)} 条（14a 认定值）",
       f"{sorted(set(KNOWN_WRITE_ROUTES) - found_write)} 丢失")
 
 # 2d 读路由一律不得挂 kb 守卫（业务决策：知识库共用，不隔离读）
-print("\n-- 2d 读路由不得挂 kb 守卫 --")
+#
+# ⚠️ P3-2 起有一个**显式例外**：`/download`。
+# 旧表述「所有 GET 不挂守卫」是把「问答检索类读接口不隔离」说成了全称命题 ——
+# 下载也是 GET，但它吐的是**原始文件全文**（不是切片摘要），
+# 还消耗服务器带宽，性质上是「把原件带走」，所以按人判。
+#
+# 用**白名单**而不是「只要挂了就放行」：白名单的语义是「这条例外是被讨论过的」，
+# 下次再有人给某个 GET 挂守卫，断言依然红，逼他把理由写进这张表。
+print("\n-- 2d 读路由不得挂 kb 守卫（/download 为例外）--")
+GUARDED_READ_ROUTES = {"/download"}
 for method, path, deps, lineno in read_routes:
+    if path in GUARDED_READ_ROUTES:
+        check(f"L{lineno} GET    {path:<22} 例外：**挂了** require_kb_download（P3-2）",
+              "require_kb_download" in deps, f"实际依赖：{deps!r}")
+        continue
     check(f"L{lineno} GET    {path:<22} 未挂 require_kb_*",
           "require_kb_" not in deps, f"实际依赖：{deps!r}")
+_found_guarded = {p for _m, p, d, _l in read_routes
+                  if p in GUARDED_READ_ROUTES and "require_kb_" in d}
+check("例外的那条读路由**真的存在**（白名单里没有写错名字的条目）",
+      _found_guarded == GUARDED_READ_ROUTES,
+      f"白名单={sorted(GUARDED_READ_ROUTES)} 实际挂了守卫的={sorted(_found_guarded)}")
 
 # 2e 守卫必须挂在 Depends 里，而不是写在函数体里
 #这是 14a 立下的规矩：判据 = 这张 Depends 列表，
