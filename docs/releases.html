@@ -247,7 +247,7 @@
 
 <div class="wrap">
   <section class="hero">
-    <div class="badge"><span class="live"></span>当前版本 3.0.0-p3.4</div>
+    <div class="badge"><span class="live"></span>当前版本 3.0.0-p3.6</div>
     <h1>一个 RAG 问答系统，如何一步步长起来</h1>
     <p class="lede">
       从「本地能跑」到「准备好公开访问」之间，隔着的不是功能，而是持久化、鉴权、部署与运维。
@@ -258,7 +258,7 @@
       <div class="stat"><div class="k">中间件自检</div><div class="v">14<span class="u">项</span></div></div>
       <div class="stat"><div class="k">浏览器端到端验收</div><div class="v">56<span class="u">项</span></div></div>
       <div class="stat" title="按「任务格」计数，不是按发布次数计数。P2-12 是 5 个子项，整格完成才 +1；2026-10-08 决策取消 12d（知识库不隔离读）并新增 P2-15，故任务格 14 → 15。P2-14 六格已全部交付（14a/14b/14c/14e/14f0/14df），整格完成，进度 9 → 10。**P2-15 五格全部交付（15a 口径 · 15b 写路径与界面 · 15c 仅提醒档 · 15d 看板与横幅 · 15e 越权收口）**，整格完成，进度 10 → 11。剩余待办：TLS（等 ICP 备案）与 P2-8~10。"><div class="k">2.0.0 大版本进度</div><div class="v">11<span class="u">/ 15</span></div></div>
-      <div class="stat"><div class="k">已发布版本</div><div class="v">41<span class="u">个</span></div></div>
+      <div class="stat"><div class="k">已发布版本</div><div class="v">42<span class="u">个</span></div></div>
     </div>
   </section>
 
@@ -306,9 +306,9 @@
       <div class="bar-row">
         <div class="lbl">P3 收口与检索 <em>额度拦截 · 下载收敛 · 评测集 · 混合检索 · 上传定版 · 用量快照（第 6 版新增，共六格）</em></div>
         <div class="track" style="--seg:#d4537e">
-          <div class="seg done"></div><div class="seg done"></div><div class="seg done"></div><div class="seg done"></div><div class="seg done"></div><div class="seg"></div>
+          <div class="seg done"></div><div class="seg done"></div><div class="seg done"></div><div class="seg done"></div><div class="seg done"></div><div class="seg done"></div>
         </div>
-        <div class="num">5 / 6 子项</div>
+        <div class="num">6 / 6 子项</div>
       </div>
     </div>
     <div class="legend">
@@ -361,6 +361,28 @@ const C = {
 };
 
 const RELEASES = [
+  {
+    version: "v3.0.0-p3.6",
+    date: "2026-10-12",
+    accent: "#a371f7",
+    tagline: "用量开始留档案了",
+    problem: "额度拦截上线后，「这个月用了多少」不再只是看板上的一行数字，而是「为什么他问不了」的执法依据 —— 员工与管理层之间可能就它发生争议。而此前唯一的证据寄居在聊天记录里：将来清理或归档聊天记录时（聊天记录是全系统增长最快的数据），用量历史会跟着一起消失。",
+    sections: [
+      { type: "added", items: [
+        { star: true, h: "每天自动抄一份用量档案", t: "每天凌晨自动把「这个月每个人用了多少」写进专门的归档表，只增不删。当天的数字覆盖昨天写的，已经过去的月份永远不再改动。" },
+        { h: "数字只有一份口径", t: "档案的数值不是另算的，就是看板那个函数的返回值 —— 两边在写入瞬间逐位相等，每天的对账是核对而不是重算（历史上那次「用量翻了三倍」的重复计数 bug，正是「自己另算一遍」教出来的）。" }
+      ]},
+      { type: "boundary", items: [
+        { star: true, h: "只做档案，不参与判定", t: "「他还能不能问」依旧按聊天明细实时计算 —— 明细在，实时算永远是准的。归档表只在明细被清理、需要回看历史时出场。两张表在代码层面物理隔离，判定模块想引用它都会被测试拦下。" },
+        { h: "人的账号删了，档案还在", t: "归档表不挂外键 —— 「他 10 月用了 8 万」是已发生的事实，不随账号消失（与审计日志同一个取舍）。" },
+        { h: "第二个解析进程必须摘掉定时器", t: "定时器随解析进程内嵌，只允许一个进程带。双跑不会算错账（覆盖式写入），但日志会互相踩 —— 这条已写进部署配置的注释里。" }
+      ]},
+      { type: "verified", items: [
+        { h: "快照回归 46 项全通过（连跑两遍），反向验证 50/0", t: "反向覆盖：快照模块自己另写聚合 SQL、判定模块开始读归档表、定时任务获得改写历史的参数、部署配置里的定时器被摘掉 —— 四种拆法都让对应断言转红。" },
+        { h: "真库实测：连跑两遍行数不翻倍、数值逐位一致", t: "手动跑两次快照 + 与实时聚合逐人逐列对账一致；数据库迁移已应用到最新版本。" }
+      ]}
+    ]
+  },
   {
     version: "v3.0.0-p3.4",
     date: "2026-10-12",

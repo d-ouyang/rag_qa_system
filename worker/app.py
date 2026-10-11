@@ -141,6 +141,38 @@ if _WORKER_POOL != "solo":
 celery_app.conf.update(**_conf)
 
 
+# --------------------------------------------------------------------------- #
+# beat：月度用量快照（P3-6）
+# --------------------------------------------------------------------------- #
+# 低峰时点：04:10。避开 03:20 的 COS 备份（P2-10b）—— 两个定时任务挤在同一
+# 分钟会互相争 IO / 连接，排障时也分不清日志是谁的。
+# 嵌入式 beat（worker 进程内 `-B`）：单实例部署下这是最省的形态。
+# ⚠️ 前提是**只有一个 worker 进程**（本项目由 4C4G 内存约束兜着）——
+#    起第二个 worker 时必须去掉它的 -B，否则任务会双写（upsert 幂等，不会错，
+#    但日志与 updated_at 会打架）。
+if settings.USAGE_SNAPSHOT_ENABLED:
+    from celery.schedules import crontab
+
+    from worker.tasks import SNAPSHOT_TASK_NAME
+
+    celery_app.conf.beat_schedule = {
+        "quota-usage-monthly-snapshot": {
+            "task": SNAPSHOT_TASK_NAME,
+            "schedule": crontab(
+                hour=settings.USAGE_SNAPSHOT_HOUR,
+                minute=settings.USAGE_SNAPSHOT_MINUTE,
+            ),
+            # beat 的选项里没有「失败重试」——重试语义由任务自身的幂等承担：
+            # 明天同一时刻会再算一遍并覆盖写，漏一天只少一行中间态。
+            "options": {"expires": 3600},
+        },
+    }
+    logger.info(
+        "月度用量快照 beat 已启用 | 每天 %02d:%02d | 任务=%s",
+        settings.USAGE_SNAPSHOT_HOUR, settings.USAGE_SNAPSHOT_MINUTE, SNAPSHOT_TASK_NAME,
+    )
+
+
 # 让 worker 进程的日志格式与 Web 端一致（同一套 logging 配置，排查时不用换脑子）。
 # 用 Celery 的 signal 而不是在模块顶层直接调 setup_logging()：
 # worker.tasks 会被 Web 进程 import（为了拿到任务名），顶层调用会在 Web 进程里

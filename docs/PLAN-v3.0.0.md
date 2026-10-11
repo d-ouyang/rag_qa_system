@@ -28,7 +28,7 @@
 | P3-3 | 检索评测集 + 评测脚本（golden set + recall/MRR/拒答正确率） | scripts/data | ✅ 完成（2026-10-12） | `v3.0.0-p3.3` |
 | P3-4 | BM25 + RRF 混合检索（双路召回 → RRF 融合 → reranker 裁决不变） | core/api | ✅ 完成（2026-10-12，**A/B 不达标 → `RETRIEVAL_HYBRID` 保持 false**） | `v3.0.0-p3.4` |
 | P3-5 | 上传大小定版 50M：前端 size 预检（✅ 2026-10-11 已落地，见 §3 P3-5）；超大文件本期不做 | frontend | ✅ 完成 | （随首个 3.0.0 tag 带出） |
-| P3-6 | 月度用量快照表（归档审计，不改判定路径） | core/worker/alembic | ☐ 可选 | 3.0.0-p3.6 |
+| P3-6 | 月度用量快照表（归档审计，不改判定路径） | core/worker/alembic | ✅ 完成（2026-10-12） | `v3.0.0-p3.6` |
 
 依赖：P3-4 依赖 P3-3（没有评测基线不许开混合检索）；P3-1 与 P3-2/P3-5 可并行。
 
@@ -186,6 +186,11 @@
 **动机**：拦截（P3-1）上线后月用量成为「执法依据」；当前明细在 `chat_message`，未来清理/归档聊天记录会丢历史用量。
 **方案**：新表 `quota_usage_monthly(user_id, period, input_tokens, output_tokens, requests, updated_at)`；Celery beat 每日低峰聚合 upsert（只增不删，当天数据覆盖写）；**判定路径不改**（预检仍走实时 CTE，数据量小）。归档对账用它。
 **验收**：连跑两日快照数值与 `quota_repo.usage_by_user` 对账一致；chat_message 删除部分记录后快照不回退。
+
+> **✅ 2026-10-12 完成（tag `v3.0.0-p3.6`）**：迁移 0009 已应用；beat 每天 04:10（避开 03:20 备份）；
+> 数值来源 = `usage_by_user()` 本身（写入瞬间逐位相等，对账是恒等式）；
+> 写入路径**不带账期参数**（历史账期无写入路径，快照不回退由签名保证）。
+> 真库实测连跑两遍幂等 + 对账 ✅。详见 `docs/iterations/v3.0.0-p3.6-quota-snapshot.md`。
 
 ---
 

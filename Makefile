@@ -21,7 +21,7 @@ GATEWAY_PORT ?= 3000
         worker accept accept-ui reindex reindex-apply accept-p04a accept-ui-p04b \
         smoke-session accept-12b-reverse accept-12c accept-12c-ui accept-12c-reverse \
         kb-guard kb-guard-static kb-guard-count kb-restore test-sandbox dev-test-accounts \
-        dev-test-accounts-apply dev-test-accounts-reset eval-retrieval
+        dev-test-accounts-apply dev-test-accounts-reset eval-retrieval snapshot-usage
 
 help:
 	@echo "—— 一次性 ——"
@@ -93,6 +93,7 @@ help:
 	@echo "                            make eval-retrieval TAG=hybrid CMP=baseline 跑完直接出 A/B 对比"
 	@echo "                            make eval-retrieval ARGS=\"--validate-only\"  只校验标注不检索"
 	@echo "  ⚠️ 走线上真实检索（远程 embedding + 远程 rerank），要联网、要 Chroma 在跑；只读不改库"
+	@echo "make snapshot-usage   手动跑一次月度用量快照 + 与实时聚合对账（beat 每天 04:10 自动跑同一份逻辑）"
 	@echo ""
 	@echo "—— 知识库护栏（P2-12c 事故止损，**跑测试前先看这个**）——"
 	@echo "make kb-guard          三道检查：① 扫全仓「无 where 的删除」② document 表非空就拒绝"
@@ -212,6 +213,11 @@ eval-retrieval:
 		$(if $(TAG),--tag $(TAG),) \
 		$(if $(CMP),--compare $(CMP),) \
 		$(ARGS)
+
+# 月度用量快照（P3-6）：手动跑一次当期聚合 + 与实时聚合对账。
+# 与 beat（每天 04:10）同一份逻辑；幂等，随时可重跑。
+snapshot-usage:
+	@$(PY) -m core.quota_snapshot
 
 # 知识库护栏与沙箱（P2-12c 事故止损）----------
 kb-guard:

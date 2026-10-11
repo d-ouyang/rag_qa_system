@@ -68,6 +68,16 @@ class Settings(BaseSettings):
     # 免得把「融合公式」和「调优」两件事混在一起，A/B 时说不清是谁的功劳。
     RRF_K : int = 60
 
+    # ------------------------------------------------------------------ #
+    # 月度用量快照（P3-6，归档审计；判定路径不读它）
+    # ------------------------------------------------------------------ #
+    # beat 由 worker 进程内嵌（`celery worker -B`），单实例部署的最低成本形态。
+    USAGE_SNAPSHOT_ENABLED : bool = True
+    # 每日低峰时点。避开 03:20 的 COS 备份（P2-10b）：两个定时任务挤同一分钟
+    # 会互相争 IO / 连接，排障时也分不清日志是谁的。
+    USAGE_SNAPSHOT_HOUR : int = 4
+    USAGE_SNAPSHOT_MINUTE : int = 10
+
      # LLM配置
     LLM_PROVIDER : Literal["openai", "siliconflow", "ollama"] = "siliconflow"
 

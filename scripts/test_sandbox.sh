@@ -203,6 +203,7 @@ else
     test_module18_download_gate
     test_module19_eval
     test_module20_hybrid
+    test_module21_quota_snapshot
   "
   # 🔴 **不在第一个失败处停下**（2026-10-11 改，P3-2 的教训）：
   #    原来写的是 `|| { echo "❌ $t 失败"; exit 1; }`，于是
