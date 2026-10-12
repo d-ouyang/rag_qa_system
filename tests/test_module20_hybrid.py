@@ -213,7 +213,9 @@ check("get_last_hybrid_trace() 恒为 None（关时没有融合可谈）",
 check("info 里 hybrid=false", retriever.get_retriever_info()["hybrid"] is False)
 
 src = (ROOT / "core" / "retriever.py").read_text(encoding="utf-8")
-main_body = src[src.index("    def retrieve("):src.index("    def _hybrid_merge(")]
+# ⚠️ 切片终点是 _resolve_bm25（P3-4 修订 2 新增的守卫，位于 retrieve 与 _hybrid_merge
+#    之间）——它内部引用 get_bm25_index 是**守卫自身**的合法性，不算主路径触碰 BM25
+main_body = src[src.index("    def retrieve("):src.index("    def _resolve_bm25(")]
 check("混合分支只有一行入口（if settings.RETRIEVAL_HYBRID: pairs = ...）",
       re.search(r"if settings\.RETRIEVAL_HYBRID:\s*\n\s+pairs = self\._hybrid_merge",
                 main_body) is not None,
@@ -326,6 +328,56 @@ check("阈值过滤后的结果带 rerank 分数（不是 RRF / 向量分数）"
 check("低于阈值的候选被拒（拒答口径与关闭混合时同一套）",
       stub.last_trace and stub.last_trace["kept"] < stub.last_trace["in"],
       str(stub.last_trace))
+
+# --------------------------------------------------------------------------- #
+# 第 5b 组：链上同管线（P3-4 修订 2 的教训 —— 线上抓到过融合被整段绕过）
+# --------------------------------------------------------------------------- #
+section("第 5b 组：as_retriever 是 retrieve() 的薄壳（链上不许有第二条管线）")
+
+# retriever 此刻仍是 hybrid=True 的那个实例（第 4 组建的）
+wrapper = retriever.as_retriever()
+chain_ids = [chunk_id_of_metadata(d.metadata) for d in wrapper.invoke("差旅 住宿 报销 标准")]
+check("链上检索（invoke）与 retrieve() 同序同结果",
+      chain_ids == ids_on, f"链上={chain_ids} 直调={ids_on}")
+check("链上检索后混合轨迹被填充（融合真的发生在链路上）",
+      retriever.last_hybrid_trace is not None,
+      "trace=None → 链上绕过了融合，就是线上那次事故的形状")
+
+# 用 AST 取 as_retriever 的**可执行体**（剥掉 docstring —— 修订说明里提到
+# 旧实现的名字是解释历史，不是行为；对着全文扫会误报）
+import ast as _ast                                        # noqa: E402
+
+_tree = _ast.parse(src)
+_fn = next(n for n in _ast.walk(_tree)
+           if isinstance(n, _ast.FunctionDef) and n.name == "as_retriever")
+if (_fn.body and isinstance(_fn.body[0], _ast.Expr)
+        and isinstance(_fn.body[0].value, _ast.Constant)
+        and isinstance(_fn.body[0].value.value, str)):
+    _fn.body = _fn.body[1:] or [_ast.Pass()]
+_as_retriever_code = _ast.unparse(_fn)
+
+check("as_retriever 不再复刻管线（可执行体里没有第二套召回/压缩器）",
+      "vector_store.as_retriever" not in _as_retriever_code
+      and "ContextualCompressionRetriever" not in _as_retriever_code
+      and "_PipelineRetriever(" in _as_retriever_code,
+      "as_retriever 里又出现了第二套召回/重排 —— 漂移回来了")
+
+# 语料错配守卫：非全局向量库 + 未注入同源 BM25 → 跳过混合，不混入全局语料
+guard_store = FakeStore()
+guard_r = RAGRetriever(vector_store=guard_store, use_reranker=False,  # type: ignore[arg-type]
+                       top_k=2, candidate_multiplier=2)               # 刻意不注入 bm25
+settings.RETRIEVAL_HYBRID = True
+try:
+    guard_ids = [chunk_id_of_metadata(d.metadata) for d in
+                 guard_r.retrieve("差旅 住宿 报销 标准", top_k=2)]
+finally:
+    settings.RETRIEVAL_HYBRID = False
+corpus_ids = {cid for cid, _ in CORPUS}
+check("非同源 BM25 时混合被跳过（不把全局库的语料混进本次检索）",
+      guard_r.last_hybrid_trace is None and set(guard_ids) <= corpus_ids,
+      f"trace={guard_r.last_hybrid_trace} ids={guard_ids}")
+check("全局单例检索器不受守卫影响（生产路径照常融合）",
+      retriever._resolve_bm25() is not None or retriever._bm25_override is not None)
 
 # --------------------------------------------------------------------------- #
 # 第 6 组：内容变了 → 索引必须脏

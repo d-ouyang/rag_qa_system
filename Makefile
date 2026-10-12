@@ -21,7 +21,7 @@ GATEWAY_PORT ?= 3000
         worker accept accept-ui reindex reindex-apply accept-p04a accept-ui-p04b \
         smoke-session accept-12b-reverse accept-12c accept-12c-ui accept-12c-reverse \
         kb-guard kb-guard-static kb-guard-count kb-restore test-sandbox dev-test-accounts \
-        dev-test-accounts-apply dev-test-accounts-reset eval-retrieval snapshot-usage
+        dev-test-accounts-apply dev-test-accounts-reset eval-retrieval snapshot-usage deploy
 
 help:
 	@echo "—— 一次性 ——"
@@ -94,6 +94,7 @@ help:
 	@echo "                            make eval-retrieval ARGS=\"--validate-only\"  只校验标注不检索"
 	@echo "  ⚠️ 走线上真实检索（远程 embedding + 远程 rerank），要联网、要 Chroma 在跑；只读不改库"
 	@echo "make snapshot-usage   手动跑一次月度用量快照 + 与实时聚合对账（beat 每天 04:10 自动跑同一份逻辑）"
+	@echo "make deploy           一键部署：develop → main 合并并推送（冲突自动回滚不推送；先 git push origin develop）"
 	@echo ""
 	@echo "—— 知识库护栏（P2-12c 事故止损，**跑测试前先看这个**）——"
 	@echo "make kb-guard          三道检查：① 扫全仓「无 where 的删除」② document 表非空就拒绝"
@@ -219,6 +220,11 @@ eval-retrieval:
 snapshot-usage:
 	@$(PY) -m core.quota_snapshot
 
+# 一键部署合并：develop → main 并推送（push main = 触发线上部署）。
+# 冲突/任何失败自动回滚到合并前，不推送；详见 scripts/deploy-merge.sh 头部。
+deploy:
+	@bash scripts/deploy-merge.sh
+
 # 知识库护栏与沙箱（P2-12c 事故止损）----------
 kb-guard:
 	@$(PY) scripts/kb_guard.py
@@ -244,26 +250,26 @@ test-sandbox:
 	@bash scripts/test_sandbox.sh
 
 test: kb-guard
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module1_config.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module2_document_loader.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module3_vectorstore.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module4_llm_and_retriever.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module5_rag_chain_api.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module6_session_store.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_qa_cache.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module7_redis_over_tcp.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module8_mysql_session_store.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module9_async_pipeline.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module10_chunk_refs.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module11_account.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_admin.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_audit.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_write_acl.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module13_login.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_trust_boundary.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_expect_header.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14d_frontend_gating.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module15_session_isolation.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module1_config.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module2_document_loader.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module3_vectorstore.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module4_llm_and_retriever.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module5_rag_chain_api.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module6_session_store.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_qa_cache.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module7_redis_over_tcp.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module8_mysql_session_store.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module9_async_pipeline.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module10_chunk_refs.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module11_account.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module12_admin.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module12_audit.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module12_write_acl.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module13_login.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module14_trust_boundary.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module14_expect_header.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module14d_frontend_gating.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module15_session_isolation.py
 
 # ---------- P2-12b 反向验证（**不进 make test**）----------
 # 它会临时改生产源码（core/identity.py + 两个 .ts）再跑主测试看断言转红，

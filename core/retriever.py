@@ -47,7 +47,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Sequence
 
-from langchain.retrievers import ContextualCompressionRetriever
 from langchain_core.documents import Document
 from langchain_core.documents.compressor import BaseDocumentCompressor
 from langchain_core.retrievers import BaseRetriever
@@ -421,6 +420,30 @@ class SiliconFlowReranker(BaseDocumentCompressor):
         return results
 
 
+class _PipelineRetriever(BaseRetriever):
+    """
+    RAGRetriever.retrieve() 的 LangChain Retriever 薄壳（P3-4 修订 2）。
+
+    存在的理由只有一个：**让链上检索与 retrieve() 成为同一条管线**。
+    旧实现用 ContextualCompressionRetriever 在链上复刻了一遍
+    「召回→重排」，于是任何只改在 retrieve() 里的检索改动（如混合融合）
+    都会静默地不生效 —— 评测过、测试绿、线上没变，三种信号互相矛盾时
+    根本查不出来。现在 Retriever 只转发，不复刻。
+
+    k 语义 = 最终返回条数（retrieve() 内部自己放大候选池）。
+    """
+
+    rag: Any
+    k: int
+    # RAGRetriever 是普通类不是 pydantic 模型，需开放任意类型
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: Any = None, **kwargs: Any
+    ) -> list[Document]:
+        return self.rag.retrieve(query, top_k=self.k)
+
+
 class RAGRetriever:
     """
     RAG 检索器 —— 串联「向量召回」与「可选重排」。
@@ -585,6 +608,22 @@ class RAGRetriever:
     # ------------------------------------------------------------------ #
     # 混合召回：向量 + BM25 → RRF 融合（P3-4）
     # ------------------------------------------------------------------ #
+    def _resolve_bm25(self) -> Any | None:
+        """
+        解析本检索器可用的 BM25 索引；不可用时返回 None（退回纯向量）。
+
+        同源性规则：
+            · 显式注入的 override 永远优先（测试注入的就是与测试库同源的实例）；
+            · 检索器用的是**全局**向量库单例 → 全局 BM25 单例与它同源，可用；
+            · 检索器绑定了别的向量库（测试常见）→ 全局单例的语料来自另一个库，
+              用它就是语料错配，返回 None。
+        """
+        if self._bm25_override is not None:
+            return self._bm25_override
+        if self.vector_store is get_vector_store_manager():
+            return get_bm25_index()
+        return None
+
     def _hybrid_merge(
         self,
         query: str,
@@ -608,7 +647,14 @@ class RAGRetriever:
         """
         self.last_hybrid_trace = None
         rrf_k = int(settings.RRF_K or 60)
-        index = self._bm25_override if self._bm25_override is not None else get_bm25_index()
+        index = self._resolve_bm25()
+        if index is None:
+            # 防语料错配（P3-4 修订 2）：检索器绑定了**非全局**向量库、又没注入
+            # 同源的 BM25 索引时，全局单例的语料来自另一个库 —— 融合进来的
+            # chunk_id 与向量结果对不上号，等于把别的库的内容混进本次检索
+            # （module4 曾因此混入真库切片）。此时退回纯向量召回并告警。
+            logger.warning("混合检索跳过：BM25 索引与当前向量库不同源（未注入同源索引）")
+            return pairs
         bm25_hits = index.search(query, candidate_k) if candidate_k > 0 else []
 
         # —— 候选池 chunk_id → Document ——
@@ -707,20 +753,26 @@ class RAGRetriever:
         """
         返回可直接接入 LCEL 链的 Retriever。
 
-        启用重排时包一层 ContextualCompressionRetriever：
-        它会先取回候选，再调用重排器压缩（压缩器就是 CrossEncoderReranker）。
+        ⚠️ **它是 retrieve() 的薄壳，不是第二条管线**（P3-4 修订 2）。
 
-        注意 search_kwargs 里的 k 要按候选池放大后的值传，
-        否则链在线时又退化成「只召回 TOP_K 再重排」。
+        旧实现（vector_store.as_retriever + ContextualCompressionRetriever）
+        与 retrieve() 是**两条平行管线**：混合融合接在 retrieve() 里，
+        链上却整段绕过了它 —— 线上实测抓到（日志无「混合召回」、
+        调试帧无 bm25_hits，而评测明明是过的）。教训与 chunk_id 契约同款：
+        **同一件事不允许有两份实现**，Retriever 只能转发，不能复刻。
+
+        :param search_kwargs: 可传 {"k": N}；**k 语义 = 最终返回条数**
+            （retrieve() 内部自己按倍数放大候选池，调用方不再需要——
+            也不再允许——自己算 candidate_k，那正是「复刻管线」的第一步）。
         """
-        kwargs = search_kwargs or {"k": self._candidate_k(self.top_k)}
-        base_retriever = self.vector_store.as_retriever(search_kwargs=kwargs)
-        if self.reranker is None:
-            return base_retriever
-        return ContextualCompressionRetriever(
-            base_compressor=self.reranker,
-            base_retriever=base_retriever,
-        )
+        # FAISS 空库的报错时机与旧实现保持一致：构建时就给可读报错
+        # （chroma 空库不报错——全新部署时库就是空的，链必须能建起来）
+        if self.vector_store.store_type == "faiss" and self.vector_store.count() == 0:
+            raise RuntimeError(
+                "向量库为空（FAISS 空库时尚未创建索引），请先入库再构建 Retriever"
+            )
+        k = int((search_kwargs or {}).get("k", self.top_k))
+        return _PipelineRetriever(rag=self, k=k)
 
     # ------------------------------------------------------------------ #
     # 状态信息
