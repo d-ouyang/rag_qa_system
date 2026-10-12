@@ -37,12 +37,16 @@ if [ "$(git rev-parse "$BRANCH_FROM")" != "$(git rev-parse "origin/$BRANCH_FROM"
   exit 1
 fi
 
-# main 上不允许有 develop 之外的提交（main 只靠合并前进，这是本仓库的约定）。
-# 有分歧就失败——在这里拦住，比合并出一个「两边各走各的」的 main 强得多。
-if ! git merge-base --is-ancestor "origin/$BRANCH_TO" "$BRANCH_FROM"; then
-  echo "✗ origin/main 上有 develop 不包含的提交，直接合并会破坏线性约定："
-  git log --oneline "$BRANCH_FROM..origin/$BRANCH_TO" | head -5
-  echo "  先把这些变更带回 develop（或确认可丢弃后强推 main，后者需要人工决定）"
+# main 上不允许有 develop 之外的**真实改动**（main 只靠合并前进，这是本仓库的约定）。
+# ⚠️ 只查非合并提交：每次部署都会在 main 留一个 develop 里没有的合并节点，
+#    那是流程的正常产物；但合并节点的内容必须全部来自其父提交（即 develop），
+#    所以「main 比 develop 多出的非合并提交」为空 = main 没有私货。
+#    用 `git log --no-merges main --not develop` 检出：有输出 = 有人绕过流程
+#    直接改了 main，在这里拦住比合并出「两边各走各的」强得多。
+if [ -n "$(git log --no-merges --oneline "origin/$BRANCH_TO" --not "$BRANCH_FROM")" ]; then
+  echo "✗ origin/main 上有 develop 不包含的**真实改动**（非合并提交），先处理："
+  git log --no-merges --oneline "origin/$BRANCH_TO" --not "$BRANCH_FROM" | head -5
+  echo "  把这些变更带回 develop 后再部署；或确认可丢弃后强推 main（后者需要人工决定）"
   exit 1
 fi
 
