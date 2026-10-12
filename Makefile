@@ -244,26 +244,26 @@ test-sandbox:
 	@bash scripts/test_sandbox.sh
 
 test: kb-guard
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module1_config.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module2_document_loader.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module3_vectorstore.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module4_llm_and_retriever.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module5_rag_chain_api.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module6_session_store.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_qa_cache.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module7_redis_over_tcp.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module8_mysql_session_store.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module9_async_pipeline.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module10_chunk_refs.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module11_account.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_admin.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_audit.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module12_write_acl.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module13_login.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_trust_boundary.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14_expect_header.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module14d_frontend_gating.py
-	EMBEDDING_BACKEND=local RERANK_BACKEND=local $(PY) tests/test_module15_session_isolation.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module1_config.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module2_document_loader.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module3_vectorstore.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module4_llm_and_retriever.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module5_rag_chain_api.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module6_session_store.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_qa_cache.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module7_redis_over_tcp.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module8_mysql_session_store.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module9_async_pipeline.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module10_chunk_refs.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module11_account.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module12_admin.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module12_audit.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module12_write_acl.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module13_login.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module14_trust_boundary.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module14_expect_header.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module14d_frontend_gating.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module15_session_isolation.py
 
 # ---------- P2-12b 反向验证（**不进 make test**）----------
 # 它会临时改生产源码（core/identity.py + 两个 .ts）再跑主测试看断言转红，

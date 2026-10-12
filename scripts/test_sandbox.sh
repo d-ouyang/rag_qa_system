@@ -157,6 +157,9 @@ export MYSQL_DATABASE="$SANDBOX_DB"
 export UPLOAD_DIR
 export REDIS_URL="$(grep -E '^REDIS_URL=' .env | head -1 | cut -d= -f2- | sed 's#/0$#/15#')"
 export EMBEDDING_BACKEND=local RERANK_BACKEND=local
+# 🔴 回归固定关混合检索（P3-4）：「关 = 与 P3-4 之前逐字节一致」是必须守住的不变量，
+#    不能跟着开发者本机 .env 的开关值漂。module20 自己在进程内翻开关做混合态测试。
+export RETRIEVAL_HYBRID=false
 
 echo "  MYSQL_DATABASE=${MYSQL_DATABASE}"
 echo "  REDIS_URL=${REDIS_URL}     （换到db 15，不碰真缓存）"

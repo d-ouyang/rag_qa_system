@@ -458,21 +458,37 @@ def test_as_retriever() -> None:
 
     plain = RAGRetriever(vector_store=manager, use_reranker=False, top_k=2)
     base = plain.as_retriever()
-    check("不重排时返回普通 Retriever", isinstance(base, BaseRetriever) and not isinstance(base, ContextualCompressionRetriever))
+    check("返回 LangChain Retriever", isinstance(base, BaseRetriever), type(base).__name__)
+
+    # 🔴 P3-4 修订 2：Retriever 必须是 retrieve() 的**薄壳** —— 链上检索与
+    # 直接调用 retrieve() 是同一条管线。旧实现（ContextualCompressionRetriever）
+    # 在链上复刻了一条平行管线，混合融合在链上被整段绕过（线上实测抓到）。
+    chain_docs = base.invoke(QUERY)
+    direct_docs = plain.retrieve(QUERY, top_k=2)
+    check("链上检索 == retrieve()（同管线同顺序）",
+          [d.page_content for d in chain_docs] == [d.page_content for d in direct_docs],
+          f"链上={[d.page_content[:12] for d in chain_docs]} "
+          f"直调={[d.page_content[:12] for d in direct_docs]}")
 
     reranked = RAGRetriever(vector_store=manager, use_reranker=True, top_k=2, candidate_multiplier=3)
     compressed = reranked.as_retriever()
-    check(
-        "启用重排时包一层 ContextualCompressionRetriever",
-        isinstance(compressed, ContextualCompressionRetriever),
-        type(compressed).__name__,
-    )
+    chain_docs2 = compressed.invoke(QUERY)
+    direct_docs2 = reranked.retrieve(QUERY, top_k=2)
+    check("重排开启时链上结果与 retrieve() 逐位一致（重排/阈值/降级同路）",
+          [d.page_content for d in chain_docs2] == [d.page_content for d in direct_docs2]
+          and len(chain_docs2) <= 2,
+          f"链上={len(chain_docs2)} 条")
+    check("链上结果带 rerank 元数据（证明走的是完整管线而非裸向量）",
+          bool(chain_docs2) and "rerank_score" in chain_docs2[0].metadata or not chain_docs2,
+          str(sorted(chain_docs2[0].metadata) if chain_docs2 else "空"))
 
-    # 自定义 search_kwargs 要能透传
+    # 自定义 search_kwargs 的 k = 最终返回条数（不再是「候选池大小」——
+    # 放大候选池是 retrieve() 自己的事，调用方复算它就是复刻管线的第一步）
     custom = plain.as_retriever(search_kwargs={"k": 6})
-    check("search_kwargs 可透传", custom is not None)
+    check("search_kwargs 的 k 透传为最终条数",
+          len(custom.invoke(QUERY)) == len(plain.retrieve(QUERY, top_k=6)))
 
-    # 空库保护：FAISS 空库时 _store 为 None，必须给出可读报错而不是 AttributeError
+    # 空库保护：FAISS 空库时必须给出可读报错而不是 AttributeError
     with tempfile.TemporaryDirectory() as empty_dir:
         empty_store = VectorStoreManager(store_type="faiss", persist_dir=Path(empty_dir))
         empty_retriever = RAGRetriever(vector_store=empty_store, use_reranker=False)
