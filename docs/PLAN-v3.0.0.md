@@ -155,6 +155,9 @@
 > 但 recall@5 **0.8944 → 0.9389（+4.45pp）**、hit@5 → 1.0、基线唯一失手的编号题被 BM25 救回 ——
 > recall@20 判据是在基线出来前写的，基线在 k=20 已摸天花板（hit@20=1.0），该口径结构性不可能 +5pp。
 > 详见 `docs/iterations/v3.0.0-p3.4-hybrid-retrieval.md` §5.3。
+>
+> **⚠️ 2026-10-12 决策变更：用户拍板翻 true**（判据口径失效 ≠ 功能无效；真实语料扩大对 BM25 是利好）。
+> 观察指标与关回条件见该文档 §7 修订 1。**服务器 `/opt/qa/.env` 需同步改 `RETRIEVAL_HYBRID=true`**（.env 不入 git）。
 
 **改动文件**：新增 `core/bm25_index.py`；`core/retriever.py`、`core/parsing.py`、`core/rag_chain.py`（debug 帧扩字段）、`config/settings.py`、`.env`/`.env.example`、`requirements.*`、`scripts/rechunk_kb.py`、`scripts/clean_orphan_chunks.py`、`scripts/reset_kb.py`、`frontend/src/types.ts`、`frontend/src/components/MessageBubble.vue`、`Makefile`。
 
