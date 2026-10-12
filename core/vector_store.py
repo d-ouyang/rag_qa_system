@@ -92,6 +92,36 @@ def build_chunk_id(doc_id: int, chunk_index: int) -> str:
     return f"{int(doc_id)}{CHUNK_ID_SEP}{int(chunk_index)}"
 
 
+def chunk_id_of_metadata(metadata: Any) -> str | None:
+    """
+    从一条切片元数据里取出 chunk_id；取不到返回 None（**不猜、不编造**）。
+
+    为什么需要这个函数（P3-4）：BM25 索引要按 chunk_id 与向量召回的结果对齐，
+    而 chunk_id 的「优先读 metadata、没有就现拼」这份判定此前散落在两处
+    （`core/retriever._candidate_brief` 与 `rag_chain._resolve_chunk_id`）。
+    再加第三处迟早漂移 —— 漂移的症状是「召回对了但对不上号」，不报错。
+    所以判定收敛到**契约所在的文件**里（build/parse 都在这里），
+    另两处改为调用它。同构性仍由 test_module5 的断言守着。
+
+    ⚠️ 判定条件刻意保持与原来逐字一致：
+        · metadata 里有非空字符串的 `chunk_id` → 直接用；
+        · 否则要求 `doc_id` 与 `chunk_index` 都是 **int 且不是 bool**
+          （`isinstance(True, int)` 是 True，bool 必须显式排除，
+          否则 `True:0` 会被当成一个合法的 doc_id）。
+    """
+    if not isinstance(metadata, dict):
+        return None
+    chunk_id = metadata.get("chunk_id")
+    if isinstance(chunk_id, str) and chunk_id:
+        return chunk_id
+    doc_id = metadata.get("doc_id")
+    chunk_index = metadata.get("chunk_index")
+    if (isinstance(doc_id, int) and not isinstance(doc_id, bool)
+            and isinstance(chunk_index, int) and not isinstance(chunk_index, bool)):
+        return build_chunk_id(doc_id, chunk_index)
+    return None
+
+
 def parse_chunk_id(chunk_id: str) -> tuple[int, int]:
     """
     把引用键解析回 `(doc_id, chunk_index)`，**格式不对直接抛 ValueError**。
@@ -957,6 +987,51 @@ class VectorStoreManager:
                         "page": meta.get("page"),
                     }
                 )
+        return chunks
+
+    def get_all_chunks(self) -> list[dict[str, Any]]:
+        """
+        **整库**取出每一片的 `chunk_id` + 正文 + 元数据（P3-4：BM25 建索引的输入）。
+
+        ⚠️ 这个方法是**全量扫描**，不要放进请求路径。它的调用点只有一处：
+        BM25 索引的惰性构建（进程内一次，之后靠 invalidate 触发重建）。
+
+        :return: [{"chunk_id", "text", "metadata"}, ...]
+                 拿不到 chunk_id 的切片**直接丢弃** —— BM25 命中后要靠 chunk_id
+                 与向量召回的结果对齐，对不上号的候选进了池子也用不了，
+                 而且会污染 RRF 的名次（占着位置却无法物化成 Document）。
+        """
+        store = self._store
+        if store is None:
+            return []
+
+        raw: list[tuple[str, dict[str, Any]]] = []
+        if isinstance(store, Chroma):
+            result = store.get(include=["documents", "metadatas"])
+            docs = result.get("documents") or []
+            metas = result.get("metadatas") or []
+            raw = [(doc, meta or {}) for doc, meta in zip(docs, metas)]
+        else:
+            # FAISS：docstore 里存着 id → Document
+            docstore = getattr(store, "docstore", None)
+            raw = [
+                (getattr(doc, "page_content", "") or "", getattr(doc, "metadata", None) or {})
+                for doc in getattr(docstore, "_dict", {}).values()
+            ]
+
+        chunks: list[dict[str, Any]] = []
+        dropped = 0
+        for text, meta in raw:
+            if not (text or "").strip():
+                dropped += 1          # 空正文对 BM25 无意义（分词后是空表）
+                continue
+            chunk_id = chunk_id_of_metadata(meta)
+            if chunk_id is None:
+                dropped += 1
+                continue
+            chunks.append({"chunk_id": chunk_id, "text": text, "metadata": dict(meta)})
+        if dropped:
+            logger.warning("get_all_chunks：跳过 %d 片（空正文或拿不到 chunk_id）", dropped)
         return chunks
 
     def list_documents(self) -> list[dict[str, Any]]:

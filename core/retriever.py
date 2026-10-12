@@ -54,7 +54,12 @@ from langchain_core.retrievers import BaseRetriever
 from pydantic import ConfigDict
 
 from config.settings import settings
-from core.vector_store import VectorStoreManager, build_chunk_id, get_vector_store_manager
+from core.bm25_index import get_bm25_index
+from core.vector_store import (
+    VectorStoreManager,
+    chunk_id_of_metadata,
+    get_vector_store_manager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,20 +79,13 @@ def _candidate_brief(doc: Document) -> dict[str, Any]:
     从切片里取出调试轨迹需要的两个展示键：chunk_id 与原始文件名。
 
     ⚠️ 这里**刻意不 import rag_chain 的 _resolve_chunk_id**：
-    rag_chain 依赖本模块，反向 import 会成环。判定逻辑保持同构
-    （元数据有 chunk_id 直接用；没有则 doc_id + chunk_index 现拼），
-    由 tests/test_module5_retrieval_observability.py 的同构断言守着两处不漂移。
+    rag_chain 依赖本模块，反向 import 会成环。两处判定保持同构，
+    由 tests/test_module5_retrieval_observability.py 的同构断言守着不漂移。
+    P3-4 起判定本体搬到 `core/vector_store.chunk_id_of_metadata`（契约所在处），
+    这里与 rag_chain 都改调它 —— 第三处（BM25 索引）也要用同一份判定。
     """
     metadata = doc.metadata
-    chunk_id = metadata.get("chunk_id")
-    if not (isinstance(chunk_id, str) and chunk_id):
-        doc_id = metadata.get("doc_id")
-        chunk_index = metadata.get("chunk_index")
-        if isinstance(doc_id, int) and not isinstance(doc_id, bool) \
-                and isinstance(chunk_index, int) and not isinstance(chunk_index, bool):
-            chunk_id = build_chunk_id(doc_id, chunk_index)
-        else:
-            chunk_id = None
+    chunk_id = chunk_id_of_metadata(metadata)
     raw_name = metadata.get("file_name")
     file_name = str(raw_name) if raw_name else Path(str(metadata.get("source", ""))).name
     return {"chunk_id": chunk_id, "file_name": file_name}
@@ -439,6 +437,7 @@ class RAGRetriever:
         top_k: int | None = None,
         candidate_multiplier: int | None = None,
         score_threshold: float | None = None,
+        bm25_index: Any | None = None,
     ) -> None:
         """
         :param vector_store: 向量库管理器，缺省用全局单例
@@ -447,6 +446,10 @@ class RAGRetriever:
         :param top_k: 最终返回条数，缺省读 settings.SEARCH_TOP_K
         :param candidate_multiplier: 候选池倍数，缺省读 settings.RERANK_CANDIDATE_MULTIPLIER
         :param score_threshold: 重排分数阈值，缺省读 settings.RERANK_SCORE_THRESHOLD
+        :param bm25_index: BM25 索引（P3-4）。缺省用全局单例 —— **前提是
+            vector_store 也用全局单例**（两者必须看同一个库，否则 BM25 的
+            chunk_id 和向量召回的对不上号）。注入自定义 vector_store 的测试
+            必须同时注入一个绑到同一库上的 BM25Index。
         """
         self.vector_store: VectorStoreManager = vector_store or get_vector_store_manager()
         self.top_k: int = int(top_k or settings.SEARCH_TOP_K)
@@ -456,6 +459,11 @@ class RAGRetriever:
         self.score_threshold: float | None = (
             score_threshold if score_threshold is not None else settings.RERANK_SCORE_THRESHOLD
         )
+        # 混合检索（P3-4）。⚠️ 开关在**每次检索时**读而不是构造时读：
+        # 它是本次 P3-4 A/B 的被测变量，读一次锁死会让「同一进程内对比两种配置」
+        # 变成必须重启 —— 重启会让 A/B 之间多出一个冷启动变量。
+        self.last_hybrid_trace: dict[str, Any] | None = None
+        self._bm25_override = bm25_index
 
         enable: bool = settings.USE_RERANKER if use_reranker is None else use_reranker
         self.reranker: CrossEncoderReranker | SiliconFlowReranker | None = (
@@ -556,18 +564,95 @@ class RAGRetriever:
             query, k=candidate_k, filter_dict=filter_dict
         )
 
+        # ①b 混合召回（P3-4，开关关时这一行都不会进）
+        if settings.RETRIEVAL_HYBRID:
+            pairs = self._hybrid_merge(query, pairs, candidate_k)
+
         # ② 精排 / 或直接截断
         scored = self._rank(query, pairs, target_k)
 
         logger.info(
-            "检索完成 | 候选=%d 返回=%d 重排=%s 耗时=%.2fs | query=%.24s",
+            "检索完成 | 候选=%d 返回=%d 重排=%s 混合=%s 耗时=%.2fs | query=%.24s",
             len(pairs),
             len(scored),
             "开" if self.reranker else "关",
+            "开" if settings.RETRIEVAL_HYBRID else "关",
             time.perf_counter() - start,
             query,
         )
         return scored if return_score else [doc for doc, _ in scored]
+
+    # ------------------------------------------------------------------ #
+    # 混合召回：向量 + BM25 → RRF 融合（P3-4）
+    # ------------------------------------------------------------------ #
+    def _hybrid_merge(
+        self,
+        query: str,
+        pairs: Sequence[tuple[Document, float]],
+        candidate_k: int,
+    ) -> list[tuple[Document, float]]:
+        """
+        把 BM25 的关键词命中与向量召回融合成一个候选池。
+
+        ⚠️ **它只动候选池，不动裁决**：融合结果仍原样送进后面的 reranker
+        （`_rank` 一行不改，bge-reranker-v2-m3 与 0.1 阈值完全不变）。
+        这样「混合检索有没有用」就只剩一个问题：它送进去的候选是不是更好。
+
+        RRF 公式：`score(d) = Σ_i 1/(k + rank_i(d))`，逐路累加名次倒数。
+        为什么用 RRF 而不是「把两路分数归一化后加权相加」：
+            · BM25 分数是无上界的正数，向量分数是 [-1,1] 的余弦 —— 量纲不同，
+              归一化要先定上下界，而 BM25 的上下界**随语料变化**，定不出来；
+            · RRF 只看名次，对量纲与分布完全不敏感，是融合异构检索器的标准做法。
+
+        :return: [(Document, RRF 分数), ...]，按 RRF 降序，最多 candidate_k 条
+        """
+        self.last_hybrid_trace = None
+        rrf_k = int(settings.RRF_K or 60)
+        index = self._bm25_override if self._bm25_override is not None else get_bm25_index()
+        bm25_hits = index.search(query, candidate_k) if candidate_k > 0 else []
+
+        # —— 候选池 chunk_id → Document ——
+        pool: dict[str, Document] = {}
+        vector_ids: list[str] = []
+        for doc, _ in pairs:
+            cid = chunk_id_of_metadata(doc.metadata)
+            if cid is None:
+                continue                      # 对不上号的切片无法参与融合（契约见 vector_store）
+            vector_ids.append(cid)
+            pool.setdefault(cid, doc)
+        # BM25 命中但向量没捞到的，正是这一路的价值所在 —— 物化成 Document 补进池子
+        missing = [cid for cid, _ in bm25_hits if cid not in pool]
+        if missing:
+            for doc in index.materialize(missing):
+                cid = chunk_id_of_metadata(doc.metadata)
+                if cid is not None:
+                    pool.setdefault(cid, doc)
+
+        # —— RRF：两路名次各算一份贡献，同一个 chunk_id 累加 ——
+        rrf: dict[str, float] = {}
+        for rank, cid in enumerate(vector_ids, start=1):
+            rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (rrf_k + rank)
+        for rank, (cid, _) in enumerate(bm25_hits, start=1):
+            rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (rrf_k + rank)
+
+        ordered = sorted(rrf.items(), key=lambda kv: kv[1], reverse=True)[:candidate_k]
+        merged = [(pool[cid], score) for cid, score in ordered if cid in pool]
+
+        bm25_only = len([cid for cid, _ in bm25_hits if cid not in set(vector_ids)])
+        self.last_hybrid_trace = {
+            "bm25_hits": len(bm25_hits),
+            "vector_hits": len(vector_ids),
+            "bm25_only": bm25_only,           # 向量没捞到、靠 BM25 补进来的条数
+            "merged": len(merged),
+            "rrf_top": ordered[0][0] if ordered else None,
+            "rrf_k": rrf_k,
+        }
+        logger.info(
+            "混合召回 | 向量=%d BM25=%d（独有=%d）融合=%d rrf_top=%s",
+            len(vector_ids), len(bm25_hits), bm25_only, len(merged),
+            self.last_hybrid_trace["rrf_top"],
+        )
+        return merged
 
     def _rank(
         self,
@@ -654,6 +739,18 @@ class RAGRetriever:
             return None
         return self.reranker.last_trace
 
+    def get_last_hybrid_trace(self) -> dict[str, Any] | None:
+        """
+        取最近一次混合召回的轨迹（P3-4）：`bm25_hits` / `bm25_only` / `rrf_top`。
+
+        与 `get_last_rerank_trace` 同样的两个已知口径（都不修，见迭代文档 §6）：
+            · 「最近一次」是共享实例上的口径，并发请求会互相覆盖；
+            · 开关关闭时恒为 None —— 没有融合就谈不上融合轨迹。
+        """
+        if not settings.RETRIEVAL_HYBRID:
+            return None
+        return self.last_hybrid_trace
+
     def get_retriever_info(self) -> dict[str, Any]:
         """返回检索器当前配置（供日志 / 状态页 / 接口展示）。"""
         return {
@@ -664,6 +761,8 @@ class RAGRetriever:
             "reranker_model": self.reranker.model_path if self.reranker else None,
             "score_threshold": self.score_threshold,
             "vector_store_type": self.vector_store.store_type,
+            "hybrid": bool(settings.RETRIEVAL_HYBRID),
+            "rrf_k": int(settings.RRF_K or 60),
         }
 
 

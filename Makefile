@@ -21,7 +21,7 @@ GATEWAY_PORT ?= 3000
         worker accept accept-ui reindex reindex-apply accept-p04a accept-ui-p04b \
         smoke-session accept-12b-reverse accept-12c accept-12c-ui accept-12c-reverse \
         kb-guard kb-guard-static kb-guard-count kb-restore test-sandbox dev-test-accounts \
-        dev-test-accounts-apply dev-test-accounts-reset
+        dev-test-accounts-apply dev-test-accounts-reset eval-retrieval snapshot-usage
 
 help:
 	@echo "—— 一次性 ——"
@@ -87,6 +87,14 @@ help:
 	@echo "        wu.jing /DevAdmin2026!Aa（role=admin，登主应用 + **管理端 5174**）"
 	@echo "  ⚠️ admin/admin123 已失效（11c 起账号真相源在 MySQL，库里没有 admin 这一行）"
 	@echo "  ⚠️ 5174 只接受 role=admin/hr，普通员工登进去 403 是预期行为"
+	@echo "—— 检索评测（P3-3）——"
+	@echo "make eval-retrieval         跑一遍检索评测（默认 tag=baseline），结果落 data/eval/results/"
+	@echo "                            make eval-retrieval TAG=hybrid             换 tag 再跑"
+	@echo "                            make eval-retrieval TAG=hybrid CMP=baseline 跑完直接出 A/B 对比"
+	@echo "                            make eval-retrieval ARGS=\"--validate-only\"  只校验标注不检索"
+	@echo "  ⚠️ 走线上真实检索（远程 embedding + 远程 rerank），要联网、要 Chroma 在跑；只读不改库"
+	@echo "make snapshot-usage   手动跑一次月度用量快照 + 与实时聚合对账（beat 每天 04:10 自动跑同一份逻辑）"
+	@echo ""
 	@echo "—— 知识库护栏（P2-12c 事故止损，**跑测试前先看这个**）——"
 	@echo "make kb-guard          三道检查：① 扫全仓「无 where 的删除」② document 表非空就拒绝"
 	@echo "                       ③ document.storage_path 指向的文件是否都在（抓原文件丢失）"
@@ -197,6 +205,20 @@ memory:
 #    但**不该由一次 make test 触发**。
 #    护栏两道：① 静态扫全仓「无 where 的删除」 ② document 表非空就拒绝执行。
 #    要在真库上跑必须显式 KB_GUARD_ALLOW=1（会打印后果）。
+# 检索评测（P3-3）。跑的是线上真实检索链路：远程 embedding + 远程 rerank，
+# 因此**必须** Chroma 在跑（make infra）且能联网。只读，不改任何库。
+# 每个 k 档各检索一次（5/10/20），所以远程调用量 = 题数 × 3。
+eval-retrieval:
+	@$(PY) scripts/eval_retrieval.py \
+		$(if $(TAG),--tag $(TAG),) \
+		$(if $(CMP),--compare $(CMP),) \
+		$(ARGS)
+
+# 月度用量快照（P3-6）：手动跑一次当期聚合 + 与实时聚合对账。
+# 与 beat（每天 04:10）同一份逻辑；幂等，随时可重跑。
+snapshot-usage:
+	@$(PY) -m core.quota_snapshot
+
 # 知识库护栏与沙箱（P2-12c 事故止损）----------
 kb-guard:
 	@$(PY) scripts/kb_guard.py

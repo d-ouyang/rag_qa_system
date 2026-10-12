@@ -226,7 +226,8 @@ class _FakeLLMClient:
 
 
 class _FakeRetriever:
-    """只暴露 RAGChain 用到的三个面：reranker / get_last_rerank_trace / 真实度不重要。"""
+    """只暴露 RAGChain 用到的四个面：reranker / get_last_rerank_trace /
+    get_last_hybrid_trace（P3-4）/ 真实度不重要。"""
 
     def __init__(self, trace: dict | None) -> None:
         self.reranker = object() if trace is not None else None
@@ -234,6 +235,9 @@ class _FakeRetriever:
 
     def get_last_rerank_trace(self):
         return self._trace
+
+    def get_last_hybrid_trace(self):
+        return None  # P2-23 的断言不关心混合召回；P3-4 的字段在 module20 单测
 
 
 def _probe_stream(debug: bool, docs: list[Document], trace: dict | None) -> list[dict]:

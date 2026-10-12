@@ -515,6 +515,30 @@ from api.routes import documents as docs_route  # noqa: E402
 
 client = TestClient(fastapi_app)
 
+# --------------------------------------------------------------------------- #
+# 🔴 给这一组注入一个「有知识库写权限」的身份（P3-2 修，顺带修掉 P2-14a 以来的红）
+# --------------------------------------------------------------------------- #
+# 本组用 TestClient 直打 HTTP，**不带任何身份头**。dev 模式会回落到 break-glass
+# 超管，而它的 `kb_role` 是 `none`（14a 的刻意设定：它不在库里，没人给它授权过），
+# 于是 upload / delete / reparse / **download** 四条路由全部 403。
+#
+# 也就是说：这一组从 P2-14a（2026-10-08 给写路由挂守卫）那天起就是红的，
+# 而 P3-2 给下载也挂上守卫后，下载那三条也会跟着红。
+#
+# ⚠️ 修法**不是**把断言改成 403（那会把「上传链路对不对」这道题整道删掉），
+#    而是**注入一个被授权的身份** —— 本组要验的是「解析链路」，
+#    不是「权限矩阵」（后者由 test_module12_write_acl 与
+#    test_module18_download_gate 管）。
+from core.identity import Actor as _Actor                       # noqa: E402
+from core.identity import current_actor as _current_actor       # noqa: E402
+
+_M9_ACTOR = _Actor(
+    id=999003, username="m9.probe", display_name="流程探针", role="admin",
+    kb_role="superadmin", status="active", source="internal",
+    record=None, client_ip="127.0.0.1",
+)
+fastapi_app.dependency_overrides[_current_actor] = lambda: _M9_ACTOR
+
 # 打桩两处，让接口测试不碰真实队列、不污染真实向量库：
 #   · enqueue_parse  → 记录投递，不起 worker
 #   · get_vector_store_manager → 用本模块的临时库，不动 vector_db/

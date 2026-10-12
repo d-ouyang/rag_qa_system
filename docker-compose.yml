@@ -202,7 +202,10 @@ services:
     restart: unless-stopped
     # 池、并发、超时全部在 worker/app.py 里按 settings 配置（P0-3a 定下的规矩：
     # 同一个参数绝不在两处配），所以这里只给日志级别。
-    command: ["celery", "-A", "worker.app", "worker", "--loglevel=info"]
+    # -B = 进程内嵌 beat（P3-6 月度用量快照的定时触发）。⚠️ 只允许这一个 worker
+    # 带 -B：起第二个 worker 必须去掉它，否则 beat 双跑（upsert 幂等不会写错，
+    # 但日志与 updated_at 会互相踩）。
+    command: ["celery", "-A", "worker.app", "worker", "--beat", "--loglevel=info"]
     env_file: .env
     environment:
       MYSQL_HOST: mysql

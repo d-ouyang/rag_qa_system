@@ -199,10 +199,11 @@ def http_json(
 #: 也给reindex），这里会红：那正是我们想要的（期望值该跟着改）。
 #: 反过来如果这里写死「读库里是什么就是什么」，断言就恒真了。
 ACCOUNTS = [
+    # P3-2 增列 download：none 拿不到、superadmin 拿得到（与 kb_acl 的矩阵一致）
     ("zhao.min", "P2d14dZhao2026!Xx", "none",
-     {"upload": False, "delete": False, "reindex": False}),
+     {"upload": False, "delete": False, "reindex": False, "download": False}),
     ("chen.jie", "P2d14dChen2026!Xx", "superadmin",
-     {"upload": True, "delete": True, "reindex": True}),
+     {"upload": True, "delete": True, "reindex": True, "download": True}),
 ]
 
 # --------------------------------------------------------------------------- #
@@ -279,8 +280,8 @@ def _assert_capabilities(tokens: dict[str, str]) -> None:
                   f"label={payload.get('label')!r}")
             # fail-closed：三个键必须**齐全**。少一个键时前端 `?? false` 会把它当无权限，
             # 表现是「有权限的人看不到按钮」—— 所以缺键也要红。
-            check(f"{username} 的 capabilities 三个键齐全（前端按固定键读）",
-                  set(got_caps) == {"upload", "delete", "reindex"},
+            check(f"{username} 的 capabilities 四个键齐全（前端按固定键读）",
+                  set(got_caps) == {"upload", "delete", "reindex", "download"},
                   f"实际键={sorted(got_caps)}")
 
         # 两个档位必须**真的不同** —— 只验「一个账号返回了期望值」的话，

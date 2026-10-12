@@ -188,6 +188,8 @@ importlib-resources==7.1.0
     # via chromadb
 itsdangerous==2.2.0
     # via streamlit
+jieba==0.42.1
+    # via -r requirements.in
 jinja2==3.1.6
     # via
     #   altair
@@ -291,6 +293,7 @@ numpy==1.26.4
     #   onnxruntime
     #   pandas
     #   pydeck
+    #   rank-bm25
     #   scikit-learn
     #   scipy
     #   streamlit
@@ -464,6 +467,8 @@ pyyaml==6.0.3
     #   langchain-core
     #   transformers
     #   uvicorn
+rank-bm25==0.2.2
+    # via -r requirements.in
 rapidfuzz==3.14.6
     # via unstructured
 redis==8.1.0

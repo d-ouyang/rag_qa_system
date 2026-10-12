@@ -87,3 +87,9 @@ tzlocal==5.4.4         # Celery 解析本地时区用
 # fakeredis 在内存里模拟 Redis，本地/CI 不必真的起 Redis 服务；
 # [lua] 提供 Lua 支持（fakeredis 的 evalsha 路径）
 fakeredis[lua]==2.38.0
+
+# ---------- BM25 关键词检索（v3.0.0 P3-4 混合检索新增）----------
+# 进程内小索引（全量 90 片），不起搜索服务 —— 起一个 es 是纯粹的复杂度倒挂。
+# jieba 必须先分词：BM25Okapi 不做中文切分的话整句会被当成一个词，等于没有 BM25。
+rank-bm25==0.2.2
+jieba==0.42.1

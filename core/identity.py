@@ -197,6 +197,11 @@ class Actor:
         """能否重建整库向量索引 —— 唯一会让全公司答错的操作，故单独一档。"""
         return kb_acl.can_reindex(self.kb_role)
 
+    @property
+    def can_download_document(self) -> bool:
+        """能否下载知识库**原始文件**（P3-2）。只读档（none）不行。"""
+        return kb_acl.can_download(self.kb_role)
+
     def is_self(self, user_id: int) -> bool:
         return self.id is not None and int(user_id) == int(self.id)
 
@@ -223,6 +228,7 @@ class Actor:
                 "kb_upload": self.can_upload_document,
                 "kb_delete": self.can_delete_document,
                 "kb_reindex": self.can_reindex_kb,
+                "kb_download": self.can_download_document,
             },
             "password": {
                 "must_change": bool(self.record.must_change_password) if self.record else False,
@@ -534,7 +540,7 @@ def require_kb(action: str) -> Any:
             # 日志的读者要能回答「谁被拒了」，不需要「他是什么档」。
             # 但审计（14c落 audit_log）会记档位变化，那是另一件事。
             logger.warning(
-                "知识库写操作被拒 | action=%s | actor=%s | uid=%s | source=%s",
+                "知识库操作被拒 | action=%s | actor=%s | uid=%s | source=%s",
                 action, actor.username, actor.id, actor.source,
             )
             raise HTTPException(
@@ -556,6 +562,10 @@ require_kb_delete = require_kb(kb_acl.ACTION_DELETE)
 #: 不在 HTTP 面上），但依赖先备好 —— 等它变成接口时，就不会再出现
 #: 「上线时忘了挂守卫」这种事了。
 require_kb_reindex = require_kb(kb_acl.ACTION_REINDEX)
+#: P3-2：下载原始文件。**唯一一个挂在 GET 路由上的 kb 守卫** ——
+#: 下载不是「读知识库」（那是全公司共用的），而是「把原件整份带走」+ 消耗服务器带宽，
+#: 所以判据按人走（见 `kb_acl.MIN_KB_ROLE_BY_ACTION[download]` 的注释）。
+require_kb_download = require_kb(kb_acl.ACTION_DOWNLOAD)
 
 
 __all__ = [
@@ -572,6 +582,7 @@ __all__ = [
     "require_admin",
     "require_kb",
     "require_kb_delete",
+    "require_kb_download",
     "require_kb_reindex",
     "require_kb_upload",
     "require_staff",

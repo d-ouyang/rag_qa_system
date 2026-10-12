@@ -93,6 +93,15 @@ export const useDocumentStore = defineStore('documents', () => {
   const capabilities = ref<KbCapabilitiesResponse | null>(null)
   const canUpload = computed(() => capabilities.value?.capabilities.upload ?? false)
   const canDelete = computed(() => capabilities.value?.capabilities.delete ?? false)
+  /**
+   * P3-2：能否下载原始文件 = **知识库权限 ∩ 部署开关**（后端已合并好）。
+   *
+   * ⚠️ 前端**不读** `DOC_DOWNLOAD_ENABLED`（它不在任何接口里，也不该在）：
+   * 后端把这个开关并进 `capabilities.download` 再下发，
+   * 于是「功能没开」与「你没权限」在前端是**同一个 false** ——
+   * 这正是我们要的：两种情况下按钮的表现应该完全一样（不渲染）。
+   */
+  const canDownload = computed(() => capabilities.value?.capabilities.download ?? false)
 
   /** 首次加载 / 手动刷新时为 true（会显示「加载中…」）；后台轮询**不会**置它，否则表格每 2 秒闪一次 */
   const loading = ref(false)
@@ -305,6 +314,12 @@ export const useDocumentStore = defineStore('documents', () => {
   const BATCH_MAX_FILES = 50
 
   /**
+   * 单文件大小上限（与后端 DOC_UPLOAD_MAX_BYTES 一致；前端先拦一道，省一趟必然 413 的上传）。
+   * 后端校验在 api/routes/documents.py `_accept_one_upload`，两处改动须同步。
+   */
+  const MAX_FILE_BYTES = 50 * 1024 * 1024
+
+  /**
    * 上传（p1.5c 起支持批量）：单个 File 或多文件/文件夹选出的 File 列表。
    *
    * 单个与批量统一走后端批量接口 —— 一个口径，不出现「单个走 A 接口、
@@ -323,6 +338,15 @@ export const useDocumentStore = defineStore('documents', () => {
     }
     if (list.length > BATCH_MAX_FILES) {
       ui.toast(`一次最多提交 ${BATCH_MAX_FILES} 份文件（这次选了 ${list.length} 份），请分批`, 'error', 6000)
+      return
+    }
+    const oversized = list.filter((f) => f.size > MAX_FILE_BYTES)
+    if (oversized.length > 0) {
+      const names =
+        oversized.length <= 3
+          ? oversized.map((f) => f.name).join('、')
+          : `${oversized.slice(0, 3).map((f) => f.name).join('、')} 等 ${oversized.length} 份`
+      ui.toast(`单份文件不超过 50MB，以下文件超限：${names}`, 'error', 6000)
       return
     }
     submitting.value = true
@@ -472,6 +496,7 @@ export const useDocumentStore = defineStore('documents', () => {
     capabilities,
     canUpload,
     canDelete,
+    canDownload,
     loading,
     submitting,
     submittingName,

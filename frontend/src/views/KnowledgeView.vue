@@ -130,6 +130,12 @@ function formatSize(bytes: number): string {
 // 没人会想到去比后端）。判据唯一定义在 `core/kb_acl.py`。
 const canUpload = computed(() => docs.canUpload)
 const canDelete = computed(() => docs.canDelete)
+/**
+ * P3-2：下载按钮按 `capabilities.download` 显隐。
+ * 后端已把「知识库权限」与「部署开关」合并成一个布尔值，
+ * 所以这里**不做**任何档位判断 —— 与 upload/delete 同一条规矩。
+ */
+const canDownload = computed(() => docs.canDownload)
 
 function pickFile() {
   fileInput.value?.click()
@@ -344,7 +350,7 @@ const ACCEPT = '.pdf,.doc,.docx,.txt,.md,.xlsx,.xls,.pptx,.csv,.json,.html,.htm'
           <span class="col-size">{{ formatSize(d.file_size) }}</span>
           <span class="col-op">
             <button class="op-btn" :disabled="!canShowChunks(d)" :title="chunksTitle(d)" @click="openChunks(d)">片段</button>
-            <button class="op-btn" title="下载原文件" @click="docs.download(d)">下载</button>
+            <button v-if="canDownload" class="op-btn" title="下载原文件" @click="docs.download(d)">下载</button>
             <!-- P2-14d：无写权限时**不渲染**重试/删除，而不是渲染成置灰。
                  置灰按钮仍然占位、仍然长得像能点；而这两项一个能把全公司共用的
                  文档从索引里抹掉、一个会重新触发解析，都不该出现在只读用户的界面上。

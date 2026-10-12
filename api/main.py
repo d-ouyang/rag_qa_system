@@ -83,18 +83,25 @@ def on_startup() -> None:
     """启动日志：打印关键配置，方便确认「起的是不是想要的那个配置」。
 
     ⚠️ P2-15c 起这里还做**超额行为档位**的启动校验（fail-closed）：
-       `TOKEN_QUOTA_OVER_ACTION` 配成任何不是 "notify" 的值都直接拒启 ——
-       理由见 `core/quota_policy.OVER_ACTIONS`（唯一合法档位是「仅提醒」，
-       用户 2026-10-07 拍板）。宁可起不来，也不要
+       `TOKEN_QUOTA_OVER_ACTION` 配成任何不在 `OVER_ACTIONS` 里的值都直接拒启。
+       理由见 `core/quota_policy.OVER_ACTIONS`：宁可起不来，也不要
        「以为配了阻断、其实什么都没发生」。
+
+       P3-1 起合法档位从「只有 notify」扩成「notify / block」——
+       把「现在到底拦不拦」打进启动日志，是因为**这是唯一一处
+       所有人都会看到的事实**：线上排查「为什么这个人问不了」时，
+       第一条要看的就是这一行，而不是去翻 .env。
     """
     from core import quota_policy as quota_policy  # 局部导入避免环
 
     # 校验在 quota_policy（判定唯一处）；非法值抛 ValueError → 进程拒启。
     quota_policy.validate_over_action(settings.TOKEN_QUOTA_OVER_ACTION)
+    _blocking = settings.TOKEN_QUOTA_OVER_ACTION == quota_policy.OVER_ACTION_BLOCK
     logger.info(
-        "超额行为档位 = %s（仅提醒：超阈值只显示横幅与看板标红，不阻断）",
+        "超额行为档位 = %s（%s）",
         settings.TOKEN_QUOTA_OVER_ACTION,
+        "阻断：本月已用 >= 限量时提问接口返回 429" if _blocking
+        else "仅提醒：超阈值只显示横幅与看板标红，不阻断",
     )
     logger.info(
         "FastAPI 启动完成 | %s v%s | LLM_PROVIDER=%s 向量库=%s 重排=%s",

@@ -51,6 +51,15 @@ export interface RetrievalDebug {
   filtered_count?: number
   /** 最终进入回答的条数（0 = 拒答） */
   docs_returned?: number
+  /**
+   * 混合召回（P3-4）：BM25 命中条数。
+   * ⚠️ null 表示「混合检索没开」，不是「命中 0 条」—— 两种情况排查方向完全不同。
+   */
+  bm25_hits?: number | null
+  /** 混合召回：靠 BM25 补进来、向量没捞到的条数（null = 未开启混合检索） */
+  bm25_only?: number | null
+  /** 混合召回：RRF 融合后的 top1 chunk_id（null = 未开启混合检索） */
+  rrf_top?: string | null
 }
 
 /** 切片详情（GET /api/v1/chunks/{chunk_id}，对应后端 ChunkDetail） */
@@ -96,10 +105,31 @@ export interface SessionUsage {
   requests: number
 }
 
+/**
+ * P3-1：被额度拦下的那一轮（HTTP 429 + code=quota_exceeded）。
+ *
+ * 与「请求失败」分开的原因：失败是**偶发的、可重试的**，
+ * 额度用完是**确定的、重试一定还是同一个结果**。
+ * 两者混成一句「⚠️ 请求失败」会让用户反复点发送 ——
+ * 而这一次，正确的动作是去找管理员改额度，不是一个按钮能解决的。
+ */
+export interface QuotaBlockedInfo {
+  used: number
+  quota: number
+  /** 账期 `YYYY-MM`，报错时说清是哪个月的额度用完了 */
+  period?: string | null
+  message: string
+}
+
 /** 会话内消息（GET /api/v1/qa/sessions/{id} 与前端本地流式拼接共用） */
 export interface ChatMessage {
   role: Role
   content: string
+  /**
+   * P3-1：这一轮被额度拦截时的详情。非空即渲染成「额度已用完」气泡，
+   * **不渲染成普通错误**（见 `QuotaBlockedInfo` 注释）。
+   */
+  quota_blocked?: QuotaBlockedInfo | null
   /** 提问时间（Unix 秒；assistant 消息与同轮 user 消息相同） */
   ts?: number
   /** assistant 消息携带的溯源资料 */
@@ -202,6 +232,15 @@ export interface KbCapabilitiesResponse {
     upload: boolean
     delete: boolean
     reindex: boolean
+    /**
+     * P3-2：能否下载原始文件。
+     *
+     * ⚠️ 这是**唯一一个不是纯 ACL 的能力**：后端下发的是
+     * `kb_acl.can_download(kb_role) && DOC_DOWNLOAD_ENABLED` 的结果。
+     * 前端不需要、也不该区分「你没权限」与「功能没开」——
+     * 两种情况下的界面是同一个：不显示下载按钮。
+     */
+    download: boolean
   }
   /** 中文长标签（带能力说明），直接显示给用户看 */
   label: string

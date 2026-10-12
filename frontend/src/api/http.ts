@@ -23,12 +23,28 @@ export class ApiError extends Error {
   code: string
   /** 网关生成的请求 id，报障时带上它就能在日志里定位这一次请求 */
   requestId?: string
+  /**
+   * 后端 `{"detail": {...}}` 的结构化负载原样带出（P3-1）。
+   *
+   * 为什么不能直接读 `message`：429 额度拦截的错误体里 `used` / `quota` / `period`
+   * 是要显示给用户的数字（「已用 100,231 / 限量 100,000」），
+   * 把它们塞进 message 就得在前端再解析一次字符串 —— 而解析字符串这件事
+   * 后端改一个字就静默失效。原样带出对象，前端按字段读。
+   */
+  payload?: Record<string, unknown>
 
-  constructor(status: number, message: string, code = '', requestId?: string) {
+  constructor(
+    status: number,
+    message: string,
+    code = '',
+    requestId?: string,
+    payload?: Record<string, unknown>,
+  ) {
     super(message)
     this.status = status
     this.code = code
     this.requestId = requestId
+    this.payload = payload
   }
 }
 
@@ -85,6 +101,15 @@ async function toApiError(res: Response): Promise<ApiError> {
       )
     }
     if (typeof body.detail === 'string') return new ApiError(status, body.detail, '', headerRequestId)
+    // 🔴 结构化 detail（P3-1 的 429 就是这种）：把 code/message 提到顶层字段，
+    //    整个对象原样挂到 payload 上 —— 业务层不用再解一次字符串。
+    //    code 缺失时留空串（与「网关没给 code」同一形状），调用方只判 code 是否命中。
+    if (body.detail != null && typeof body.detail === 'object') {
+      const d = body.detail as Record<string, unknown>
+      const msg = typeof d.message === 'string' ? d.message : JSON.stringify(d)
+      const code = typeof d.code === 'string' ? d.code : ''
+      return new ApiError(status, msg, code, headerRequestId, d)
+    }
     if (body.detail != null) return new ApiError(status, JSON.stringify(body.detail), '', headerRequestId)
   } catch {
     /* 响应体不是 JSON：走下面的兜底文案 */

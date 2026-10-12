@@ -201,9 +201,21 @@ check("不限额度 → 横幅为空（不打扰）", qp.banner_text(999999, 0) 
       f"实际={qp.banner_text(999999, 0)!r}")
 check("未到 warn → 横幅为空", qp.banner_text(10, 100) == "",
       f"实际={qp.banner_text(10, 100)!r}")
-check("🔴 横幅明说「不会限制你继续使用」（本项只提醒不阻断）",
+check("🔴 横幅明说「不会限制你继续使用」（notify 档，2026-10-07 口径）",
       "不会限制" in qp.banner_text(85, 100),
       qp.banner_text(85, 100))
+# P3-1：block 档只在 **over** 那一档改最后一句；warn 档的人确实还能问，
+# 不能对他说「超出后无法提问」（详见 quota_policy.banner_text 的注释）。
+check("🔴 block 档的 over 横幅改说「超出后无法继续提问」",
+      "无法继续提问" in qp.banner_text(100, 100, over_action="block")
+      and "不会限制" not in qp.banner_text(100, 100, over_action="block"),
+      qp.banner_text(100, 100, over_action="block"))
+check("🔴 block 档的 warn 横幅**不改**（warn 的人还能问，不能吓他）",
+      "不会限制" in qp.banner_text(85, 100, over_action="block"),
+      qp.banner_text(85, 100, over_action="block"))
+check("不传 over_action 的调用方拿到的文案与 P3-1 之前逐字一致（升级不改行为）",
+      qp.banner_text(100, 100).endswith("本系统只做提醒，不会限制你继续使用。"),
+      qp.banner_text(100, 100))
 check("🔴 横幅明说不劝阻、不说教（不含「节约」这类无行动指向的话）",
       not any(w in qp.banner_text(85, 100) for w in ("节约", "请控制", "违规", "处罚")),
       qp.banner_text(85, 100))
@@ -627,29 +639,147 @@ check("请求体收字符串 '5000'（前端表单与 curl 都这么传）", _ok
 # --------------------------------------------------------------------------- #
 # 第 6 组：超额行为档位（15c）—— 仅提醒是唯一档
 # --------------------------------------------------------------------------- #
-section("第 6 组：超额行为档位（15c：只提醒，另两档刻意不存在）")
+section("第 6 组：超额行为档位（15c：只提醒 → P3-1：notify/block 两档）")
 
-check("🔴 OVER_ACTIONS 只含 notify（另两档连空钩子都不留 —— 空钩子比没有钩子更坏）",
-      qp.OVER_ACTIONS == (qp.OVER_ACTION_NOTIFY,) == ("notify",),
+# ⚠️ 本组在 2026-10-11 被 P3-1 改过断言。这是**决策变更**，不是回归：
+#    2026-10-07 拍板「只提醒不阻断」时的前提是内部系统；
+#    2026-10-09 系统对外上线后，用户 2026-10-11 拍板加 block 档。
+#    原断言「只含 notify」「没有 can_ 开头的函数」因此**应当**转红并改写。
+check("🔴 OVER_ACTIONS = (notify, block)（P3-1 扩 block；降级档仍未实现）",
+      qp.OVER_ACTIONS == (qp.OVER_ACTION_NOTIFY, qp.OVER_ACTION_BLOCK)
+      == ("notify", "block"),
       f"实际={qp.OVER_ACTIONS}")
-check("settings 默认档位是 notify 且能过校验",
-      qp.validate_over_action(settings.TOKEN_QUOTA_OVER_ACTION) == "notify",
+check("🔴 仍然**没有**「降级」档（它要先回答降级到哪个模型，不是加个字符串）",
+      not any(a in qp.OVER_ACTIONS for a in ("degrade", "downgrade")),
+      f"实际={qp.OVER_ACTIONS}")
+check("🔴 当前配置（.env）里的档位是合法值且能过校验",
+      settings.TOKEN_QUOTA_OVER_ACTION in qp.OVER_ACTIONS
+      and qp.validate_over_action(settings.TOKEN_QUOTA_OVER_ACTION)
+      == settings.TOKEN_QUOTA_OVER_ACTION,
       f"settings.TOKEN_QUOTA_OVER_ACTION={settings.TOKEN_QUOTA_OVER_ACTION!r}")
-for _bad in ("block", "degrade", "NOTIFY", "提醒", ""):
+_field_default = type(settings).model_fields["TOKEN_QUOTA_OVER_ACTION"].default
+check("🔴 **代码默认值**仍是 notify（不配 .env 的人升级后行为不变）",
+      _field_default == "notify", f"字段默认={_field_default!r}")
+check("block 是合法档位且能过校验", qp.validate_over_action("block") == "block")
+for _bad in ("degrade", "NOTIFY", "提醒", ""):
     _raised = False
     try:
         qp.validate_over_action(_bad)
     except ValueError as e:
-        _raised = "notify" in str(e) and "拍板" in str(e)
-    check(f"非法档位 {_bad!r} 被拒且报错里带口径出处",
+        _raised = "notify" in str(e) and "block" in str(e)
+    check(f"非法档位 {_bad!r} 被拒且报错里带两个合法档位的出处",
           _raised, "没有抛或报错文案缺关键信息")
 
-check("🔴 quota_policy 里没有「是否允许继续提问」形状的函数"
-      "（有它就会长出禁用按钮 —— 用户明确排除）",
-      not any(name.startswith(("can_", "allow_", "should_"))
-              for name in dir(qp) if callable(getattr(qp, name, None))
-              and not name.startswith("_")),
-      str([n for n in dir(qp) if n.startswith(("can_", "allow_", "should_"))]))
+# --- can_ask：P3-1 的拦截判据（纯函数，不碰库）---
+check("🔴 额度 0（不限）→ 永远放行（哪怕用量很大）",
+      qp.can_ask(999_999, 0) == (True, "") and qp.can_ask(0, None) == (True, ""),
+      f"{qp.can_ask(999_999, 0)} / {qp.can_ask(0, None)}")
+check("🔴 已用 < 限量 → 放行（宽限单：这一轮用超也照常答完）",
+      qp.can_ask(99_999, 100_000) == (True, ""),
+      str(qp.can_ask(99_999, 100_000)))
+check("🔴 已用 == 限量 → 拦截（边界：>= 即拦，不是 >）",
+      qp.can_ask(100_000, 100_000)[0] is False,
+      str(qp.can_ask(100_000, 100_000)))
+check("已用 > 限量 → 拦截", qp.can_ask(100_231, 100_000)[0] is False)
+_allowed, _msg = qp.can_ask(100_231, 100_000)
+check("拦截时第二元素是非空文案（调用方直接下发，不用自己拼）",
+      bool(_msg) and _msg == qp.BLOCK_MESSAGE and "管理员" in _msg, repr(_msg))
+check("🔴 can_ask 是**纯函数**：同样入参两次结果相同（不读时钟/配置/库）",
+      qp.can_ask(100_000, 100_000) == qp.can_ask(100_000, 100_000)
+      and not any(p in inspect.signature(qp.can_ask).parameters
+                  for p in ("actor", "session", "conn")),
+      str(inspect.signature(qp.can_ask)))
+check("🔴 稳定错误码常量存在（前端按 code 特化，不解析文案）",
+      qp.QUOTA_EXCEEDED_CODE == "quota_exceeded")
+
+# --------------------------------------------------------------------------- #
+# 第 6B 组：P3-1 提问预检接线（/ask 与 /ask/stream 共用一个函数）
+# --------------------------------------------------------------------------- #
+section("第 6B 组：P3-1 提问预检接线（block 档 429 / notify 档零行为）")
+
+from fastapi import HTTPException as _HTTPException          # noqa: E402
+from api.routes import qa as _qa_for_precheck               # noqa: E402
+
+# ⚠️ 这里**不打桩 can_ask**（它才是被测物），只把取数那一段换成构造好的快照：
+#    真去改库里的用量会把某个真人推进「被拦」状态，而那条数据还会被
+#    `/quota/me`、看板、P3-6 快照读到 —— 测试不该有跨用例的副作用。
+_orig_snapshot = _qa_for_precheck._quota_snapshot
+_OVER_SNAP = {"attributable": True, "used": 100_231, "effective_quota": 100_000,
+              "status": qp.STATUS_OVER, "period": "2026-10"}
+_UNDER_SNAP = {"attributable": True, "used": 5_368, "effective_quota": 100_000,
+               "status": qp.STATUS_OK, "period": "2026-10"}
+_orig_action = settings.TOKEN_QUOTA_OVER_ACTION
+
+
+def _set_action(value: str) -> None:
+    """改档位配置。pydantic settings 可能开了冻结，两种写法都兜住。"""
+    try:
+        settings.TOKEN_QUOTA_OVER_ACTION = value
+    except Exception:
+        object.__setattr__(settings, "TOKEN_QUOTA_OVER_ACTION", value)
+
+
+def _run_precheck(snap: dict) -> _HTTPException | None:
+    _qa_for_precheck._quota_snapshot = lambda actor: snap
+    try:
+        _qa_for_precheck._quota_precheck(_ADMIN)
+        return None
+    except _HTTPException as e:
+        return e
+    finally:
+        _qa_for_precheck._quota_snapshot = _orig_snapshot
+
+
+try:
+    _set_action("block")
+    _ex = _run_precheck(_OVER_SNAP)
+    check("🔴 block 档 + 已超 → 抛 429",
+          _ex is not None and _ex.status_code == 429,
+          f"实际={_ex.status_code if _ex else '没抛'}")
+    _d = getattr(_ex, "detail", None)
+    check("🔴 429 错误体是结构化 dict（含 code/used/quota/period/message）",
+          isinstance(_d, dict)
+          and _d.get("code") == "quota_exceeded"
+          and _d.get("used") == 100_231
+          and _d.get("quota") == 100_000
+          and _d.get("period") == "2026-10"
+          and isinstance(_d.get("message"), str) and _d["message"],
+          repr(_d))
+    check("429 错误体**不带**任何身份字段（不泄露别人的用量）",
+          isinstance(_d, dict) and not any(
+              k in _d for k in ("username", "user_id", "display_name", "department")),
+          repr(sorted(_d or {})))
+    check("🔴 block 档 + 未超（5,368/100,000）→ 放行（宽限单，不拦健康用户）",
+          _run_precheck(_UNDER_SNAP) is None)
+    check("🔴 block 档 + 不可归属身份（id=None）→ 放行但记日志（不误伤 break-glass）",
+          _run_precheck({"attributable": False, "used": 0, "effective_quota": 0,
+                         "status": qp.STATUS_OK, "period": ""}) is None)
+
+    _set_action("notify")
+    check("🔴 notify 档下即使已超也**不拦**（2026-10-07 行为零变化）",
+          _run_precheck(_OVER_SNAP) is None,
+          "notify 档拦人了 —— 这是回归")
+finally:
+    _set_action(_orig_action)
+    _qa_for_precheck._quota_snapshot = _orig_snapshot
+
+# --- 接线结构断言：两个提问路由都必须调预检（漏一个 = 那个口子不设防）---
+_qa_src = Path(ROOT, "api/routes/qa.py").read_text(encoding="utf-8")
+# 按「函数体区间」切：ask → ask_stream → list_sessions（下一个顶层路由）
+_ask_src = _qa_src[_qa_src.index("def ask("):_qa_src.index("def ask_stream(")]
+_stream_src = _qa_src[_qa_src.index("def ask_stream("):_qa_src.index("def list_sessions(")]
+check("🔴 /ask 调了 _quota_precheck（且在进 RAG 链之前）",
+      "_quota_precheck(actor)" in _ask_src
+      and _ask_src.index("_quota_precheck(actor)") < _ask_src.index("get_rag_chain()"),
+      _ask_src[:200])
+check("🔴 /ask/stream 调了 _quota_precheck（且在 return StreamingResponse 之前）",
+      "_quota_precheck(actor)" in _stream_src
+      and _stream_src.index("_quota_precheck(actor)")
+      < _stream_src.index("return StreamingResponse"),
+      "预检排在 StreamingResponse 之后 → 200 已发出，429 变不成 HTTP 错误")
+check("🔴 预检排在**越权预检之后**（越权的人先 403，不值得为他查一次用量）",
+      _ask_src.index("is_foreign") < _ask_src.index("_quota_precheck(actor)"),
+      _ask_src[:200])
 
 # --------------------------------------------------------------------------- #
 # 第 7 组：看板与横幅端点（15d）+ 越权收口（15e）
@@ -964,35 +1094,41 @@ if "--reverse" in sys.argv:
           f"同值记了 {_same_value_hits} 条（应0），变值记了 {_changed_hits} 条（应 1）")
 
     # ----------------------------------------------------------------- #
-    # 反向 12：档位清单放开（假装实现了 block）→ 第 6 组「只含 notify」红
+    # 反向 12（P3-1 改写）：can_ask 恒放行 → 第 6 组拦截断言红
+    #   ⚠️ 原版是「档位清单放开后『只含 notify』那条红」—— 那条断言
+    #      本身已被 P3-1 删掉（block 现在是合法档位），留着它只会
+    #      测一个已经不存在的判决。换成盯住**新**判据：拦截函数。
     # ----------------------------------------------------------------- #
-    _orig_actions = qp.OVER_ACTIONS
-    qp.OVER_ACTIONS = ("notify", "block")
-    _leaked = qp.OVER_ACTIONS != ("notify",)
-    qp.OVER_ACTIONS = _orig_actions
-    check("反向 12：档位清单放开后，「只含 notify」那条断言转红",
-          _leaked and qp.OVER_ACTIONS == ("notify",),
-          f"放开后={_orig_actions}")
+    _orig_can_ask = qp.can_ask
+    qp.can_ask = lambda used, quota: (True, "")
+    _leaked = qp.can_ask(100_231, 100_000)[0] is not False
+    qp.can_ask = _orig_can_ask
+    check("反向 12：can_ask 恒放行后，「已用==限量 → 拦截」那条断言转红",
+          _leaked and qp.can_ask(100_000, 100_000)[0] is False,
+          f"拆掉后 can_ask(100231,100000)={qp.can_ask(100_231, 100_000)}")
 
     # ----------------------------------------------------------------- #
     # 反向 13：validate 改成恒放行 → 「非法档位被拒」那条断言红
+    #   ⚠️ P3-1 之后 "block" 是**合法**档位，不能再拿它当非法值
+    #      （恒放行时收下它是对的，判据就废了）。改用 "degrade" ——
+    #      它是「将来可能做但现在没做」的那档，永远非法。
     # ----------------------------------------------------------------- #
     _orig_validate = qp.validate_over_action
     qp.validate_over_action = lambda v: v
     _accepted_bad = True
     try:
-        qp.validate_over_action("block")
+        qp.validate_over_action("degrade")
     except ValueError:
         _accepted_bad = False
     finally:
         qp.validate_over_action = _orig_validate
     # 判据两半分别成立：① 恒放行时非法值真的被收下（拆到了行为）；
     # ② 恢复后原判据会红（非法值重新被拒）。
-    # ⚠️ 不要在恢复之后又调 validate("block") 来「验证会抛」——
+    # ⚠️ 不要在恢复之后又调 validate("degrade") 来「验证会抛」——
     #   那个 ValueError 会逃出 check() 直接炸掉整个脚本（实测踩过）。
     _restored_rejects = False
     try:
-        qp.validate_over_action("block")
+        qp.validate_over_action("degrade")
     except ValueError:
         _restored_rejects = True
     check("反向 13：validate 改成恒放行后，「非法档位被拒」那条断言转红",

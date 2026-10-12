@@ -407,6 +407,14 @@ def main() -> int:
             if apply_changes:
                 deleted = store.purge_orphan_chunks(valid_ids)
                 print(f"  已清理 {deleted} 条，向量库剩余 {store.count()} 条")
+                # P3-4：孤儿清掉了 → 本进程的 BM25 索引（若有）置脏。
+                # 后端进程的索引靠它自己的重启 / 下一次写入失效（跨进程通知不了）。
+                try:
+                    from core.bm25_index import invalidate_bm25_index
+
+                    invalidate_bm25_index()
+                except Exception as e:  # noqa: BLE001
+                    print(f"  BM25 置脏跳过（{type(e).__name__}: {e}）")
             else:
                 print(f"  （干跑：未删除。执行时会清掉这 {len(orphans)} 条）")
 

@@ -54,6 +54,16 @@ def main() -> int:
         return 0
     col.delete(ids=bad)
     print(f"已删除 {len(bad)} 个孤儿切片，剩余向量数 {col.count()}")
+
+    # P3-4 约定：向量库内容变了就通知 BM25 置脏。
+    # 本脚本是独立进程，这里只能失效它自己的实例（多半根本没建过）；
+    # 真正的兜底是：跨进程改动后**必须重启后端**，让它的进程内索引重建。
+    try:
+        from core.bm25_index import invalidate_bm25_index
+
+        invalidate_bm25_index()
+    except Exception as e:  # noqa: BLE001
+        print(f"BM25 置脏跳过（{type(e).__name__}: {e}）")
     return 0
 
 

@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 # API 返回 200、文档停在 pending，没有任何报错。常量被两边共同 import，
 # 拼错就是 ImportError。
 PARSE_TASK_NAME = "rag.parse_document"
+# P3-6：月度用量快照（Celery beat 每日低峰触发，见 worker/app.py 的 beat_schedule）
+SNAPSHOT_TASK_NAME = "rag.snapshot_monthly_usage"
 
 
 @celery_app.task(name=PARSE_TASK_NAME)
@@ -57,4 +59,29 @@ def parse_document_task(doc_id: int) -> dict[str, Any]:
         # 不打 ERROR：解析失败是**业务结果**（文件坏），不是系统故障。
         # 用 ERROR 会让真正的系统故障淹没在噪音里。
         logger.warning("任务未完成 | doc_id=%s | 原因=%s", doc_id, result.get("reason"))
+    return result
+
+
+@celery_app.task(name=SNAPSHOT_TASK_NAME)
+def snapshot_monthly_usage_task() -> dict[str, Any]:
+    """
+    月度用量快照（P3-6，beat 每日低峰触发）。
+
+    为什么做成任务而不是后端请求里顺手做：
+        · 它是**定时**语义（每天一次），不是请求语义 —— 塞进请求路径
+          等于让「最后一次提问的人」承担归档成本；
+        · 失败要能重试且不阻塞任何人 —— 队列天然给这个。
+
+    逻辑全在 `core/quota_snapshot.snapshot_period()`（与解析任务同一个分工：
+    task 是进程边界上的薄壳，可测的逻辑放 core 层直接调用）。
+    幂等：upsert 覆盖写同一主键，任务重复投递 / 补跑都安全。
+    """
+    from core.quota_snapshot import snapshot_period
+
+    logger.info("收到月度用量快照任务")
+    result = snapshot_period()
+    if result["rows"] == 0:
+        # 没有任何用量：清表后当天无人提问。这不是错误，但要让日志能看出来
+        # 「跑过但空」，否则「任务没跑」和「跑了没数据」分不清。
+        logger.info("快照完成：当前账期无任何用量，未写入行 | 账期=%s", result["period"])
     return result

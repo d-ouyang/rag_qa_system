@@ -337,6 +337,7 @@ def _retrieval_debug_event(
     intent_result: IntentResult,
     prepared: dict[str, Any],
     trace: dict[str, Any] | None,
+    hybrid: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     组装 NDJSON `retrieval` 调试事件（P2-23，/ask/stream debug=true 时下发）。
@@ -346,6 +347,11 @@ def _retrieval_debug_event(
           这是「拒答差多少分」的核心数据）；
         · 没有轨迹（重排关闭）—— 用返回 docs 的溯源信息凑，
           全部标 passed_threshold=true（没有阈值就谈不上没过）。
+
+    :param hybrid: 混合召回轨迹（P3-4）。开关关闭时为 None，
+                   此时 `bm25_hits` / `rrf_top` 一律下发 None 而不是 0 / ""：
+                   「没开混合检索」和「开了但 BM25 一条都没命中」是两回事，
+                   用同一份 0 表示会让排查的人往错误的方向上查。
     """
     if trace:
         candidates = [dict(c) for c in trace.get("candidates") or []]
@@ -376,6 +382,10 @@ def _retrieval_debug_event(
         "top1_before_filter": top1,
         "filtered_count": filtered_count,
         "docs_returned": len(prepared.get("docs") or []),
+        # —— P3-4 混合召回：关时为 None（不是 0）——
+        "bm25_hits": hybrid.get("bm25_hits") if hybrid else None,
+        "bm25_only": hybrid.get("bm25_only") if hybrid else None,
+        "rrf_top": hybrid.get("rrf_top") if hybrid else None,
     }
 
 
@@ -982,6 +992,7 @@ class RAGChain:
             if debug:
                 yield _retrieval_debug_event(
                     intent_result, prepared, self.retriever.get_last_rerank_trace(),
+                    self.retriever.get_last_hybrid_trace(),
                 )
             if not prepared["docs"]:
                 # 零召回短路：与同步链路同口径，不进 LLM，拒答作为唯一 chunk 下发
