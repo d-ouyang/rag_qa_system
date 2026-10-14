@@ -252,6 +252,7 @@ test-sandbox:
 test: kb-guard
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module1_config.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module2_document_loader.py
+	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_p37a_title_mode.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module3_vectorstore.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module4_llm_and_retriever.py
 	EMBEDDING_BACKEND=local RERANK_BACKEND=local RETRIEVAL_HYBRID=false $(PY) tests/test_module5_rag_chain_api.py

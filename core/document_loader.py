@@ -31,7 +31,7 @@ from pptx import Presentation
 from pptx.table import Table
 from pptx.text.text import TextFrame
 from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 from config.settings import settings
 
@@ -78,6 +78,9 @@ class DocumentLoader:
         """
         self.chunk_size: int = chunk_size or settings.CHUNK_SIZE
         self.chunk_overlap: int = chunk_overlap or settings.CHUNK_OVERLAP
+        # 切分模式（P3-7a）：fixed = 现状递归切分；title = 标题感知 + Enrichment。
+        # 只在 md（含 B 阶段 MinerU 产出的 markdown）上生效；其余格式一律走 fixed 路径。
+        self.chunk_mode: str = settings.CHUNK_MODE
         self.text_splitter: RecursiveCharacterTextSplitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
@@ -169,6 +172,15 @@ class DocumentLoader:
             base_metadata.update(metadata)
 
         # 4. 解析文档
+        # title 模式（P3-7a）只对 md 开放闭环：直接读原始 markdown 文本按标题树切，
+        # 不经过 Loader（UnstructuredMarkdownLoader 会把 `#` 标记吃掉，标题树无从谈起）。
+        # 失败回退 fixed 路径 —— 切分模式是增强，不该让一篇坏文件整批失败。
+        if self.chunk_mode == "title" and ext == ".md":
+            try:
+                return self._load_md_title_mode(path, base_metadata)
+            except Exception as e:
+                logger.error("标题模式切分失败，回退固定切分：%s | 错误：%s", path, e, exc_info=True)
+
         try:
             documents = self._load_documents(path, ext)
         except Exception as e:  # 解析失败只影响当前文件，向上返回空列表
@@ -198,6 +210,208 @@ class DocumentLoader:
             len(split_docs),
         )
         return split_docs
+
+    # ------------------------------------------------------------------ #
+    # title 模式（P3-7a）：标题感知切分 + Enrichment
+    # ------------------------------------------------------------------ #
+    # 参与标题树切分的层级：h1~h4 再深的小节通常已是段落粒度，切到那一层
+    # 只会把连贯段落拆散。5 级以后的小节留给「超长二次切分」去处理。
+    TITLE_HEADER_LEVELS: int = 4
+    # 过短小节阈值（相对 chunk_size）：低于它的 section 向相邻合并。
+    # 0.3 是「一段话 vs 一个 chunk」的经验分界 —— 150 字的「3.2 电压要求」
+    # 单独成片，embedding 里全是标题、正文信息量不足，不如并给邻居。
+    SHORT_SECTION_RATIO: float = 0.3
+
+    def _load_md_title_mode(self, path: Path, base_metadata: dict[str, object]) -> list[Document]:
+        """
+        markdown 标题感知切分：标题树分节 → 短节合并 → 长节二次切 → Enrichment 入库。
+
+        每个最终片段：
+            page_content        = enriched（header_path + 原文）—— 进 embedding 与 Chroma 正文；
+            metadata["content"] = 原文（引用反查 / 前端展示用它，不让用户看到拼接串）；
+            metadata["header_path"] = 「一级 > 二级 > 三级」章节路径。
+
+        为什么 enriched 放 page_content 而不是「预计算向量再存原文」：
+        langchain 的 Chroma.add_documents 只会嵌 page_content，注入预计算向量
+        要绕过它直连 collection.add，等于把 P0-3 收敛的写入路径再抄一份 —— 不值。
+        代价是读取侧（vector_store / rag_chain）要认 metadata["content"]，
+        这个约定由 VectorStoreManager._display_content() 单点承担。
+        """
+        md_text = self._read_text(path)
+        header_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=[
+                ("#", "header_1"), ("##", "header_2"),
+                ("###", "header_3"), ("####", "header_4"),
+            ],
+            strip_headers=False,   # 标题行留在正文里：原文完整性 + 关键词可见
+        )
+        sections = header_splitter.split_text(md_text)
+        logger.info("标题模式分节完成：%s | 小节数=%d", path, len(sections))
+
+        # ---- 1. 短节向相邻合并（先向后找归宿，不落单）----
+        # 合并块的 header_path 取两节标题的**最深公共祖先**：
+        # 「一、发放规则」并进「二、工资条查询」的块时，谁都吞不掉谁，
+        # 诚实标注是共同父级「工资查询指引」—— 否则 enrichment 前缀会撒谎，
+        # embedding 学到「发放规则的内容叫常见问题」这种错位语义。
+        short_threshold = int(self.chunk_size * self.SHORT_SECTION_RATIO)
+        blocks: list[tuple[str, str]] = []      # (header_path, section_text)
+        pending_short: tuple[str, str] | None = None
+        for sec in sections:
+            text = sec.page_content.strip()
+            if not text:
+                continue
+            header_path = self._header_path_of(sec.metadata)
+            if len(text) < short_threshold:
+                if blocks:
+                    # 并入上一块：header 取两节的公共祖先（内容上是延续+新话题）
+                    prev_hp, prev_text = blocks[-1]
+                    blocks[-1] = (
+                        self._common_ancestor(prev_hp, header_path),
+                        f"{prev_text}\n\n{text}",
+                    )
+                elif pending_short is not None:
+                    # 开头连续多个短节：**累加**而不是覆盖 ——
+                    # 覆盖会把前面的短节静默丢掉（v3.1.0-p3.7a 自测抓到的真 bug）
+                    php, pst = pending_short
+                    pending_short = (
+                        self._common_ancestor(php, header_path),
+                        f"{pst}\n\n{text}",
+                    )
+                else:
+                    pending_short = (header_path, text)
+                continue
+            if pending_short is not None:
+                hp, st = pending_short
+                text = f"{st}\n\n{text}"
+                header_path = self._common_ancestor(hp, header_path)
+                pending_short = None
+            blocks.append((header_path, text))
+        if pending_short is not None:
+            blocks.append(pending_short)        # 整篇都短：单成一片，总比丢掉强
+
+        # ---- 2. 长节二次切（表格原子）+ Enrichment ----
+        documents: list[Document] = []
+        for header_path, text in blocks:
+            for piece in self._split_block_protect_tables(text):
+                enriched = f"{header_path}\n{piece}" if header_path else piece
+                documents.append(Document(
+                    page_content=enriched,
+                    metadata={
+                        **base_metadata,
+                        "header_path": header_path,
+                        "content": piece,       # 原文，读取侧展示/引用反查用
+                    },
+                ))
+
+        logger.info(
+            "标题模式切分完成：%s | 小节=%d 片段=%d（短节阈值=%d）",
+            path, len(sections), len(documents), short_threshold,
+        )
+        return documents
+
+    @classmethod
+    def _header_path_of(cls, meta: dict) -> str:
+        """把 MarkdownHeaderTextSplitter 给的 header_1..4 元数据拼成「A > B > C」。"""
+        parts = [
+            str(meta[key]).strip()
+            for key in ("header_1", "header_2", "header_3", "header_4")[: cls.TITLE_HEADER_LEVELS]
+            if meta.get(key)
+        ]
+        return " > ".join(parts)
+
+    @staticmethod
+    def _common_ancestor(hp1: str, hp2: str) -> str:
+        """两条 header_path 的最深公共祖先（前缀一致的最长一条）。"""
+        if not hp1:
+            return hp2
+        if not hp2:
+            return hp1
+        a, b = hp1.split(" > "), hp2.split(" > ")
+        parts: list[str] = []
+        for x, y in zip(a, b):
+            if x != y:
+                break
+            parts.append(x)
+        return " > ".join(parts)
+
+    def _split_block_protect_tables(self, text: str) -> list[str]:
+        """
+        把一个（可能超长的）小节切成 ≤ chunk_size 的片段，**表格行绝不拦腰断**。
+
+        表格（连续以 | 开头的行）处理分两档：
+            · 整表 ≤ chunk_size → 整块独成一个片段（合并单元格/跨页拼接的完整网格
+              只有整存才答得了「XX 行 YY 列」）；
+            · 整表 > chunk_size → 按**行组**切：每个分片重复表头行 + 分隔行，
+              行本身绝不切断。直接整块塞给 embedding 会撞嵌入模型输入上限
+              （bge-large-zh-v1.5 约 512 token，实测 773 字的表直接 400）——
+              「原子」的本意是行级完整 + 表头随行，不是无限长的单块。
+        普通段落超过 chunk_size 时才用既有 RecursiveCharacterTextSplitter 二次切。
+        """
+        # 先把文本切成 (是否表格行, 行列表) 的连续段
+        segments: list[tuple[bool, list[str]]] = []
+        cur_is_table = False
+        cur: list[str] = []
+        for line in text.split("\n"):
+            is_table_row = line.lstrip().startswith("|")
+            if is_table_row != cur_is_table and cur:
+                segments.append((cur_is_table, cur))
+                cur = []
+            cur_is_table = is_table_row
+            cur.append(line)
+        if cur:
+            segments.append((cur_is_table, cur))
+
+        pieces: list[str] = []
+        buf: list[str] = []
+        buf_len = 0
+
+        def flush() -> None:
+            nonlocal buf, buf_len
+            if buf:
+                joined = "\n\n".join(buf).strip()
+                if joined:
+                    pieces.append(joined)
+            buf, buf_len = [], 0
+
+        for is_table, lines in segments:
+            seg_text = "\n".join(lines).strip()
+            if not seg_text:
+                continue
+            if is_table:
+                flush()
+                if len(seg_text) <= self.chunk_size:
+                    pieces.append(seg_text)     # 整表原子（≤ chunk_size）
+                else:
+                    # 超长表按行组切：头两行（表头 + 分隔行）在每个分片重复
+                    header = lines[:2]
+                    header_len = len("\n".join(header)) + 1
+                    group: list[str] = []
+                    group_len = header_len
+                    for row in lines[2:]:
+                        row_len = len(row) + 1
+                        if group and group_len + row_len > self.chunk_size:
+                            pieces.append("\n".join(header + group))
+                            group, group_len = [], header_len
+                        group.append(row)
+                        group_len += row_len
+                    if group:
+                        pieces.append("\n".join(header + group))
+                continue
+            if buf_len + len(seg_text) + 2 <= self.chunk_size or not buf:
+                buf.append(seg_text)
+                buf_len += len(seg_text) + 2
+                if buf_len > self.chunk_size:
+                    # 缓冲超长：交给递归切分器细切后直接出货
+                    for sub in self.text_splitter.split_text("\n\n".join(buf)):
+                        if sub.strip():
+                            pieces.append(sub.strip())
+                    buf, buf_len = [], 0
+            else:
+                flush()
+                buf.append(seg_text)
+                buf_len = len(seg_text)
+        flush()
+        return [p for p in pieces if p]
 
     # ------------------------------------------------------------------ #
     # 目录 / 子目录批量加载

@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     SILICONFLOW_EMBEDDING_MODEL : str = "BAAI/bge-large-zh-v1.5"
     CHUNK_SIZE : int = 500
     CHUNK_OVERLAP : int = 50
+    # 切分模式（v3.1.0 P3-7a，PLAN-v3.0.0.md §6.1）：
+    #   fixed = 现状 RecursiveCharacterTextSplitter（500/50），一行行为不变；
+    #   title = md 按标题树切分（MarkdownHeaderTextSplitter），超长小节二次切、
+    #           过短小节向相邻合并，入库前把 header_path 拼到正文前做 Enrichment。
+    # ⚠️ 切默认值 = 整库重建（铁律）：切分参数变了 chunk_index→正文对应关系全漂。
+    #    是否把默认翻成 title 由 golden 评测说话（recall/MRR 提升且拒答不降），不由「做了就开」决定。
+    CHUNK_MODE : Literal["fixed", "title"] = "fixed"
 
     # 检索配置
     SEARCH_TOP_K : int = 5

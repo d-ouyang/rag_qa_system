@@ -600,8 +600,8 @@ class VectorStoreManager:
         return [
             {
                 "index": idx,
-                "content": content,
-                "char_count": len(content),
+                "content": self._display_content(content, meta),
+                "char_count": len(self._display_content(content, meta)),
                 "page": meta.get("page"),
                 "chunk_index": meta.get("chunk_index"),
             }
@@ -617,6 +617,22 @@ class VectorStoreManager:
         用于对账 —— 两者不一致说明写入过程中出过问题（例如中途崩了）。
         """
         return len(self.get_chunks_by_doc_id(doc_id))
+
+    @staticmethod
+    def _display_content(stored_text: str, meta: dict[str, Any]) -> str:
+        """
+        取一个切片「给人看」的正文（P3-7a Enrichment 的读取侧单点）。
+
+        title 模式入库时 Chroma 正文存的是 enriched（header_path + 原文拼接），
+        原文在 metadata["content"]。展示 / 引用反查一律走本方法取原文，
+        不让用户看到「产品手册 > 安装 > 3.2 电压要求」这种路径前缀；
+        metadata 里没有 content（fixed 模式或老切片）时原样返回存储文本 ——
+        所以 fixed 路径零变化，老数据也天然兼容。
+        """
+        original = meta.get("content")
+        if isinstance(original, str) and original:
+            return original
+        return stored_text
 
     @staticmethod
     def _chunk_index_of(meta: dict[str, Any]) -> int:
@@ -661,8 +677,9 @@ class VectorStoreManager:
             "chunk_id": build_chunk_id(doc_id, chunk_index),
             "doc_id": doc_id,
             "chunk_index": chunk_index,
-            "content": content,
-            "char_count": len(content),
+            "content": cls._display_content(content, meta),
+            "header_path": meta.get("header_path"),
+            "char_count": len(cls._display_content(content, meta)),
             "page": meta.get("page"),
             "project_id": meta.get("project_id"),
             "source": meta.get("source"),
@@ -966,8 +983,8 @@ class VectorStoreManager:
             return [
                 {
                     "index": i,
-                    "content": doc,
-                    "char_count": len(doc),
+                    "content": self._display_content(doc, meta or {}),
+                    "char_count": len(self._display_content(doc, meta or {})),
                     "page": (meta or {}).get("page"),
                 }
                 for i, (doc, meta) in enumerate(zip(docs, metas), start=1)
@@ -979,11 +996,12 @@ class VectorStoreManager:
         for doc in getattr(docstore, "_dict", {}).values():
             meta = getattr(doc, "metadata", None) or {}
             if meta.get("source") == source:
+                shown = self._display_content(doc.page_content, meta)
                 chunks.append(
                     {
                         "index": len(chunks) + 1,
-                        "content": doc.page_content,
-                        "char_count": len(doc.page_content),
+                        "content": shown,
+                        "char_count": len(shown),
                         "page": meta.get("page"),
                     }
                 )
@@ -995,6 +1013,10 @@ class VectorStoreManager:
 
         ⚠️ 这个方法是**全量扫描**，不要放进请求路径。它的调用点只有一处：
         BM25 索引的惰性构建（进程内一次，之后靠 invalidate 触发重建）。
+
+        ⚠️ P3-7a：这里返回的是**存储正文**（title 模式下 = enriched 含 header_path），
+        刻意不换回 metadata["content"] 原文 —— BM25 与向量召回必须看到同一份文本
+        （向量侧嵌的就是 enriched），否则混合检索两路口径不一致，RRF 融合没有意义。
 
         :return: [{"chunk_id", "text", "metadata"}, ...]
                  拿不到 chunk_id 的切片**直接丢弃** —— BM25 命中后要靠 chunk_id

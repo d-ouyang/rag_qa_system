@@ -189,6 +189,7 @@ else
   TESTS="
     test_module1_config
     test_module2_document_loader
+    test_p37a_title_mode
     test_module3_vectorstore
     test_module4_llm_and_retriever
     test_module5_rag_chain_api
