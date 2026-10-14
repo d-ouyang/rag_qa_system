@@ -341,6 +341,40 @@ quota_usage_monthly_table = sa.Table(
     **TABLE_KW,
 )
 
+# --------------------------------------------------------------------------- #
+# site-mood：念安站「Are you happy today」心情收集（独立于 RAG 业务的公开小表）
+# --------------------------------------------------------------------------- #
+# ⚠️ 列注释与 alembic/versions/0010 逐字相同（compare_metadata 守着，diff 必须为 0）。
+# 与 RAG 业务表的关系：**没有关系** —— 不外键到 user，不进任何 RAG 查询路径；
+# 公开提交口（POST /api/v1/mood/submit）由 Redis 双闸（per-IP 限流 + 邮箱冷却）守护，
+# 查看口（GET /api/v1/mood/admin）由独立静态 token 守护，判定见 api/routes/mood.py。
+site_mood_submission_table = sa.Table(
+    "site_mood_submission",
+    metadata,
+    sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+    sa.Column("email", sa.String(255), nullable=False,
+              comment="访客邮箱（明文存储，属个人信息；仅 mood/admin 口可见，绝不进任何公开返回"),
+    sa.Column("mood", sa.Numeric(3, 2), nullable=False,
+              comment="心情值：-1.00 低落 ~ 1.00 开心（前端滑条，步长 0.05）"),
+    sa.Column("mood_word", sa.String(16), nullable=False, server_default="",
+              comment="派生标签：Sad/Neutral/Happy（阈值 ±0.2，与前端 moodWord 一致）"),
+    sa.Column("page_url", sa.String(512), nullable=False, server_default="",
+              comment="提交时所在页面（取 Referer；总是首页，留着便于将来多页复用）"),
+    sa.Column("ip", sa.String(45), nullable=True,
+              comment="来源 IP（XFF 第一跳，45 字符是 IPv6 最长表示）；仅限流与排查用，管理页不展示"),
+    sa.Column("user_agent", sa.String(512), nullable=False, server_default="",
+              comment="浏览器 UA（超长截断），辅助识别爬虫"),
+    sa.Column("is_read", sa.Boolean(), nullable=False, server_default=sa.text("0"),
+              comment="0=未读 1=已跟进；运营态标记，仅 admin 口读写"),
+    sa.Column("created_at", mysql.DATETIME(fsp=6), nullable=False,
+              comment="提交时间；由应用显式写入（now_db() 口径），不依赖 DB 时区"),
+    sa.PrimaryKeyConstraint("id"),
+    sa.Index("idx_site_mood_created", "created_at"),
+    sa.Index("idx_site_mood_email", "email"),
+    comment="念安站心情收集（site-mood）：公开提交 + token 保护的独立小表，与 RAG 业务无外键关联",
+    **TABLE_KW,
+)
+
 __all__ = [
     "metadata",
     "user_table",
@@ -352,4 +386,5 @@ __all__ = [
     "chat_message_table",
     "document_table",
     "quota_usage_monthly_table",
+    "site_mood_submission_table",
 ]

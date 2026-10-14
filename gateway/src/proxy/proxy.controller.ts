@@ -67,6 +67,19 @@ import { decidePath } from '../auth/path-authorization';
  */
 export const PUBLIC_HEALTH_PATHS = ['api/v1/system/health', 'api/v1/qa/health'] as const;
 
+/**
+ * 念安站心情收集（site-mood）的公开路径。
+ *
+ * submit：nianan.site 底部表单的提交口——访客免登录，滥用在后端被
+ * Redis 双闸挡住（per-IP 限流 + 邮箱冷却，见 api/routes/mood.py）；
+ * admin：查看接口，鉴权在后端（MOOD_ADMIN_TOKEN 常量时间比对），网关只管放行。
+ *
+ * 为什么是**精确路径**而不是 `api/v1/mood/*` 前缀通配：与上面健康检查
+ * 同一条理由——前缀通配会把本模块将来新增的任何接口默认公开出去。
+ * 白名单必须逐条想清楚才加，不做「加一个模块顺手放一串」的事。
+ */
+export const PUBLIC_MOOD_PATHS = ['api/v1/mood/submit', 'api/v1/mood/admin'] as const;
+
 /** 挂在 req 上的额外字段（本文件自己加的，做类型标注方便读写）。 */
 type ProxiedRequest = Request & {
   user?: AuthenticatedUser;
@@ -284,6 +297,28 @@ export class ProxyController {
   @Public()
   @All([...PUBLIC_HEALTH_PATHS])
   handlePublicHealth(
+    @Req() req: ProxiedRequest,
+    @Res() res: Response,
+    @Next() next: NextFunction,
+  ): void {
+    req.proxyStartedAt = Date.now();
+    this.stampIdentityOnInbound(req);
+    this.proxy(req, res, next);
+  }
+
+  /**
+   * 念安站心情收集：公开提交与 token 保护的查看，免 JWT 转发。
+   *
+   * 与上面的公开健康检查同构：复用同一个 `this.proxy`，唯一差别就是
+   * 白名单路径不同。admin 的鉴权在后端（MOOD_ADMIN_TOKEN），网关不感知、
+   * 也不需要感知——网关这一层只回答「这两个路径免 token」，不回答「谁能看」。
+   *
+   * ⚠️ 必须声明在下面通配 `api/v1/*` 之前（同 handlePublicHealth 的理由：
+   * Express 按注册顺序匹配，顺序反了会被守卫拒成 401，fail-closed 但白名单失效）。
+   */
+  @Public()
+  @All([...PUBLIC_MOOD_PATHS])
+  handlePublicMood(
     @Req() req: ProxiedRequest,
     @Res() res: Response,
     @Next() next: NextFunction,

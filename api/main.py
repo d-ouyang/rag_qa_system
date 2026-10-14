@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.logging_config import setup_logging
 from config.settings import settings
 # main.py 与 routes/ 同属 api 包，这里用包内相对导入，避免依赖「项目根是否在 sys.path」
-from .routes import admin, chunks, documents, internal, qa, system
+from .routes import admin, chunks, documents, internal, mood, qa, system
 
 # 初始化日志（类体在 import 时已执行，这里调用是项目既有约定，无实际副作用）
 setup_logging()
@@ -66,6 +66,10 @@ app.include_router(admin.router)
 #    （include_in_schema=False）—— 它能验证密码，不该是一份公开说明书。
 #    排在 `/api/v1/admin` 之后：它是**最靠内**的一层（只有网关能调）。
 app.include_router(internal.router)
+# 念安站心情收集（site-mood）：nianan.site 底部表单的公开提交口 + token 保护的查看口。
+# 公开性由网关 @Public 精确白名单（PUBLIC_MOOD_PATHS）+ Redis 双闸 + 独立 admin
+# token 守着；数据落在 site_mood_submission 表，与 RAG 业务零关联。
+app.include_router(mood.router)
 
 
 @app.get("/", summary="服务状态", include_in_schema=False)
