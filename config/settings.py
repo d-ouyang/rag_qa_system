@@ -355,6 +355,22 @@ class Settings(BaseSettings):
     # （实测单机应答 < 100ms）。worker 挤在一台 4C4G 上，1 秒是合理的分界。
     QUEUE_WORKER_PING_TIMEOUT_SECONDS : float = 1.0
 
+    # ---------- 念安站心情收集（site-mood，独立于 RAG 业务）----------
+    # 定位与边界见 api/routes/mood.py 模块注释。数据落在 site_mood_submission
+    # 表（core/schema.py / 迁移 0010），与 RAG 的用户/会话/文档零关联。
+    # submit 的 per-IP 固定窗口限流：每 IP 每分钟最多几次提交
+    # （含被去重拒绝的尝试 —— 限流在最外层，重复点击也在消耗额度）。
+    MOOD_RATE_LIMIT_PER_MINUTE : int = 3
+    # 邮箱冷却去重窗口（秒）：同一邮箱（大小写不敏感）在该窗口内第二次提交按重复拒绝。
+    # 是「冷却」不是「永久封死」：过期后允许再次提交（比如更新心情）。
+    # 判定放 Redis（SET NX EX）而不是 MySQL 唯一约束，就是为了改窗口不用改表。
+    MOOD_EMAIL_COOLDOWN_SECONDS : int = 600
+    # admin 查看口令。⚠️ 为空 = admin 接口一律 503（fail-closed，与内部接口
+    # INTERNAL_SHARED_SECRET 的运行期处理一致——配错的表现是「看不了」，
+    # 不是「悄悄放行」）。生成：python -c "import secrets; print(secrets.token_urlsafe(32))"
+    # 刻意不复用 JWT / INTERNAL_SHARED_SECRET：这个功能独立，密钥互不牵连。
+    MOOD_ADMIN_TOKEN : str = ""
+
     # 意图识别。默认走硅基流动，失败再降级成本地规则，不依赖本机 Ollama。
     INTENT_LLM_PROVIDER : Literal["openai", "siliconflow", "ollama"] = "siliconflow"
     # 意图识别用的小模型名；留空则回退用 OLLAMA_MODEL_NAME

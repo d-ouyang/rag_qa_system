@@ -23,19 +23,26 @@ echo "==> [2/6] 确保中间件（mysql/redis/chroma）起来并健康"
 docker compose up -d mysql redis chroma
 docker compose up -d --wait mysql redis chroma
 
-echo "==> [3/6] 数据库迁移 (alembic upgrade head)"
+echo "==> [3/6] 构建镜像（迁移必须用新镜像：代码烧进镜像、backend 没挂代码卷）"
+# ⚠️ 顺序不能反（2026-10-14 修复）：旧版先迁移后 build，而 `compose run` 不触发
+# 构建 —— 迁移跑在**旧镜像**上，只认识上一个版本的 alembic/versions，
+# 新迁移被静默跳过（upgrade head 对旧镜像而言已经是 head）。
+# 必须先 build 出含新迁移的镜像，再在它里面跑 alembic。
+docker compose --profile full build backend
+
+echo "==> [4/6] 数据库迁移 (alembic upgrade head，在新镜像内执行)"
 docker compose --profile full run --rm backend alembic upgrade head
 
-echo "==> [4/6] 重建并启动全栈应用（--build 只重建变更服务）"
+echo "==> [5/6] 重建并启动全栈应用（镜像已 build，这里只起容器）"
 docker compose --profile full up -d --build
 
-echo "==> [5/6] 清理悬虚镜像（4C4G 磁盘宝贵）"
+echo "==> [6/6] 清理悬虚镜像（4C4G 磁盘宝贵）"
 docker image prune -f
 
-echo "==> [6/6] 等待全部 healthy 并探活"
+echo "==> [7/7] 等待全部 healthy 并探活"
 docker compose --profile full up -d --wait
 
-echo "==> [7/7] 构建并发布 admin-console 静态产物"
+echo "==> [8/8] 构建并发布 admin-console 静态产物"
 # admin-console 不在 docker 镜像体系里：生产形态是静态文件（/var/www/admin，Caddy file_server）。
 # 服务器宿主机没有 node —— 用一次性 node 容器构建（node:22-alpine 与 gateway 大版本一致）；
 # npm 缓存挂 named volume，二次部署明显提速。静态站点失败不拖垮服务部署（只报错不 exit）。

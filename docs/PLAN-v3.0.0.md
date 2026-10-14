@@ -29,8 +29,10 @@
 | P3-4 | BM25 + RRF 混合检索（双路召回 → RRF 融合 → reranker 裁决不变） | core/api | ✅ 完成（2026-10-12，**A/B 不达标 → `RETRIEVAL_HYBRID` 保持 false**） | `v3.0.0-p3.4` |
 | P3-5 | 上传大小定版 50M：前端 size 预检（✅ 2026-10-11 已落地，见 §3 P3-5）；超大文件本期不做 | frontend | ✅ 完成 | （随首个 3.0.0 tag 带出） |
 | P3-6 | 月度用量快照表（归档审计，不改判定路径） | core/worker/alembic | ✅ 完成（2026-10-12） | `v3.0.0-p3.6` |
+| P4-1 | site-mood：念安站心情收集（**计划外插入模块**）——公开提交口（per-IP 限流 3/min + 邮箱冷却 600s）+ 独立 token 查看口 + 独立表 site_mood_submission，与 RAG 业务零关联 | api/core/gateway/alembic + nianan-site 仓库 | ✅ 完成（2026-10-14） | `v3.1.0-p4.1` |
 
 依赖：P3-4 依赖 P3-3（没有评测基线不许开混合检索）；P3-1 与 P3-2/P3-5 可并行。
+P4-1 独立于 P3 全部任务（无依赖；上线走同一套 develop→main 部署）。
 
 ---
 
