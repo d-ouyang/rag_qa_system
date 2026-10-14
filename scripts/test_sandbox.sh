@@ -160,6 +160,9 @@ export EMBEDDING_BACKEND=local RERANK_BACKEND=local
 # 🔴 回归固定关混合检索（P3-4）：「关 = 与 P3-4 之前逐字节一致」是必须守住的不变量，
 #    不能跟着开发者本机 .env 的开关值漂。module20 自己在进程内翻开关做混合态测试。
 export RETRIEVAL_HYBRID=false
+# 🔴 回归固定关 MinerU（P3-7b）：回归不允许真调外部 API（额度/网络/时长都不可控），
+#    MinerU 路径由 test_p37b_mineru.py 的 mock 层覆盖；这里的 PDF 测试统一走 PyMuPDF。
+export MINERU_ENABLED=false
 
 echo "  MYSQL_DATABASE=${MYSQL_DATABASE}"
 echo "  REDIS_URL=${REDIS_URL}     （换到db 15，不碰真缓存）"
@@ -190,6 +193,7 @@ else
     test_module1_config
     test_module2_document_loader
     test_p37a_title_mode
+    test_p37b_mineru
     test_module3_vectorstore
     test_module4_llm_and_retriever
     test_module5_rag_chain_api

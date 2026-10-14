@@ -34,6 +34,7 @@ from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 from config.settings import settings
+from core.mineru_client import MinerUError, mineru_available, parse_pdf_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,27 @@ class DocumentLoader:
         这个约定由 VectorStoreManager._display_content() 单点承担。
         """
         md_text = self._read_text(path)
+        documents: list[Document] = []
+        for header_path, piece in self._split_markdown_text(md_text):
+            enriched = f"{header_path}\n{piece}" if header_path else piece
+            documents.append(Document(
+                page_content=enriched,
+                metadata={
+                    **base_metadata,
+                    "header_path": header_path,
+                    "content": piece,       # 原文，读取侧展示/引用反查用
+                },
+            ))
+        return documents
+
+    def _split_markdown_text(self, md_text: str) -> list[tuple[str, str]]:
+        """
+        markdown 文本 → [(header_path, 原文片段), ...]。
+
+        标题树分节 → 短节合并 → 长节二次切（表格行组原子）。
+        A 阶段（md 上传）与 B 阶段（MinerU 产出的 markdown）共用这一份实现 ——
+        切分逻辑长两份，「合并阈值改了一处忘另一处」只是时间问题。
+        """
         header_splitter = MarkdownHeaderTextSplitter(
             headers_to_split_on=[
                 ("#", "header_1"), ("##", "header_2"),
@@ -246,7 +268,7 @@ class DocumentLoader:
             strip_headers=False,   # 标题行留在正文里：原文完整性 + 关键词可见
         )
         sections = header_splitter.split_text(md_text)
-        logger.info("标题模式分节完成：%s | 小节数=%d", path, len(sections))
+        logger.debug("标题模式分节完成 | 小节数=%d", len(sections))
 
         # ---- 1. 短节向相邻合并（先向后找归宿，不落单）----
         # 合并块的 header_path 取两节标题的**最深公共祖先**：
@@ -290,24 +312,46 @@ class DocumentLoader:
             blocks.append(pending_short)        # 整篇都短：单成一片，总比丢掉强
 
         # ---- 2. 长节二次切（表格原子）+ Enrichment ----
-        documents: list[Document] = []
+        results: list[tuple[str, str]] = []
         for header_path, text in blocks:
             for piece in self._split_block_protect_tables(text):
-                enriched = f"{header_path}\n{piece}" if header_path else piece
-                documents.append(Document(
-                    page_content=enriched,
-                    metadata={
-                        **base_metadata,
-                        "header_path": header_path,
-                        "content": piece,       # 原文，读取侧展示/引用反查用
-                    },
-                ))
+                results.append((header_path, piece))
 
-        logger.info(
-            "标题模式切分完成：%s | 小节=%d 片段=%d（短节阈值=%d）",
-            path, len(sections), len(documents), short_threshold,
+        logger.debug(
+            "标题模式切分完成 | 小节=%d 片段=%d（短节阈值=%d）",
+            len(sections), len(results), short_threshold,
         )
-        return documents
+        return results
+
+    @staticmethod
+    def _is_table_line(line: str) -> bool:
+        """一行是否属于表格：markdown 管线行，或含 HTML 表标记（MinerU 整表单行输出）。"""
+        return line.lstrip().startswith("|") or "<table" in line.lower()
+
+    def _split_html_table_by_rows(self, table_text: str) -> list[str]:
+        """
+        超长 HTML 表按行组切：每个分片是合法的 `<table>...</table>`，
+        首个 `<tr>`（表头）在每片重复。行内容（可能含 rowspan/colspan）绝不切断。
+        """
+        import re
+
+        row_re = re.compile(r"<tr\b.*?</tr>", re.IGNORECASE | re.DOTALL)
+        rows = row_re.findall(table_text)
+        if not rows:
+            return [table_text]     # 解析不出行：整块保留（宁可超长不可截断）
+        header = rows[0]
+        pieces: list[str] = []
+        group: list[str] = []
+        group_len = len(header)
+        for row in rows[1:]:
+            if group and group_len + len(row) > self.chunk_size:
+                pieces.append(f"<table>{''.join([header] + group)}</table>")
+                group, group_len = [], len(header)
+            group.append(row)
+            group_len += len(row)
+        if group:
+            pieces.append(f"<table>{''.join([header] + group)}</table>")
+        return pieces
 
     @classmethod
     def _header_path_of(cls, meta: dict) -> str:
@@ -338,13 +382,16 @@ class DocumentLoader:
         """
         把一个（可能超长的）小节切成 ≤ chunk_size 的片段，**表格行绝不拦腰断**。
 
-        表格（连续以 | 开头的行）处理分两档：
+        表格两种形态（MinerU 实测输出的是第二种）：
+            · markdown 管线表：连续以 | 开头的行；
+            · HTML 表：MinerU 把整张表（含 rowspan/colspan）输出成**单行** `<table>...</table>`。
+        处理分两档：
             · 整表 ≤ chunk_size → 整块独成一个片段（合并单元格/跨页拼接的完整网格
               只有整存才答得了「XX 行 YY 列」）；
-            · 整表 > chunk_size → 按**行组**切：每个分片重复表头行 + 分隔行，
-              行本身绝不切断。直接整块塞给 embedding 会撞嵌入模型输入上限
-              （bge-large-zh-v1.5 约 512 token，实测 773 字的表直接 400）——
-              「原子」的本意是行级完整 + 表头随行，不是无限长的单块。
+            · 整表 > chunk_size → 按**行组**切：每个分片重复表头行（md 表）或首行
+              `<tr>`（HTML 表），行本身绝不切断。直接整块塞给 embedding 会撞
+              嵌入模型输入上限（bge-large-zh-v1.5 约 512 token，实测 773 字的表
+              直接 400）——「原子」的本意是行级完整 + 表头随行，不是无限长的单块。
         普通段落超过 chunk_size 时才用既有 RecursiveCharacterTextSplitter 二次切。
         """
         # 先把文本切成 (是否表格行, 行列表) 的连续段
@@ -352,7 +399,7 @@ class DocumentLoader:
         cur_is_table = False
         cur: list[str] = []
         for line in text.split("\n"):
-            is_table_row = line.lstrip().startswith("|")
+            is_table_row = self._is_table_line(line)
             if is_table_row != cur_is_table and cur:
                 segments.append((cur_is_table, cur))
                 cur = []
@@ -381,8 +428,10 @@ class DocumentLoader:
                 flush()
                 if len(seg_text) <= self.chunk_size:
                     pieces.append(seg_text)     # 整表原子（≤ chunk_size）
+                elif "<table" in seg_text.lower():
+                    pieces.extend(self._split_html_table_by_rows(seg_text))
                 else:
-                    # 超长表按行组切：头两行（表头 + 分隔行）在每个分片重复
+                    # md 超长表按行组切：头两行（表头 + 分隔行）在每个分片重复
                     header = lines[:2]
                     header_len = len("\n".join(header)) + 1
                     group: list[str] = []
@@ -511,9 +560,73 @@ class DocumentLoader:
                 ".xlsx" if ext == ".xls" else ".docx",
             )
 
+        # PDF 路由（P3-7b）：MinerU 可用且文件不大时走结构化解析，失败降级 PyMuPDF
+        if ext == ".pdf":
+            return self._load_pdf(path)
+
         loader_class = self.LOADER_MAP[ext]
         logger.debug("使用 %s 解析文件：%s", loader_class.__name__, path)
         return loader_class(str(path)).load()
+
+    def _load_pdf(self, path: Path) -> list[Document]:
+        """
+        PDF 解析路由（P3-7b）。
+
+        PyMuPDF 抽的是纯文本流：表格按行线性化、列对齐与合并单元格信息直接消失，
+        无参数可救。MinerU 版面模型能输出保留表格结构的 markdown —— 于是：
+            开关开 + key 在 + 文件 ≤ MINERU_MAX_BYTES → MinerU（markdown，
+                交给 title 模式切分，结构化标题与表格行组原子天然可用）；
+            其余情况 / MinerU 任何失败 → PyMuPDF（快、零成本、离线可用）。
+
+        降级是**静默的**吗？不是：WARN 日志带原因，排查时看 app.log 就知道
+        为什么这篇 PDF 没有表格结构 —— 但绝不抛错阻塞上传（可用性优先）。
+        """
+        use_mineru = (
+            mineru_available()
+            and path.stat().st_size <= settings.MINERU_MAX_BYTES
+        )
+        if use_mineru:
+            try:
+                md_text = parse_pdf_to_markdown(path)
+                # MinerU markdown 一律走 title 切分（不问 CHUNK_MODE）：
+                # 表格行组原子只在这一条路上有，fixed 的递归切分会把表拦腰切断
+                docs = self._documents_from_markdown(md_text, path)
+                logger.info(
+                    "PDF 走 MinerU 结构化解析：%s | markdown %d 字 → %d 原始段",
+                    path, len(md_text), len(docs),
+                )
+                return docs
+            except MinerUError as e:
+                logger.warning(
+                    "MinerU 解析失败，降级 PyMuPDF：%s | 原因：%s", path, e
+                )
+            except Exception as e:  # noqa: BLE001 - 外部服务的一切意外都不该阻塞上传
+                logger.warning(
+                    "MinerU 解析出现未预期异常，降级 PyMuPDF：%s | %s", path, e
+                )
+        loader_class = self.LOADER_MAP[".pdf"]
+        logger.debug("使用 %s 解析 PDF：%s", loader_class.__name__, path)
+        return loader_class(str(path)).load()
+
+    def _documents_from_markdown(self, md_text: str, path: Path) -> list[Document]:
+        """MinerU 产出的 markdown 文本 → title 模式切分（复用 A 阶段唯一实现）。"""
+        fake_meta: dict[str, object] = {
+            "source": str(path),
+            "file_name": path.name,
+            "file_type": path.suffix.lstrip("."),
+        }
+        documents: list[Document] = []
+        for header_path, piece in self._split_markdown_text(md_text):
+            enriched = f"{header_path}\n{piece}" if header_path else piece
+            documents.append(Document(
+                page_content=enriched,
+                metadata={
+                    **fake_meta,
+                    "header_path": header_path,
+                    "content": piece,
+                },
+            ))
+        return documents
 
     def _load_custom(self, path: Path, ext: str) -> list[Document]:
         """处理需要编码回退或结构化解析的后缀。"""

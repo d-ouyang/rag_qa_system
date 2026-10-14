@@ -31,7 +31,7 @@
 | P3-6 | 月度用量快照表（归档审计，不改判定路径） | core/worker/alembic | ✅ 完成（2026-10-12） | `v3.0.0-p3.6` |
 | P4-1 | site-mood：念安站心情收集（**计划外插入模块**）——公开提交口（per-IP 限流 3/min + 邮箱冷却 600s）+ 独立 token 查看口 + 独立表 site_mood_submission，与 RAG 业务零关联 | api/core/gateway/alembic + nianan-site 仓库 | ✅ 完成（2026-10-14） | `v3.1.0-p4.1` |
 | P3-7a | 检索质量路线图 §6.1 A：Enrichment 标题上下文补全（`CHUNK_MODE=title` + header_path 入库 + 读取侧原文契约）——**A/B 不达标 → 默认保持 fixed**（负结论记档） | core/config/scripts/tests | ✅ 完成（2026-10-14） | `v3.1.0-p3.7a` |
-| P3-7b | 检索质量路线图 §6.2 B：PDF 表格走 MinerU（结构化解析路由 + 表格原子 chunk + 优雅降级） | core/config/.env/tests | 🚧 进行中 | （待打） |
+| P3-7b | 检索质量路线图 §6.2 B：PDF 表格走 MinerU（batch 流客户端 + 路由降级 + md/HTML 表格行组原子；真实链路实测 7s 通过） | core/config/.env/tests | ✅ 完成（2026-10-14） | `v3.1.0-p3.7b` |
 
 依赖：P3-4 依赖 P3-3（没有评测基线不许开混合检索）；P3-1 与 P3-2/P3-5 可并行。
 P4-1 独立于 P3 全部任务（无依赖；上线走同一套 develop→main 部署）。
@@ -227,12 +227,12 @@ P4-1 独立于 P3 全部任务（无依赖；上线走同一套 develop→main �
 
 ---
 
-## 6. 检索质量优化路线图（A/B 已开工：p3.7a 完成，p3.7b 进行中）
+## 6. 检索质量优化路线图（A/B 已交付：v3.1.0-p3.7a / p3.7b）
 
 > 2026-10-14 讨论产出（对照腾讯 RAG 架构图与切分最佳实践）。
 > ~~本文是规划不是迭代~~ **2026-10-14 起按 P3-7 系列开工**（进度登记见 §2 总览表）：
 > A（Enrichment）已随 `v3.1.0-p3.7a` 落地，**A/B 判定不达标 → `CHUNK_MODE` 默认保持 `fixed`**，
-> 结论与数字见 `docs/iterations/v3.1.0-p3.7a-title-enrichment.md`；B（MinerU）进行中。
+> 结论与数字见 `docs/iterations/v3.1.0-p3.7a-title-enrichment.md`；B（MinerU）已随 `v3.1.0-p3.7b` 落地（真实链路实测通过）；golden 表格类题待首个表格 PDF 入库时补（见 p3.7b 迭代文档 §6）。
 > 落地节奏建议按 A→E 优先级串行；**A 与 B 高度耦合**（标题切分 + 结构化解析），可合并为同一 MINOR 一次交付。
 > 所有「改切分参数」的改动都触发铁律：**整库重建 + `make kb-guard` 三道检查 + 重建后 `make eval-retrieval` 复核**（P3-3 的 golden 40 条正是为此准备的）。
 > 版本归属：P3 系列已收官于 `v3.0.0-p3.6`，且 `v3.1.0-p4.1` 已插入；本路线图建议并入**下一个 MINOR（暂记 `v3.1.0` 的 P3-7 系列）**，开工时再在进度总览表登记。
