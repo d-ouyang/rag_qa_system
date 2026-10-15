@@ -29,7 +29,7 @@
 | P3-4 | BM25 + RRF 混合检索（双路召回 → RRF 融合 → reranker 裁决不变） | core/api | ✅ 完成（2026-10-12，**A/B 不达标 → `RETRIEVAL_HYBRID` 保持 false**） | `v3.0.0-p3.4` |
 | P3-5 | 上传大小定版 50M：前端 size 预检（✅ 2026-10-11 已落地，见 §3 P3-5）；超大文件本期不做 | frontend | ✅ 完成 | （随首个 3.0.0 tag 带出） |
 | P3-6 | 月度用量快照表（归档审计，不改判定路径） | core/worker/alembic | ✅ 完成（2026-10-12） | `v3.0.0-p3.6` |
-| P4-1 | site-mood：念安站心情收集（**计划外插入模块**）——公开提交口（per-IP 限流 3/min + 邮箱冷却 600s）+ 独立 token 查看口 + 独立表 site_mood_submission，与 RAG 业务零关联 | api/core/gateway/alembic + nianan-site 仓库 | ✅ 完成（2026-10-14） | `v3.1.0-p4.1` |
+| P4-1 | site-mood：念安站心情收集（**计划外插入模块**）——公开提交口（per-IP 限流 3/min + 邮箱冷却 600s）+ 独立 token 查看口 + 独立表 site_mood_submission，与 RAG 业务零关联 | api/core/gateway/alembic + nianan-site 仓库 | ✅ 完成（2026-10-14；p4.2 修订：库内去重，同邮箱永久只算一条） | `v3.1.0-p4.1`/`v3.1.0-p4.2` |
 | P3-7a | 检索质量路线图 §6.1 A：Enrichment 标题上下文补全（`CHUNK_MODE=title` + header_path 入库 + 读取侧原文契约）——**A/B 不达标 → 默认保持 fixed**（负结论记档） | core/config/scripts/tests | ✅ 完成（2026-10-14） | `v3.1.0-p3.7a` |
 | P3-7b | 检索质量路线图 §6.2 B：PDF 表格走 MinerU（batch 流客户端 + 路由降级 + md/HTML 表格行组原子；真实链路实测 7s 通过） | core/config/.env/tests | ✅ 完成（2026-10-14） | `v3.1.0-p3.7b` |
 
