@@ -14,7 +14,8 @@ RAG 链模块 —— 用 LCEL 把「问题重写 → 检索 → 提示词 → �
         │
         ├─③ 问题重写（condense question）：
         │      「它多少钱？」+ 历史 → 「XX 产品多少钱？」
-        │      没有历史时跳过重写，直接用原问题（省一次 LLM 调用）
+        │      多轮始终改写；单轮默认跳过（省一次 LLM 调用），
+        │      QUERY_REWRITE 打开时单轮也过一次改写（§6.4 D 检索增强）
         │
         ├─④ 检索（core/retriever.py）：向量召回 + CrossEncoder 精排
         │
@@ -132,6 +133,58 @@ def _sanitize_rewrite(rewritten: str, original: str) -> str:
         logger.warning("重写输出为陈述句（疑似作答），回退原问题 | 原问题=%.24s 输出=%.32s", original, text)
         return original
     return text
+
+
+# --------------------------------------------------------------------------- #
+# 检索前 Query 增强（路线图 §6.4 D，v3.1.0-p3.7d）
+# --------------------------------------------------------------------------- #
+# 对外暴露的纯函数：生产链路（_prepare_parallel）与评测脚本（eval_retrieval.py
+# 的 --enhance / --hyde）共用同一份改写与 HyDE 逻辑，避免两处各写一份漂移。
+# 两者都复用主答模型（settings.LLM_*），不另起模型——改写延迟已被
+# _prepare_parallel 的并行管线消化（改写与意图识别 / 投机检索并发执行）。
+_HYDE_SYSTEM_PROMPT = (
+    "你是一个严谨的企业知识库助手。用户会给你一个问题，"
+    "请想象「如果知识库里有这个问题的标准答案，那段答案最可能长什么样」，"
+    "然后只写出那段假设性答案文本本身（2~4 句，简明、贴近知识库文风）。\n"
+    "绝对不要回答问题，不要输出「根据资料」之类的开场白，"
+    "只输出那段假设答案文本本身。"
+)
+
+
+def rewrite_query(
+    question: str,
+    chat_history: list[Any] | None = None,
+) -> str:
+    """
+    把问题改写成独立检索句（含消毒兜底）。
+
+    多轮（有历史）用于消除指代；单轮（无历史）用于把口语化 / 不规范问法
+    规整成检索友好句。供生产链路与评测脚本复用同一份逻辑。
+    """
+    llm = get_llm_client().get_llm()
+    message = (_contextualize_q_prompt | llm).invoke(
+        {"input": question, "chat_history": list(chat_history or [])}
+    )
+    return _sanitize_rewrite(str(message.content), question)
+
+
+def generate_hypo_answer(question: str) -> str:
+    """
+    为 HyDE 生成「假设答案」文本，用其 embedding 去做向量召回。
+
+    BM25 仍用真实问句关键词（在 _prepare_parallel / retriever 里分离处理），
+    所以这里只负责产出一段贴近知识库文风的假设答案。
+    退化兜底：生成失败（空 / 异常）退回原问题，绝不带脏文本去 embedding。
+    """
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", _HYDE_SYSTEM_PROMPT),
+        ("human", "{input}"),
+    ])
+    llm = get_llm_client().get_llm()
+    message = (prompt | llm).invoke({"input": question})
+    text = str(message.content).strip()
+    return text or question
+
 
 # ② 问答提示词：system 里带检索到的上下文，强约束「基于资料回答」。
 #    「不知道就说不知道」是 RAG 防幻觉的第一道护栏。
@@ -375,6 +428,8 @@ def _retrieval_debug_event(
     return {
         "type": "retrieval",
         "rewritten_query": prepared.get("standalone_question"),
+        # HyDE 假设答案（向量召回实际用的 embedding 文本）；未启用时为 null（不是空串）
+        "vector_query": prepared.get("vector_query"),
         "intent": intent_result.intent.value,
         "route": intent_result.route,
         "candidates": candidates,
@@ -563,25 +618,35 @@ class RAGChain:
         self, question: str, chat_history: list[Any]
     ) -> tuple[IntentResult, dict[str, Any] | None]:
         """
-        并行管线前段：意图识别 ∥ 投机检索（原问题）∥ 问题重写（有历史时）。
+        并行管线前段：意图识别 ∥ 投机检索（原问题）∥ 问题重写（多轮或开关开启时）。
 
         三个环节互不依赖，串行执行是纯浪费（实测串行多花 ~2s）：
             · 意图识别（ollama 小模型 ~2s）决定路由；
-            · 投机检索：先用原问题检索。首轮必中（无重写）；多轮时若重写结果
-              与原问题一致也可直接复用；
-            · 问题重写（有历史才跑，LLM ~2-5s）与意图/检索并行，重叠等待。
+            · 投机检索：先用原问题检索。首轮必中（无重写）；改写后若与原问题一致也可复用；
+            · 问题重写（有历史，或 QUERY_REWRITE / QUERY_HYDE 开关开启时）与意图/检索并行。
+
+        检索前 Query 增强（§6.4 D，v3.1.0-p3.7d）：
+            开关关闭时行为与原版完全一致（无历史 → 不重写、不 HyDE）；
+            开关打开时，单轮问题也过一次改写 prompt，可选再做 HyDE
+            （用假设答案的 embedding 去做向量召回，BM25 仍用真实问句）。
         chitchat 路由时 prepared=None（投机检索白跑一次本地检索，成本可忽略）。
 
-        :return: (意图结果, prepared) —— prepared 含 standalone_question/docs/context/rewrite_usage
+        :return: (意图结果, prepared) —— prepared 含 standalone_question/docs/context/
+                 rewrite_usage，以及 HyDE 用的 vector_query（None = 未启用）
         """
         classifier = get_intent_classifier()
-        retriever = self.retriever.as_retriever()
+        retriever = self.retriever  # 直接用 RAGRetriever：retrieve 支持 vector_query（HyDE 透传）
+
+        # 检索前 Query 增强：多轮（有历史）或任一开关开启时都跑改写
+        enhance_on = settings.QUERY_REWRITE or settings.QUERY_HYDE
+        should_rewrite = bool(chat_history) or enhance_on
 
         intent_future = _PIPELINE_EXECUTOR.submit(classifier.classify, question)
-        retrieve_future = _PIPELINE_EXECUTOR.submit(retriever.invoke, question)
+        # 投机检索用原问题（与改写并行；改写无变化时复用其结果，与原行为一致）
+        retrieve_future = _PIPELINE_EXECUTOR.submit(retriever.retrieve, question)
         rewrite_future = (
             _PIPELINE_EXECUTOR.submit(self._rewrite_question, question, chat_history)
-            if chat_history
+            if should_rewrite
             else None
         )
 
@@ -591,13 +656,18 @@ class RAGChain:
             return intent_result, None
 
         rewrite_usage = _usage_zero()
+        vector_query: str | None = None
         if rewrite_future is not None:
             standalone, rewrite_usage = rewrite_future.result()
-            # 重写改变了问题才重新检索；否则复用投机结果（省 ~1s 检索+重排）
-            if standalone.strip() == question.strip():
+            if settings.QUERY_HYDE:
+                # 用改写后的干净问句生成假设答案，其 embedding 替代原问句做向量召回
+                vector_query = generate_hypo_answer(standalone)
+            # 改写无变化且不开 HyDE → 复用投机结果（省 ~1s 检索+重排）；
+            # 开了 HyDE 即便改写无变化也要用 vector_query 重新检索
+            if standalone.strip() == question.strip() and not settings.QUERY_HYDE:
                 docs: list[Document] = retrieve_future.result()
             else:
-                docs = retriever.invoke(standalone)
+                docs = retriever.retrieve(standalone, vector_query=vector_query)
         else:
             standalone = question
             docs = retrieve_future.result()
@@ -607,6 +677,7 @@ class RAGChain:
             "docs": docs,
             "context": format_docs(docs),
             "rewrite_usage": rewrite_usage,
+            "vector_query": vector_query,  # HyDE 假设答案；None = 未启用
         }
 
     @staticmethod
