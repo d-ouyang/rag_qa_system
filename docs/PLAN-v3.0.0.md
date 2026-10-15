@@ -32,6 +32,7 @@
 | P4-1 | site-mood：念安站心情收集（**计划外插入模块**）——公开提交口（per-IP 限流 3/min + 邮箱冷却 600s）+ 独立 token 查看口 + 独立表 site_mood_submission，与 RAG 业务零关联 | api/core/gateway/alembic + nianan-site 仓库 | ✅ 完成（2026-10-14；p4.2 修订：库内去重，同邮箱永久只算一条） | `v3.1.0-p4.1`/`v3.1.0-p4.2` |
 | P3-7a | 检索质量路线图 §6.1 A：Enrichment 标题上下文补全（`CHUNK_MODE=title` + header_path 入库 + 读取侧原文契约）——**A/B 不达标 → 默认保持 fixed**（负结论记档） | core/config/scripts/tests | ✅ 完成（2026-10-14） | `v3.1.0-p3.7a` |
 | P3-7b | 检索质量路线图 §6.2 B：PDF 表格走 MinerU（batch 流客户端 + 路由降级 + md/HTML 表格行组原子；真实链路实测 7s 通过） | core/config/.env/tests | ✅ 完成（2026-10-14） | `v3.1.0-p3.7b` |
+| P3-7d | 检索质量路线图 §6.4 D：Query 增强——单轮口语化 LLM 改写（复用主答模型，新增 `QUERY_REWRITE` 开关）+ 可选 HyDE（`QUERY_HYDE` 开关，假设答案 embedding 做向量召回，BM25 仍用真实问句）；多轮指代改写此前已在 `rag_chain` 落地，本任务补单轮+HyDE。**默认双关，由 P3-3 评测集说话** | core/config/scripts/tests | ✅ 完成（2026-10-15） | `v3.1.0-p3.7d` |
 
 依赖：P3-4 依赖 P3-3（没有评测基线不许开混合检索）；P3-1 与 P3-2/P3-5 可并行。
 P4-1 独立于 P3 全部任务（无依赖；上线走同一套 develop→main 部署）。
@@ -227,12 +228,13 @@ P4-1 独立于 P3 全部任务（无依赖；上线走同一套 develop→main �
 
 ---
 
-## 6. 检索质量优化路线图（A/B 已交付：v3.1.0-p3.7a / p3.7b）
+## 6. 检索质量优化路线图（A/B 已交付：v3.1.0-p3.7a / p3.7b / p3.7d）
 
 > 2026-10-14 讨论产出（对照腾讯 RAG 架构图与切分最佳实践）。
 > ~~本文是规划不是迭代~~ **2026-10-14 起按 P3-7 系列开工**（进度登记见 §2 总览表）：
 > A（Enrichment）已随 `v3.1.0-p3.7a` 落地，**A/B 判定不达标 → `CHUNK_MODE` 默认保持 `fixed`**，
 > 结论与数字见 `docs/iterations/v3.1.0-p3.7a-title-enrichment.md`；B（MinerU）已随 `v3.1.0-p3.7b` 落地（真实链路实测通过）；golden 表格类题待首个表格 PDF 入库时补（见 p3.7b 迭代文档 §6）。
+> D（Query 增强）已随 `v3.1.0-p3.7d` 落地：单轮口语化 LLM 改写 + 可选 HyDE（详见 §6.4）。**多轮指代改写（standalone_question）此前已在 `core/rag_chain.py` 落地，不属于 p3.7d 新增**——p3.7d 补的是「单轮也过一次改写」+「HyDE」两块，且默认关闭、由 eval 说话。
 > 落地节奏建议按 A→E 优先级串行；**A 与 B 高度耦合**（标题切分 + 结构化解析），可合并为同一 MINOR 一次交付。
 > 所有「改切分参数」的改动都触发铁律：**整库重建 + `make kb-guard` 三道检查 + 重建后 `make eval-retrieval` 复核**（P3-3 的 golden 40 条正是为此准备的）。
 > 版本归属：P3 系列已收官于 `v3.0.0-p3.6`，且 `v3.1.0-p4.1` 已插入；本路线图建议并入**下一个 MINOR（暂记 `v3.1.0` 的 P3-7 系列）**，开工时再在进度总览表登记。
@@ -244,7 +246,7 @@ P4-1 独立于 P3 全部任务（无依赖；上线走同一套 develop→main �
 | A | **Enrichment（标题上下文补全）** | chunk 入库前补 `header_path` 拼到正文再 embedding | 高（标题密集文档直接涨召回） | 中（loader + 入库改写 + 重建） |
 | B | **PDF 表格走 MinerU** | 结构化解析保表格/合并单元格，整表原子 chunk | 高（当前纯文本抽取必丢结构） | 中（新增 MinerU 客户端 + 路由） |
 | C | **QA 对入库** | 问答对跳过切分直接建索引，高置信召回 | 中（取决于是否有 QA 语料） | 小（新增入库类型） |
-| D | **Query 增强（改写/扩展）** | 检索前 LLM 改写口语化/指代问题 | 中（需 eval 验证延迟与收益） | 小（retriever 前置一步） |
+| D | **Query 增强（改写/扩展）** | 检索前 LLM 改写口语化/指代问题 | 中（多轮指代改写已落地；单轮+HyDE 随 `v3.1.0-p3.7d` 进库，**默认关闭**待 eval 说话） | 小（retriever 前置一步） |
 | E | **意图路由** | 多知识库/多业务域才需要 | 低（当前单管线无需求） | 占位设计，不实现 |
 
 ---
@@ -313,16 +315,21 @@ P4-1 独立于 P3 全部任务（无依赖；上线走同一套 develop→main �
 
 ### 6.4 D — Query 增强（改写 / 扩展）
 
-**现状事实**：retriever 直接用用户原句检索（`core/retriever.py`），无查询侧处理；多轮对话里的指代/口语化问题（golden 集里 7 条口语改写题）召回弱。
+**现状事实（2026-10-15 落地后）**
+- 多轮对话的指代 / 口语化改写（standalone_question）**此前已在 `core/rag_chain.py` 落地**（`_contextualize_q_prompt` + `_rewrite_question`，随 `_PIPELINE_EXECUTOR` 与意图/检索并行，延迟被隐藏）；这已经覆盖了「多轮指代」这一类。
+- 单轮口语化改写 + HyDE 此前**没有**，即 golden 集里 7 条纯口语改写题（q019–q025）单轮问时仍直接拿原句检索，召回偏弱。
+- 因此本任务（p3.7d）补的是「单轮也过一次改写」+「HyDE」两块，且严格默认关闭，由 P3-3 评测集说话。
 
-**方案**
-1. retriever 入口加 `query_rewrite` 步骤（默认 `off`，开关 `QUERY_REWRITE`）：用既有 LLM client 把口语化/多轮指代问题改写为独立检索句；可选 HyDE（生成假设答案再 embedding）。
-2. 同步前置 1 次 LLM 调用，**必须测延迟**——流式问答对首字延迟敏感，改写耗时应 < 原链路 20%，超时则降级为原句检索（不阻塞）。
-3. A/B：仅对 golden 集里口语改写 / 跨文档综合类题生效明显；用 `make eval-retrieval` 决定是否默认开。
+**方案（已随 `v3.1.0-p3.7d` 落地）**
+1. `config/settings.py` 新增两个开关，均默认 `False`：
+   - `QUERY_REWRITE`：单轮口语化改写，复用主答模型（`get_llm_client()`），不另起模型。改写沿用多轮那套 `_contextualize_q_prompt`，输出做 sanitize 兜底（空输出回退原句）。
+   - `QUERY_HYDE`：在改写基础上生成一段「假设答案」文本（`_HYDE_SYSTEM_PROMPT`），用该文本的 embedding 做**向量召回**；BM25 仍用真实问句关键词（`retriever.retrieve(vector_query=...)` 只替换向量 embedding 文本，不污染关键词匹配）。单独开 HyDE 会自动先走一次改写。
+2. 触发条件：`should_rewrite = bool(chat_history) or QUERY_REWRITE or QUERY_HYDE`。无历史且双关关 → 行为与旧版字节级一致（零变化）。改写与意图/检索在 `_PIPELINE_EXECUTOR` 并行，改写延迟被隐藏。
+3. A/B 用 `scripts/eval_retrieval.py --category paraphrase --enhance`（+`--hyde`）显式开启受控变量；评测集 7 条口语题命中情况见 `docs/iterations/v3.1.0-p3.7d-query-enhance.md`。
 
-**改动文件**：`core/retriever.py`（前置改写）、`core/rag_chain.py`（debug 帧记 rewrite 前后 query）、`config/settings.py`、`.env`/`.env.example`。
+**改动文件**：`config/settings.py`（双开关）、`core/rag_chain.py`（`rewrite_query` / `generate_hypo_answer` 纯函数 + `_prepare_parallel` 改写/HyDE 分支 + debug 帧记 `vector_query`）、`core/retriever.py`（`retrieve(vector_query=)` 透传）、`scripts/eval_retrieval.py`（`--enhance`/`--hyde`）、`tests/test_module23_query_enhance.py`（14 项，无基础设施依赖）。
 
-**验收**：改写类题 `recall@5`/`mrr@10` 提升；首字延迟增量可接受；开关关时零变化回归。
+**验收（铁律）**：开关关时 `make test-sandbox` + `make kb-guard` 零变化；`tests/test_module23_query_enhance.py` 三分支（无增强/无历史、QUERY_REWRITE 开、QUERY_HYDE 开）全绿；A/B 数字决定是否翻默认（见迭代文档 §5）。
 
 ---
 

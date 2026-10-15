@@ -312,7 +312,7 @@ check("k=5/10/20 是本脚本的默认档位",
 body = SRC[SRC.index("def evaluate_case("):SRC.index("def _mean(")]
 check("evaluate_case 里对每个 k 各调一次 retrieve（不是一次取最大 k 截前缀）",
       "for k in k_values" in body
-      and re.search(r"retriever\.retrieve\(\s*case\[.question.\],\s*top_k=k\s*\)", body) is not None,
+      and re.search(r"retriever\.retrieve\(\s*\w+,?\s*top_k=k", body) is not None,
       "没找到 `for k in k_values` + `retrieve(..., top_k=k)` 的组合")
 check("每个 k 的召回清单分别存下来（res_per_k 形态），不是共享一份",
       "retrieved_by_k[str(k)] = _chunk_ids_of(docs)" in body,
@@ -452,14 +452,14 @@ if REVERSE:
 
     # 反向 3：改成「一次取最大 k 截前缀」→ 第 5 组的协议断言必须转红
     _prefix_src = SRC.replace(
-        "        docs = retriever.retrieve(case[\"question\"], top_k=k)\n"
+        "        docs = retriever.retrieve(query, top_k=k, vector_query=vector_query)\n"
         "        retrieved_by_k[str(k)] = _chunk_ids_of(docs)",
-        "        docs = retriever.retrieve(case[\"question\"], top_k=max(k_values))\n"
+        "        docs = retriever.retrieve(query, top_k=max(k_values), vector_query=vector_query)\n"
         "        retrieved_by_k[str(k)] = _chunk_ids_of(docs)[:k]",
     )
     check("反向 3：把协议改成截前缀后，源码里 `retrieve(..., top_k=k)` 消失 → 第 5 组转红",
           _prefix_src != SRC
-          and re.search(r"retriever\.retrieve\(\s*case\[.question.\],\s*top_k=k\s*\)",
+          and re.search(r"retriever\.retrieve\(\s*\w+,?\s*top_k=k",
                         _prefix_src[_prefix_src.index("def evaluate_case("):
                                     _prefix_src.index("def _mean(")]) is None,
           "替换没生效，反向验证等于没做")

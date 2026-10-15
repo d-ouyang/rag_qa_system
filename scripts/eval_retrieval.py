@@ -50,8 +50,10 @@
 --------------------------------------------------------------------------
 · 不评测生成质量（答案写得对不对、像不像人话）—— 那需要另一套人工标注集。
   本脚本只回答「该找的切片找回来了吗、排得靠前吗」。
-· 不做多轮改写：直接拿 question 原文检索。线上的 standalone_question
+· 默认不做多轮改写：直接拿 question 原文检索。线上的 standalone_question
   改写只在多轮对话里生效，单轮评测用原文才对得上标注。
+  （检索前 Query 增强 §6.4 D 的 A/B 用 `--enhance` / `--hyde` 显式开启，
+  开启后会先过一次改写 / HyDE 再检索——这是受控的实验变量，不是默认行为。）
 · 不改任何库里的数据（只读检索）。
 """
 
@@ -189,18 +191,34 @@ def evaluate_case(
     retriever: RAGRetriever,
     case: dict[str, Any],
     k_values: Sequence[int],
+    enhance: bool = False,
+    hyde: bool = False,
 ) -> dict[str, Any]:
     """
     跑一条题：按 k_values 各检索一次，算出这条题的 recall / MRR / 是否拒答。
+
+    检索前 Query 增强（路线图 §6.4 D，v3.1.0-p3.7d）：
+        默认用 question 原文检索（与标注对齐，单轮评测就该用原文）；
+        enhance=True 时先过一次改写 prompt，hyde=True 时再生成假设答案做 HyDE 检索。
+        二者都只在本脚本内生效，不改变任何库里的数据。
 
     :return: 单题结果（含每个 k 的命中清单，写进结果文件供事后复盘）
     """
     relevant = [str(c) for c in case["relevant_chunk_ids"]]
     should_answer = bool(case["should_answer"])
 
+    # 检索前 Query 增强：--enhance / --hyde 时改写（+ 可选 HyDE），用增强后的 query 检索
+    query = case["question"]
+    vector_query: str | None = None
+    if enhance or hyde:
+        from core.rag_chain import rewrite_query, generate_hypo_answer
+        query = rewrite_query(case["question"])
+        if hyde:
+            vector_query = generate_hypo_answer(query)
+
     retrieved_by_k: dict[str, list[str]] = {}
     for k in k_values:
-        docs = retriever.retrieve(case["question"], top_k=k)
+        docs = retriever.retrieve(query, top_k=k, vector_query=vector_query)
         retrieved_by_k[str(k)] = _chunk_ids_of(docs)
 
     # recall / hit：只在库内题上有意义（库外题没有相关切片，分母为 0）
@@ -248,6 +266,7 @@ def evaluate_case(
         "mrr": mrr,
         "abstained": abstained,
         "abstain_correct": abstain_correct,
+        "enhanced_query": query if (enhance or hyde) else None,
         "note": case.get("note", ""),
     }
 
@@ -478,6 +497,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="不落盘（只看一眼数字）")
     parser.add_argument("--validate-only", action="store_true",
                         help="只校验标注里的 chunk_id 在库里是否存在，不检索")
+    parser.add_argument("--enhance", action="store_true",
+                        help="启用检索前 Query 增强：每条题先过一次改写（§6.4 D）再检索")
+    parser.add_argument("--hyde", action="store_true",
+                        help="在 --enhance 基础上再做 HyDE：用生成的假设答案 embedding 做向量召回")
     return parser
 
 
@@ -530,11 +553,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     mrr_k = MRR_K if MRR_K in k_values else max(k_values)
 
     print(f"开始评测 | 题数={len(cases)} k={list(k_values)} "
-          f"重排={'开(' + str(info['reranker_model']) + ')' if info['use_reranker'] else '关'}")
+          f"重排={'开(' + str(info['reranker_model']) + ')' if info['use_reranker'] else '关'}"
+          f"{' | 增强=改写' if args.enhance else ''}{' +HyDE' if args.hyde else ''}")
     start = time.perf_counter()
     per_question: list[dict[str, Any]] = []
     for index, case in enumerate(cases, start=1):
-        row = evaluate_case(retriever, case, k_values)
+        row = evaluate_case(retriever, case, k_values, enhance=args.enhance, hyde=args.hyde)
         per_question.append(row)
         flag = "" if row["abstain_correct"] else "  ← 拒答判定错"
         print(f"  ({index}/{len(cases)}) {case['id']} {case['question'][:28]}{flag}")

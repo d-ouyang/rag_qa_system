@@ -559,14 +559,18 @@ class RAGRetriever:
         top_k: int | None = None,
         filter_dict: dict[str, str] | None = None,
         return_score: bool = False,
+        vector_query: str | None = None,
     ) -> list[Document] | list[tuple[Document, float]]:
         """
         检索与 query 相关的文档片段。
 
-        :param query: 用户问题
+        :param query: 用户问题（用于 BM25 关键词召回与日志；HyDE 场景下它是真实问句）
         :param top_k: 最终返回条数，缺省用 self.top_k
         :param filter_dict: 元数据过滤条件，如 {"source": "/path/to/file.txt"}
         :param return_score: True 时返回 [(Document, 分数), ...]，分数**越大越相关**
+        :param vector_query: 可选，用于**向量召回**的 embedding 文本（HyDE：用假设答案
+            的 embedding 替代原问句）。为 None 时向量召回仍用 query。BM25 关键词召回
+            **始终**用 query（真实问句关键词），不受此参数影响。
         :return: Document 列表，或 (Document, 分数) 列表
         """
         if not query or not query.strip():
@@ -579,15 +583,18 @@ class RAGRetriever:
             logger.warning("top_k 必须为正数（收到 %d），已回退为 %d", target_k, self.top_k)
             target_k = self.top_k
 
+        # 向量召回实际用的文本：HyDE 时为假设答案，否则为原问句
+        embed_query = vector_query if vector_query else query
+
         start = time.perf_counter()
         candidate_k = self._candidate_k(target_k)
 
-        # ① 向量召回：拿到候选 + 向量分数
+        # ① 向量召回：拿到候选 + 向量分数（HyDE 时用 vector_query 的 embedding）
         pairs = self.vector_store.similarity_search_with_score(
-            query, k=candidate_k, filter_dict=filter_dict
+            embed_query, k=candidate_k, filter_dict=filter_dict
         )
 
-        # ①b 混合召回（P3-4，开关关时这一行都不会进）
+        # ①b 混合召回（P3-4，开关关时这一行都不会进）。BM25 关键词召回仍用真实问句 query。
         if settings.RETRIEVAL_HYBRID:
             pairs = self._hybrid_merge(query, pairs, candidate_k)
 
