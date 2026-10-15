@@ -562,6 +562,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "vector_store_type": info["vector_store_type"],
                 # P3-4 才会真的有这个开关；用 getattr 取，改动前后同一份脚本都能跑
                 "hybrid": bool(getattr(settings, "RETRIEVAL_HYBRID", False)),
+                # P3-7a：切分模式进 meta，A/B（fixed vs title）对比时看得见是哪种形态的库
+                "chunk_mode": str(getattr(settings, "CHUNK_MODE", "fixed")),
             },
         },
         "metrics": metrics,

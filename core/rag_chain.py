@@ -686,13 +686,17 @@ class RAGChain:
             # source 是落盘路径，文件名是 uuid。展示用入库时写入的原始文件名。
             raw_name = metadata.get("file_name")
             file_name = str(raw_name) if raw_name else Path(str(source)).name
+            # 片段摘要：接口不把全文吐出去，前端需要全文可以按 chunk_id 反查。
+            # P3-7a：title 模式下存储正文是 enriched（header_path 前缀），
+            # 摘要优先取 metadata["content"] 原文，别让路径前缀占掉 200 字配额。
+            stored_meta = metadata if isinstance(metadata, dict) else {}
+            snippet_source = stored_meta.get("content") or doc.page_content
             sources.append({
                 "index": index,
                 "chunk_id": _resolve_chunk_id(metadata),
                 "source": source,
                 "file_name": file_name,
-                # 片段摘要：接口不把全文吐出去，前端需要全文可以按 chunk_id 反查
-                "snippet": doc.page_content[:200],
+                "snippet": snippet_source[:200],
                 "rerank_score": metadata.get("rerank_score"),
                 "vector_similarity": metadata.get("vector_similarity"),
             })

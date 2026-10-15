@@ -46,11 +46,18 @@
   }
   .nav-inner {
     display: flex; align-items: center; gap: 16px;
-    height: 56px; flex-wrap: wrap;
+    height: 56px;
   }
   .brand { display: flex; align-items: baseline; gap: 8px; margin-right: auto; }
   .brand b { font-size: 14px; font-weight: 500; letter-spacing: .2px; }
   .brand span { font-size: 12px; color: var(--text-3); }
+  /* 版本筛选 chips 独立于 sticky 导航条，放在其下方正常文档流中：
+     之前塞在 56px 定高的 sticky 头里，30+ 个 chip 换行溢出、悬浮盖住正文 —— 这里的布局约束就是防回归 */
+  .filterbar {
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    padding: 12px 0 14px;
+  }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip {
     font-family: var(--mono); font-size: 11.5px;
@@ -238,12 +245,15 @@
 <header class="nav">
   <div class="wrap nav-inner">
     <div class="brand"><b>rag-qa-system</b><span>版本日志</span></div>
-    <nav class="chips" id="chips"></nav>
     <div class="toggle" id="onlyFixed" role="button" tabindex="0">
       <span class="dot"></span>仅看修复
     </div>
   </div>
 </header>
+
+<div class="filterbar">
+  <nav class="wrap chips" id="chips"></nav>
+</div>
 
 <div class="wrap">
   <section class="hero">

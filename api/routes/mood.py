@@ -15,7 +15,8 @@ nianan.site 底部的 MoodNote 表单提交 `{email, mood}`，落到独立的
 --------------------------------------------------------------------------
     1. 网关侧 `@Public()` 白名单**精确**放行两个路径（gateway 的
        PUBLIC_MOOD_PATHS）—— 不是前缀通配，未来本模块新增接口默认仍要 token；
-    2. submit 的 Redis 双闸：per-IP 固定窗口限流（外层）+ 邮箱冷却去重（内层）；
+    2. submit 的闸门：per-IP 固定窗口限流（外层）+ 邮箱冷却（内层前置盾）
+       + 库内查重（判定落在 MySQL，同邮箱永久只算一条，p4.2）；
     3. admin 的独立静态 token（MOOD_ADMIN_TOKEN）常量时间比对，
        与 RAG 的 JWT / INTERNAL_SHARED_SECRET 互不复用。
 
@@ -178,6 +179,11 @@ def check_email_cooldown(email: str) -> bool:
 
     SET NX 的原子性在这里刚好是需要的语义：并发两笔同邮箱提交，
     只有一笔能抢占成功，另一笔按重复拒绝 —— 不需要额外的锁。
+
+    ⚠️ p4.2 起它降级为「前置盾」：真正的去重判定在库内
+    （email_exists_in_db）。它存在的意义只剩两块——
+    10 分钟窗口内替 MySQL 挡掉重复点查，以及在「行被删掉、
+    有人拿同一邮箱重交」的场景里提供一层与库无关的快速拒绝。
     """
     client = get_redis_client()
     occupied = client.set(
@@ -187,6 +193,23 @@ def check_email_cooldown(email: str) -> bool:
         ex=int(settings.MOOD_EMAIL_COOLDOWN_SECONDS),
     )
     return bool(occupied)
+
+
+def email_exists_in_db(email: str) -> bool:
+    """
+    库内去重（p4.2）：这张表里已有同邮箱的提交 → 永久算重复。
+
+    为什么冷却窗不够：Redis 冷却只有 10 分钟，过期后同一邮箱能再交，
+    表里于是长出同邮箱的多行（线上实测：同一邮箱隔天交出第二条）。
+    「一个邮箱一条心情」就是这个模块的语义，所以判定必须落在库上；
+    email 列有 idx_site_mood_email 索引，点查代价可忽略。
+    Redis 异常时这里 fail-open（放行），与整条链路的可用性优先一致。
+    """
+    with session_scope() as session:
+        row = session.execute(
+            select(MOOD.c.id).where(MOOD.c.email == email).limit(1)
+        ).first()
+    return row is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -200,7 +223,8 @@ def check_email_cooldown(email: str) -> bool:
         "- 成功：`{ok: true, id}`；\n"
         "- 业务拒绝（HTTP 200）：`{ok: false, reason: rate_limited | duplicate}`；\n"
         "- 参数不合法：400。\n"
-        "双闸顺序：先 per-IP 限流（外层挡洪水），再邮箱冷却（内层挡重复）。"
+        "双闸之外还有库内查重：先 per-IP 限流（外层挡洪水），再邮箱冷却（内层挡重复），"
+        "最后查库——表里已有同邮箱的提交，无论过多久都算重复（p4.2）。"
     ),
 )
 def submit_mood(body: MoodSubmitBody, request: Request) -> dict[str, Any]:
@@ -221,13 +245,21 @@ def submit_mood(body: MoodSubmitBody, request: Request) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001 - 可用性优先
         logger.warning("mood 限流检查失败，放行 | ip=%s err=%s", ip, e)
 
-    # ---- 闸 2：邮箱冷却 ----
+    # ---- 闸 2：邮箱冷却（Redis 前置盾）----
     try:
         if not check_email_cooldown(email):
             logger.info("mood 提交命中邮箱冷却 | email_hash=%.8s…", hashlib.sha256(email.encode()).hexdigest())
             return {"ok": False, "reason": "duplicate"}
     except Exception as e:  # noqa: BLE001
         logger.warning("mood 邮箱冷却检查失败，放行 | err=%s", e)
+
+    # ---- 闸 3：库内已有同邮箱 → 永久重复（p4.2；冷却过期也拦）----
+    try:
+        if email_exists_in_db(email):
+            logger.info("mood 提交命中库内去重 | email_hash=%.8s…", hashlib.sha256(email.encode()).hexdigest())
+            return {"ok": False, "reason": "duplicate"}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("mood 库内去重检查失败，放行 | err=%s", e)
 
     # ---- 落库 ----
     with session_scope() as session:

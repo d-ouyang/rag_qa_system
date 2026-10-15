@@ -18,6 +18,8 @@
 2.  **submit 正常路径**：合法邮箱 + 合法 mood → 200 `{ok:true, id}`。
 3.  **邮箱冷却**：同邮箱（含大小写变体）窗口内第二次提交 → `{ok:false,
     reason:"duplicate"}`，库里的行数不增加。
+3.5 **库内去重（p4.2）**：删掉 Redis 冷却位模拟「冷却已过期」，表里已有
+    同邮箱的提交仍按 duplicate 拒绝且不落新行——去重判定落在库上。
 4.  **per-IP 限流**：第 4 次提交（同一 XFF IP）→ `{ok:false, reason:"rate_limited"}`。
     刻意让去重与限流在同一条请求序列里先后触发——两者都真跑过，而不是各自单测。
 5.  **参数边界**：非法邮箱 → 400；mood 越界 → 422。
@@ -245,6 +247,32 @@ try:
         headers=XFF2,
     )
     check("另一个 IP → 正常通过（限流按 IP 隔离）", r7.json().get("ok") is True, f"body={r7.json()}")
+
+    # ----------------------------------------------------------------------- #
+    # 第 3.5 组：库内去重（p4.2）—— 冷却过期后，表里已有同邮箱也算重复
+    # ----------------------------------------------------------------------- #
+    print("== 第 3.5 组：库内去重 ==")
+    from api.routes.mood import _email_dedup_key  # noqa: E402
+
+    # 删掉 happy@ 的 Redis 冷却位，模拟「10 分钟冷却窗口已过期」
+    get_redis_client().delete(_email_dedup_key(f"happy@{DOMAIN}"))
+    _rows_before_dbdup = count_rows()
+    r8b = client.post(
+        "/api/v1/mood/submit",
+        json={"email": f"happy@{DOMAIN}", "mood": -0.8},
+        headers=XFF2,
+    )
+    j8b = r8b.json()
+    check(
+        "冷却位已删但库内已有同邮箱 → duplicate（去重判定落在库上）",
+        r8b.status_code == 200 and j8b.get("ok") is False and j8b.get("reason") == "duplicate",
+        f"status={r8b.status_code} body={j8b}",
+    )
+    check(
+        "库内去重拒绝不落新行",
+        count_rows() == _rows_before_dbdup,
+        f"rows={count_rows()} 期望 {_rows_before_dbdup}",
+    )
 
     # ----------------------------------------------------------------------- #
     # 第 4 组：admin —— fail-closed 三态 + 返回体不泄 PII

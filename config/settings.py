@@ -36,6 +36,33 @@ class Settings(BaseSettings):
     SILICONFLOW_EMBEDDING_MODEL : str = "BAAI/bge-large-zh-v1.5"
     CHUNK_SIZE : int = 500
     CHUNK_OVERLAP : int = 50
+    # 切分模式（v3.1.0 P3-7a，PLAN-v3.0.0.md §6.1）：
+    #   fixed = 现状 RecursiveCharacterTextSplitter（500/50），一行行为不变；
+    #   title = md 按标题树切分（MarkdownHeaderTextSplitter），超长小节二次切、
+    #           过短小节向相邻合并，入库前把 header_path 拼到正文前做 Enrichment。
+    # ⚠️ 切默认值 = 整库重建（铁律）：切分参数变了 chunk_index→正文对应关系全漂。
+    #    是否把默认翻成 title 由 golden 评测说话（recall/MRR 提升且拒答不降），不由「做了就开」决定。
+    CHUNK_MODE : Literal["fixed", "title"] = "fixed"
+
+    # ------------------------------------------------------------------ #
+    # PDF 结构化解析走 MinerU（v3.1.0 P3-7b，PLAN-v3.0.0.md §6.2）
+    # ------------------------------------------------------------------ #
+    # 定位：PyMuPDF 抽的是纯文本流，表格按行线性化、合并单元格信息直接消失，
+    # 这是纯文本抽取的通病，无参数可救。MinerU 版面模型能输出保留表格结构与
+    # 跨页拼接的 markdown —— 但它按次计费且依赖外部服务，所以只做「路由增强」，
+    # 失败一律降级回 PyMuPDF，绝不让上传链路的可用性绑定在一个外部 API 上。
+    # 总开关：false = PDF 一律 PyMuPDF（行为与 P3-7b 之前一致）。
+    MINERU_ENABLED : bool = False
+    MINERU_API_KEY : str = ""
+    MINERU_API_BASE : str = "https://mineru.net/api/v4"
+    # 路由判据之一：超过此大小的 PDF 直接 PyMuPDF（大文件解析慢、耗额度多）。
+    # 默认 20MB；MinerU 自身上限 200MB，这里取更保守值——大 PDF 通常是扫描件，
+    # pipeline 模型收益有限，真要精析可调大。
+    MINERU_MAX_BYTES : int = 20 * 1024 * 1024
+    # 解析模型：pipeline（默认，均衡）/ vlm（识别更强、更贵）
+    MINERU_MODEL_VERSION : Literal["pipeline", "vlm"] = "pipeline"
+    MINERU_POLL_INTERVAL : int = 3       # 轮询间隔（秒）
+    MINERU_POLL_TIMEOUT : int = 300      # 轮询硬上限（秒），超时降级 PyMuPDF
 
     # 检索配置
     SEARCH_TOP_K : int = 5

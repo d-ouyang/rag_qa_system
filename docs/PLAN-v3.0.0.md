@@ -29,7 +29,9 @@
 | P3-4 | BM25 + RRF 混合检索（双路召回 → RRF 融合 → reranker 裁决不变） | core/api | ✅ 完成（2026-10-12，**A/B 不达标 → `RETRIEVAL_HYBRID` 保持 false**） | `v3.0.0-p3.4` |
 | P3-5 | 上传大小定版 50M：前端 size 预检（✅ 2026-10-11 已落地，见 §3 P3-5）；超大文件本期不做 | frontend | ✅ 完成 | （随首个 3.0.0 tag 带出） |
 | P3-6 | 月度用量快照表（归档审计，不改判定路径） | core/worker/alembic | ✅ 完成（2026-10-12） | `v3.0.0-p3.6` |
-| P4-1 | site-mood：念安站心情收集（**计划外插入模块**）——公开提交口（per-IP 限流 3/min + 邮箱冷却 600s）+ 独立 token 查看口 + 独立表 site_mood_submission，与 RAG 业务零关联 | api/core/gateway/alembic + nianan-site 仓库 | ✅ 完成（2026-10-14） | `v3.1.0-p4.1` |
+| P4-1 | site-mood：念安站心情收集（**计划外插入模块**）——公开提交口（per-IP 限流 3/min + 邮箱冷却 600s）+ 独立 token 查看口 + 独立表 site_mood_submission，与 RAG 业务零关联 | api/core/gateway/alembic + nianan-site 仓库 | ✅ 完成（2026-10-14；p4.2 修订：库内去重，同邮箱永久只算一条） | `v3.1.0-p4.1`/`v3.1.0-p4.2` |
+| P3-7a | 检索质量路线图 §6.1 A：Enrichment 标题上下文补全（`CHUNK_MODE=title` + header_path 入库 + 读取侧原文契约）——**A/B 不达标 → 默认保持 fixed**（负结论记档） | core/config/scripts/tests | ✅ 完成（2026-10-14） | `v3.1.0-p3.7a` |
+| P3-7b | 检索质量路线图 §6.2 B：PDF 表格走 MinerU（batch 流客户端 + 路由降级 + md/HTML 表格行组原子；真实链路实测 7s 通过） | core/config/.env/tests | ✅ 完成（2026-10-14） | `v3.1.0-p3.7b` |
 
 依赖：P3-4 依赖 P3-3（没有评测基线不许开混合检索）；P3-1 与 P3-2/P3-5 可并行。
 P4-1 独立于 P3 全部任务（无依赖；上线走同一套 develop→main 部署）。
@@ -222,3 +224,121 @@ P4-1 独立于 P3 全部任务（无依赖；上线走同一套 develop→main �
 - P3-4 收益不达标则不默认开启——不为了做功能而做。
 - P3-5 不解决 300M+：分片上传/断点续传/流式解析本期不做。
 - 全程不动：chunk_id 契约 `"<doc_id>:<chunk_index>"`、鉴权 fail-closed 结构、真相源分工、`set_token_quota` 不 bump token_version、cache_read 不计总额。
+
+---
+
+## 6. 检索质量优化路线图（A/B 已交付：v3.1.0-p3.7a / p3.7b）
+
+> 2026-10-14 讨论产出（对照腾讯 RAG 架构图与切分最佳实践）。
+> ~~本文是规划不是迭代~~ **2026-10-14 起按 P3-7 系列开工**（进度登记见 §2 总览表）：
+> A（Enrichment）已随 `v3.1.0-p3.7a` 落地，**A/B 判定不达标 → `CHUNK_MODE` 默认保持 `fixed`**，
+> 结论与数字见 `docs/iterations/v3.1.0-p3.7a-title-enrichment.md`；B（MinerU）已随 `v3.1.0-p3.7b` 落地（真实链路实测通过）；golden 表格类题待首个表格 PDF 入库时补（见 p3.7b 迭代文档 §6）。
+> 落地节奏建议按 A→E 优先级串行；**A 与 B 高度耦合**（标题切分 + 结构化解析），可合并为同一 MINOR 一次交付。
+> 所有「改切分参数」的改动都触发铁律：**整库重建 + `make kb-guard` 三道检查 + 重建后 `make eval-retrieval` 复核**（P3-3 的 golden 40 条正是为此准备的）。
+> 版本归属：P3 系列已收官于 `v3.0.0-p3.6`，且 `v3.1.0-p4.1` 已插入；本路线图建议并入**下一个 MINOR（暂记 `v3.1.0` 的 P3-7 系列）**，开工时再在进度总览表登记。
+
+### 6.0 路线图优先级（结论先行）
+
+| 序 | 阶段 | 一句话 | 收益确定性 | 改动量 |
+|----|------|--------|-----------|--------|
+| A | **Enrichment（标题上下文补全）** | chunk 入库前补 `header_path` 拼到正文再 embedding | 高（标题密集文档直接涨召回） | 中（loader + 入库改写 + 重建） |
+| B | **PDF 表格走 MinerU** | 结构化解析保表格/合并单元格，整表原子 chunk | 高（当前纯文本抽取必丢结构） | 中（新增 MinerU 客户端 + 路由） |
+| C | **QA 对入库** | 问答对跳过切分直接建索引，高置信召回 | 中（取决于是否有 QA 语料） | 小（新增入库类型） |
+| D | **Query 增强（改写/扩展）** | 检索前 LLM 改写口语化/指代问题 | 中（需 eval 验证延迟与收益） | 小（retriever 前置一步） |
+| E | **意图路由** | 多知识库/多业务域才需要 | 低（当前单管线无需求） | 占位设计，不实现 |
+
+---
+
+### 6.1 A — Enrichment：标题上下文补全（优先级最高）
+
+**现状事实**
+- `core/document_loader.py:81` 用 `RecursiveCharacterTextSplitter`（`CHUNK_SIZE=500 / OVERLAP=50`），分隔符优先 `\n\n`/`\n`——**不是无脑 500 字硬切**，但完全不感知标题层级。
+- 写入 Chroma 的 chunk metadata（`core/parsing.py:202-205`）只有 `doc_id/project_id/chunk_index/chunk_id/source/file_name/file_type/page`，**无章节路径**；embedding 输入是裸 chunk 正文。
+- 结果：用户问「XX 章节讲了什么」「XX 的步骤是什么」时，chunk 里若只写了「额定 220V±10%」而无「电气规格」语境，纯语义匹配偏弱。
+
+**方案**
+1. 新增 `CHUNK_MODE`（`.env`）：`fixed`（默认，= 现状 500/50）| `title`（标题感知）。`fixed` 路径一行不多，保证回归零变化。
+2. `title` 模式：
+   - markdown 走 `MarkdownHeaderTextSplitter` 按标题树切；超长小节（> CHUNK_SIZE）二次用 `RecursiveCharacterTextSplitter` 切；过短小节向相邻合并（`chunk_size` 的 0.3 倍阈值）。
+   - PDF/Word 的标题层级依赖 B 阶段的结构化解析输出（markdown/HTML），本阶段先做 md 闭环，PDF 走 B 落地后自动接通。
+3. **Enrichment 写入**：chunk 入库前把 `header_path`（如 `产品手册 > 安装 > 3.2 电压要求`）拼到正文前生成 `enriched_content` 再 embedding；元数据新增 `header_path` 字段。**`content` 保留原文**（展示/引用反查 `GET /chunks/{chunk_id}` 仍返回裸文本，不污染用户看到的引用）；embedding 用 `enriched_content`。
+4. ⚠️ 切分参数变了 = 整库重建（铁律）。重建走既有 `scripts/rechunk_kb.py` + `make kb-guard`，重建后必须 `make eval-retrieval` 复核。
+5. **A/B 决策**：用 P3-3 golden set 跑 `fixed` vs `title-enriched`，`recall@5` / `mrr@10` 提升且拒答不降才把 `CHUNK_MODE` 翻 `title`（默认仍可保持 `fixed`，功能进库择机启用——对齐 P3-4 的负结论同样记档原则）。
+
+**改动文件**：`core/document_loader.py`、`core/parsing.py`（写 `header_path` + `enriched_content`）、`core/vector_store.py`（元数据/字段落库）、`config/settings.py`、`.env`/`.env.example`、`scripts/rechunk_kb.py`、`scripts/eval_retrieval.py`（加 A/B 维度）、`tests/`（chunk_id 契约回归）。
+
+**验收**
+- `CHUNK_MODE=fixed` 全量回归零变化（`make test-sandbox` + `make kb-guard`）。
+- `title` 模式下 golden 集 `recall@5`/`mrr@10` 有可量化提升；引用反查仍返回原始正文（不返回 enriched 拼接串）。
+- 重建后 `upload/ 行数 = document 行数 = Chroma 切片数` 三处一致（kb-guard 三道检查）。
+
+---
+
+### 6.2 B — PDF 表格走 MinerU（保结构 + 合并单元格）
+
+**现状事实**
+- PDF 走 `PyMuPDFLoader`（`document_loader.py:53`），抽的是**纯文本流**：表格按行线性化、列对齐丢失、单元格合并（rowspan/colspan）信息直接消失，跨页表格断裂。这是纯文本抽取的通病，无参数可救。
+- 桌面 langChain 项目已接 MinerU API（`v4 precise + v1 lightweight`），能输出保留表格结构与跨页拼接的 markdown/HTML；rag 项目尚未接入（key 在桌面 `langChain/.env` 的 `MINERU_API_KEY`，rag 侧需独立配置）。
+
+**方案**
+1. 新增 `core/mineru_client.py`：封装 MinerU 上传/轮询/取结果（对齐桌面项目已验证的调用方式）；`.env` 加 `MINERU_API_KEY` + `MINERU_API_URL`（默认走 `v4 precise`，大文档回退 `v1 lightweight`）。
+2. `core/parsing.py` 入口加 PDF 路由：含表格/版式复杂的 PDF 走 MinerU 拿 markdown → 进 A 阶段的 `title` md 切分（结构化标题天然可用）；纯文本、无表格的小 PDF 仍走 PyMuPDF（更快、省额度）。路由判据先用「强制开关 + 文件大小阈值」，后续可加「MinerU 是否可用」的健康探活。
+3. **表格原子性**：MinerU 输出的 markdown table / 带 rowspan 的 HTML，在切分环节识别为**整体一个 chunk，绝不从中间切断**；合并单元格由 MinerU 版面模型还原为完整网格（或展开成「每行带合并值」），embedding 用 markdown table 文本即可。
+4. eval 集补 3~5 条表格类问题（跨页表、合并单元格表各若干），作为 B 的验收基线。
+
+**改动文件**：新增 `core/mineru_client.py`；`core/parsing.py`（PDF 路由）、`core/document_loader.py`（md 切分已存在，复用）、`config/settings.py`、`.env`/`.env.example`、eval golden 扩充。
+
+**验收**
+- 含跨页表格 / 合并单元格的 PDF 入库后，问「表格里 XX 行的 YY 列是多少」能命中且返回**完整表**（非截断行）。
+- `make eval-retrieval` 表格类新题命中率达标；重建后 kb-guard 三道检查过。
+- MinerU 不可用（key 缺失/超时）时**优雅降级**回 PyMuPDF，不阻塞上传。
+
+---
+
+### 6.3 C — QA 对入库（跳过切分直接建索引）
+
+**现状事实**：所有文档统一走切分；无「问答对」这一高价值形态（架构图里的 QA/FAQ 知识类型）。
+
+**方案**
+1. 新增入库类型 `qa_pair`：`POST /documents`（或独立 `POST /documents/qa-pair`）+ 前端上传时可选「问答对」模式；支持单条填写（Q/A 两框）或 Excel 两列（问题/答案）批量。
+2. 每条 QA 对 = **一个 chunk，不切分**：`content` = 答案 A；`enriched_content` = `问题：Q\n答案：A`（可能再拼标题）；metadata 加 `doc_type=qa_pair`。
+3. 检索命中 QA 对时，可作为**高置信度上下文**直接喂给 LLM（或高亮「官方问答」标记）；拒答阈值对 QA 对适当放宽（答案明确，召回即有用）。
+4. eval 集补 QA 类问题验证召回。
+
+**改动文件**：`api/routes/documents.py`（新入库入口）、`core/parsing.py`（qa_pair 分支，跳过 splitter）、`frontend/`（问答对上传 UI，可后置）、eval 扩充。
+
+**验收**：QA 对原问句检索命中率显著高于把同样内容当普通文档切分；引用反查返回原问答对。
+
+---
+
+### 6.4 D — Query 增强（改写 / 扩展）
+
+**现状事实**：retriever 直接用用户原句检索（`core/retriever.py`），无查询侧处理；多轮对话里的指代/口语化问题（golden 集里 7 条口语改写题）召回弱。
+
+**方案**
+1. retriever 入口加 `query_rewrite` 步骤（默认 `off`，开关 `QUERY_REWRITE`）：用既有 LLM client 把口语化/多轮指代问题改写为独立检索句；可选 HyDE（生成假设答案再 embedding）。
+2. 同步前置 1 次 LLM 调用，**必须测延迟**——流式问答对首字延迟敏感，改写耗时应 < 原链路 20%，超时则降级为原句检索（不阻塞）。
+3. A/B：仅对 golden 集里口语改写 / 跨文档综合类题生效明显；用 `make eval-retrieval` 决定是否默认开。
+
+**改动文件**：`core/retriever.py`（前置改写）、`core/rag_chain.py`（debug 帧记 rewrite 前后 query）、`config/settings.py`、`.env`/`.env.example`。
+
+**验收**：改写类题 `recall@5`/`mrr@10` 提升；首字延迟增量可接受；开关关时零变化回归。
+
+---
+
+### 6.5 E — 意图路由（占位设计，本期不实现）
+
+**现状事实**：单一问答管线，无路由/意图识别（架构图里的「意图识别 / 路由」「话题切换」）。
+
+**方案（仅设计，不编码）**
+- 当系统接入**多个知识库 / 多业务域**后再做：轻量意图分类（规则 + LLM）路由到不同 Chroma collection / prompt / 拒答策略。
+- 当前单管线、单知识库，无需求；列为「明确不做（本期）」，触发条件：出现多知识库隔离或业务分流需求。
+
+---
+
+### 6.6 路线图与既有任务的依赖关系
+
+- A 依赖 B 才能覆盖 PDF 标题层级；但 A 的 md 闭环可独立先上，PDF 在 B 落地后自动接通——**建议 A+B 合并同一 MINOR 一次交付**，避免两次整库重建。
+- A/B/C 全部改了 chunk 形态 → 每次上线都要 `make eval-retrieval` 复核 golden 40 条（P3-3 的投入此刻开始持续回报）。
+- D 独立于切分改动，可随时单上；E 本期不排期。
+- 全程不碰：chunk_id 契约、鉴权 fail-closed、真相源分工、`RETRIEVAL_HYBRID` 现有开关语义（A/B 只改 chunk 内容，不撼动 P3-4 的向量+BM25+RRF+rerank 检索架构）。
