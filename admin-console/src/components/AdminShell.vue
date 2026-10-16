@@ -23,6 +23,7 @@ const NAV: NavItem[] = [
   { to: '/users', label: '员工', icon: '☰' },
   { to: '/org', label: '部门与职位', icon: '⑃' },
   { to: '/usage', label: '用量看板', icon: '▤' },
+  { to: '/traces', label: '问答溯源', icon: '⌗' },
   { to: '/passwords', label: '密码管理', icon: 'ͮ' },
   { to: '/audit', label: '审计日志', icon: '☷' },
 ]

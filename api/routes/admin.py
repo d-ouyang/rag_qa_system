@@ -41,10 +41,13 @@ from config.settings import settings
 from core import admin_service as svc
 from core import audit_repo
 from core import kb_acl
+from core import qa_trace_repo
 from core import quota_policy
 from core import quota_repo
 from core import user_repo as repo
-from core.identity import Actor, require_admin, require_staff
+from core.identity import Actor, require_admin, require_kb, require_staff
+from core.intent_router import INTENT_LABELS
+from core.qa_flow import STATE_LABELS, TERMINAL_STATES
 
 logger = logging.getLogger(__name__)
 
@@ -527,6 +530,56 @@ def list_audit_logs(
         # 前端要显示「动作」下拉框，选项只能来自这一份白名单
         "actions": [{"value": k, "label": v} for k, v in audit_repo.ACTION_LABELS.items()],
         "target_types": list(audit_repo.TARGET_TYPES),
+    }
+
+
+@router.get("/qa-traces", summary="问答溯源（P4-5b：qa_trace 分析镜像的只读查询）")
+def list_qa_traces(
+    decision: str | None = Query(default=None, description="终端状态：cache_hit / chitchat / zero_recall / rag_qa"),
+    intent: str | None = Query(default=None, description="按意图精确筛（IntentType 值）"),
+    session_id: str | None = Query(default=None, description="按会话 id 精确筛"),
+    keyword: str | None = Query(default=None, description="在原始问题与独立问句里模糊搜"),
+    date_from: date | None = Query(default=None, description="起始日期（含当日）"),
+    date_to: date | None = Query(default=None, description="结束日期（含当日）"),
+    min_top1_gap: float | None = Query(default=None, ge=0, le=1,
+                                       description="拒答差距下限：threshold - top1_before_filter >= X"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _: Actor = Depends(require_staff),
+    __: Actor = Depends(require_kb(kb_acl.ACTION_VIEW_QA_TRACES)),
+) -> dict[str, Any]:
+    """
+    跨会话查问答轨迹（`qa_trace` 表 = `turn_meta.qa_trace` 的分析镜像）。
+
+    权限是**两层**的：`require_staff` 管「进得了管理端吗」（role 维度），
+    `require_kb(view_qa_traces)` 管「看得了别人的会话轨迹吗」（kb_role 维度，
+    仅 ops / superadmin）—— 与 admin_config 的 require_superadmin 同一分工逻辑。
+
+    每条记录附带 `flow_path`（实走路径，后端按 qa_flow 状态机派生）
+    与 `top1_gap`（拒答轮 = 「差多少分」），前端只渲染不重算。
+    """
+    conditions: dict[str, Any] = {
+        "decision": decision, "intent": intent, "session_id": session_id,
+        "keyword": keyword, "date_from": date_from, "date_to": date_to,
+        "min_top1_gap": min_top1_gap,
+    }
+    conditions = {k: v for k, v in conditions.items() if v is not None}
+    try:
+        rows = qa_trace_repo.list_traces(limit=limit, offset=offset, **conditions)
+        total = qa_trace_repo.count_traces(**conditions)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {
+        "items": rows,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        # 下拉候选来自服务端：前端自己维护一份清单，迟早会和服务端漂移
+        "decisions": [
+            {"value": v, "label": STATE_LABELS.get(v, v)}
+            for v in sorted(TERMINAL_STATES)
+        ],
+        "intents": [{"value": k, "label": v} for k, v in INTENT_LABELS.items()],
     }
 
 

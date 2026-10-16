@@ -520,3 +520,75 @@ export function updatePosition(
 export function deletePosition(id: number): Promise<{ ok: boolean }> {
   return del<{ ok: boolean }>(`/api/v1/admin/positions/${id}`)
 }
+
+// --------------------------------------------------------------------------- //
+// 问答溯源（P4-5b）—— qa_trace 分析镜像的只读查询
+// --------------------------------------------------------------------------- //
+/** 终端状态四选一；与后端 core/qa_flow.TERMINAL_STATES 对齐。 */
+export type QaDecision = 'cache_hit' | 'chitchat' | 'zero_recall' | 'rag_qa'
+
+export interface QaTraceRow {
+  id: number
+  session_id: string
+  owner_id: number | null
+  decision: QaDecision
+  intent: string
+  route: string
+  intent_source: string
+  question: string
+  standalone_question: string | null
+  rewritten_query: string | null
+  vector_query: string | null
+  /** 候选清单（来源/分数）；闲聊与缓存命中轮为 null。 */
+  candidates: Record<string, unknown>[] | null
+  threshold: number | null
+  top1_before_filter: number | null
+  filtered_count: number | null
+  docs_returned: number
+  sources_count: number
+  bm25_hits: number | null
+  bm25_only: number | null
+  rrf_top: number | null
+  hyde_used: boolean
+  elapsed_ms: number
+  rejected: boolean
+  created_at: string
+  /** 后端按 qa_flow 状态机派生的实走路径（状态名序列）——前端只高亮，不重算分支。 */
+  flow_path: string[]
+  /** threshold - top1_before_filter；任一为 null 时也是 null（「没跑检索」口径）。 */
+  top1_gap: number | null
+}
+
+export interface QaTraceListResult {
+  items: QaTraceRow[]
+  total: number
+  limit: number
+  offset: number
+  /** 终端状态候选 —— 来自服务端（core/qa_flow），前端不自己维护一份 */
+  decisions: { value: string; label: string }[]
+  intents: { value: string; label: string }[]
+}
+
+export function fetchQaTraces(params: {
+  decision?: string | null
+  intent?: string | null
+  session_id?: string | null
+  keyword?: string | null
+  date_from?: string | null
+  date_to?: string | null
+  min_top1_gap?: number | null
+  limit?: number
+  offset?: number
+}): Promise<QaTraceListResult> {
+  const query = new URLSearchParams()
+  if (params.decision) query.set('decision', params.decision)
+  if (params.intent) query.set('intent', params.intent)
+  if (params.session_id) query.set('session_id', params.session_id)
+  if (params.keyword) query.set('keyword', params.keyword)
+  if (params.date_from) query.set('date_from', params.date_from)
+  if (params.date_to) query.set('date_to', params.date_to)
+  if (params.min_top1_gap != null) query.set('min_top1_gap', String(params.min_top1_gap))
+  query.set('limit', String(params.limit ?? 50))
+  query.set('offset', String(params.offset ?? 0))
+  return get<QaTraceListResult>(`/api/v1/admin/qa-traces?${query.toString()}`)
+}

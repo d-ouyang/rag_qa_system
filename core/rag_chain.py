@@ -67,6 +67,8 @@ from core.intent_router import Intent, IntentResult, get_intent_classifier
 from core.llm_client import LLMClient, get_llm_client
 from core.memory_manager import MemoryManager, get_memory_manager
 from core.qa_cache import is_standalone_question, lookup_answer, store_answer
+from core import qa_flow
+from core import qa_trace_repo
 from core.retriever import RAGRetriever, get_rag_retriever
 from core.vector_store import build_chunk_id
 
@@ -532,6 +534,24 @@ def _build_qa_trace(
     return trace
 
 
+def _record_qa_trace(
+    session_id: str, owner_id: int | None, trace: dict[str, Any]
+) -> None:
+    """
+    轨迹镜像进 `qa_trace` 分析表（P4-5b），**fail-open**。
+
+    为什么吞异常而 quota / 会话不吞：这份表是运营分析用的镜子，
+    镜子碎了该有的症状是「溯源页缺数据」，绝不是「用户问不了」。
+    与 qa_cache.store_answer 的姿态一致（缓存写失败只记日志）；
+    与 audit_repo.record 的分工是「仓库层抛、调用方定姿态」——
+    测试要断言镜像内容时，让 record 原样炸出来比吞掉更好查。
+    """
+    try:
+        qa_trace_repo.record(session_id=session_id, owner_id=owner_id, trace=trace)
+    except Exception:
+        logger.warning("qa_trace 镜像落库失败（不影响本轮回答）", exc_info=True)
+
+
 def _strip_leading_blank(text: str) -> str:
     """
     裁掉答案**开头**的空白，中间与结尾一律不动。
@@ -899,7 +919,7 @@ class RAGChain:
         intent = str(hit.get("intent") or "knowledge_query")
         route = str(hit.get("route") or "rag_qa")
         standalone = hit.get("standalone_question") or question
-        self.memory.add_exchange(session_id, question, answer, meta={
+        exchange_meta = {
             "sources": sources,
             "intent": intent,
             "route": route,
@@ -912,7 +932,11 @@ class RAGChain:
             "qa_trace": _cache_qa_trace(
                 question, intent, route, elapsed_ms, len(sources)
             ),
-        }, owner_id=owner_id)
+        }
+        self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
+                                 owner_id=owner_id)
+        # P4-5b：缓存命中轮同样镜像进分析表（decision=cache_hit，无检索细节）
+        _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
         logger.info(
             "问答缓存复用 | session_id=%s 耗时=%.0fms | query=%.24s",
             session_id, elapsed_ms, question,
@@ -1068,11 +1092,11 @@ class RAGChain:
         # 每轮详情先算好再统一写记忆：sources/usage/耗时/时间戳随轮持久化，
         # 刷新页面后前端从历史接口原样恢复（引用不再丢失）
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
-        # P4-5：终端状态 —— 这一轮最终走的是哪条分支（四选一）
-        decision = (
-            "chitchat" if prepared is None
-            else "zero_recall" if not prepared["docs"]
-            else "rag_qa"
+        # P4-5：终端状态 —— 这一轮最终走的是哪条分支（四选一）。
+        # P4-5b 起判定收口到 qa_flow.resolve_decision（唯一出处，module27 穷举守着）
+        decision = qa_flow.resolve_decision(
+            prepared_present=prepared is not None,
+            docs_count=len(prepared["docs"]) if prepared else 0,
         )
         exchange_meta = {
             "sources": result["sources"],
@@ -1091,6 +1115,8 @@ class RAGChain:
         }
         self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
                                  owner_id=owner_id)
+        # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
+        _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
         self._maybe_store_cache(question, result, bool(chat_history))
         # token 用量：本次问答（重写 + 主回答）累加进会话
         self.memory.add_usage(
@@ -1221,13 +1247,13 @@ class RAGChain:
         # 每轮详情随轮写入记忆（同 query 口径），历史接口按轮回填
         # 溯源只算一次：add_exchange / _maybe_store_cache / qa_trace 三处共用
         sources = [] if prepared is None else self._extract_sources(prepared["docs"])
-        # P4-5：终端状态 —— 这一轮最终走的是哪条分支（四选一）
-        decision = (
-            "chitchat" if prepared is None
-            else "zero_recall" if not prepared["docs"]
-            else "rag_qa"
+        # P4-5：终端状态 —— 这一轮最终走的是哪条分支（四选一）。
+        # P4-5b 起判定收口到 qa_flow.resolve_decision（与 query() 同一出处）
+        decision = qa_flow.resolve_decision(
+            prepared_present=prepared is not None,
+            docs_count=len(prepared["docs"]) if prepared else 0,
         )
-        self.memory.add_exchange(session_id, question, answer, meta={
+        exchange_meta = {
             "sources": sources,
             "intent": intent_result.intent.value,
             "route": intent_result.route,
@@ -1240,7 +1266,11 @@ class RAGChain:
             "qa_trace": _build_qa_trace(
                 question, intent_result, prepared, decision, elapsed_ms, len(sources),
             ),
-        }, owner_id=owner_id)
+        }
+        self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
+                                 owner_id=owner_id)
+        # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
+        _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
         self._maybe_store_cache(
             question,
             {

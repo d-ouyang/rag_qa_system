@@ -212,6 +212,17 @@ check("不传 trace_out 时行为不变（返回仍是 docs 列表）",
 print("\n== 第 4 组：_prepare_parallel 透传 + 端到端落库 ==")
 import core.rag_chain as rc
 
+# P4-5b：镜像写入走桩 —— 本模块不碰 MySQL（真库不该被测试轨迹污染）；
+# 「镜像行的内容与筛选」由 module27 对 qa_trace_repo 的专项测试守。
+_TRACE_MIRROR: list[dict] = []
+_orig_record_qa_trace = rc._record_qa_trace
+rc._record_qa_trace = lambda session_id, owner_id, trace: (  # type: ignore[assignment]
+    _TRACE_MIRROR.append({
+        "session_id": session_id, "owner_id": owner_id,
+        "decision": (trace or {}).get("decision"),
+    })
+)
+
 
 class _FakeLLM:
     def invoke(self, _pv):
@@ -350,8 +361,20 @@ try:
     check("stream：落库 decision=rag_qa", qt_stream.get("decision") == "rag_qa")
     check("stream：落库与调试帧同源（top1 一致）",
           qt_stream.get("top1_before_filter") == _retr["top1_before_filter"])
+
+    # 4g. 镜像调用（P4-5b）：4b~4f 共 5 轮，每轮恰好一条、decision 与落库一致
+    by_session = {m["session_id"]: m["decision"] for m in _TRACE_MIRROR}
+    check("镜像：五轮各一条且 decision 正确",
+          by_session == {"s-rag": "rag_qa", "s-zero": "zero_recall",
+                         "s-chit": "chitchat", "s-cache": "cache_hit",
+                         "s-stream": "rag_qa"},
+          f"实际 {by_session}")
+    check("镜像：条数没有多余（无重复镜像）", len(_TRACE_MIRROR) == 5,
+          f"实际 {len(_TRACE_MIRROR)}")
+    check("镜像：owner_id 透传", all(m["owner_id"] is None for m in _TRACE_MIRROR))
 finally:
     rc.get_intent_classifier = _orig_gic
+    rc._record_qa_trace = _orig_record_qa_trace  # type: ignore[assignment]
 
 
 print(f"\n== 结果：{PASS} 通过 / {FAIL} 失败 ==")

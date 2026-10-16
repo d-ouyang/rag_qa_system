@@ -250,7 +250,7 @@ def test_schema_and_migration_chain():
     pk = [c.name for c in schema.system_config_table.primary_key.columns]
     check("主键是 config_key", pk == ["config_key"], f"got={pk}")
 
-    # 迁移链：revision/down_revision 必须一条链且 0011 是头（用 ast 解析，不 import 迁移模块）
+    # 迁移链：revision/down_revision 必须一条链且头随迭代前移（用 ast 解析，不 import 迁移模块）
     import ast
 
     versions_dir = Path(__file__).parent.parent / "alembic" / "versions"
@@ -270,9 +270,13 @@ def test_schema_and_migration_chain():
     children = {d for d in revs.values() if d}
     heads = [r for r in revs if r not in children]
     check("迁移链只有一个 head", len(heads) == 1, f"heads={heads}")
-    check("head 是 0011（system_config）", heads == ["0011"], f"heads={heads}")
-    check("0011 的 down_revision 是 0010", revs.get("0011") == "0010",
+    # P4-5b：头随新迁移前移（0012 = qa_trace）。这里的守卫是「链不分裂」，
+    # 不是「头永远是某一张表」——那会把每次加迁移都变成改这条断言的仪式。
+    check("head 是 0012（qa_trace）", heads == ["0012"], f"heads={heads}")
+    check("0011 → 0010 链接完整", revs.get("0011") == "0010",
           f"got={revs.get('0011')}")
+    check("0012 的 down_revision 是 0011", revs.get("0012") == "0011",
+          f"got={revs.get('0012')}")
 
 
 if __name__ == "__main__":

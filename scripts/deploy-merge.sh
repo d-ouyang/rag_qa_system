@@ -62,7 +62,7 @@ if ! git merge --no-ff --no-edit "$BRANCH_FROM"; then
   git merge --abort 2>/dev/null || true
   git reset --hard --quiet          # 清掉可能残留的冲突标记
   git checkout "$current" --quiet
-  echo "  已回到分支 $current，工作区与合并前一致。解决冲突后在 develop 上处理。"
+  echo "  已回到分支 ${current}，工作区与合并前一致。解决冲突后在 develop 上处理。"
   exit 1
 fi
 
