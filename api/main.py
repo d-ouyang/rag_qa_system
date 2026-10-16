@@ -97,6 +97,7 @@ def on_startup() -> None:
        第一条要看的就是这一行，而不是去翻 .env。
     """
     from core import quota_policy as quota_policy  # 局部导入避免环
+    from core.config_service import config_service  # 局部导入避免环
 
     # 校验在 quota_policy（判定唯一处）；非法值抛 ValueError → 进程拒启。
     quota_policy.validate_over_action(settings.TOKEN_QUOTA_OVER_ACTION)
@@ -106,6 +107,15 @@ def on_startup() -> None:
         settings.TOKEN_QUOTA_OVER_ACTION,
         "阻断：本月已用 >= 限量时提问接口返回 429" if _blocking
         else "仅提醒：超阈值只显示横幅与看板标红，不阻断",
+    )
+    # 运行时配置预热（P4-1）：把 system_config 表加载进进程内缓存。
+    # reload 内部对 DB 故障 fail-open（沿用默认值），不会阻启动——
+    # 配置读不起不该让服务起不来，与安全判定的 fail-closed 刻意区分。
+    config_service.reload()
+    logger.info(
+        "运行时配置已加载 | backend=%s 生效 %d 项（业务开关热更新，无需重启）",
+        settings.CONFIG_BACKEND,
+        len(config_service.all_flags()),
     )
     logger.info(
         "FastAPI 启动完成 | %s v%s | LLM_PROVIDER=%s 向量库=%s 重排=%s",
