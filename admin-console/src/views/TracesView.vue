@@ -149,7 +149,7 @@ function candidatesOf(row: QaTraceRow): CandRow[] {
 }
 
 // --------------------------------------------------------------------------- //
-// 状态机图：节点坐标固定，只按 flow_path 点亮（后端派生，前端不推分支）
+// 状态机图：完整链路 + 本次实走路径高亮（flow_path 由后端派生，前端不推分支）
 // --------------------------------------------------------------------------- //
 interface FlowNode {
   key: string
@@ -157,37 +157,46 @@ interface FlowNode {
   y: number
   terminal?: boolean
 }
-/** 主链居中一列（中心 x=325），四个终端在右侧一列（中心 x=480）。 */
+/**
+ * 主链居中一列（cx=280，自上而下 = 实际执行顺序），四个终端在右侧一列（cx=500）。
+ * 岔路口横向引出终端——「走了哪条、没走哪条」一眼可读。
+ */
 const FLOW_NODES: FlowNode[] = [
-  { key: 'received', x: 325, y: 20 },
-  { key: 'cache_check', x: 325, y: 80 },
-  { key: 'cache_hit', x: 480, y: 80, terminal: true },
-  { key: 'prepare', x: 325, y: 140 },
-  { key: 'intent_route', x: 325, y: 200 },
-  { key: 'chitchat', x: 480, y: 200, terminal: true },
-  { key: 'retrieve', x: 325, y: 260 },
-  { key: 'rerank', x: 325, y: 320 },
-  { key: 'threshold', x: 325, y: 380 },
-  { key: 'zero_recall', x: 480, y: 380, terminal: true },
-  { key: 'generate', x: 325, y: 440 },
-  { key: 'rag_qa', x: 480, y: 440, terminal: true },
+  { key: 'received', x: 280, y: 16 },
+  { key: 'cache_check', x: 280, y: 96 },
+  { key: 'cache_hit', x: 500, y: 96, terminal: true },
+  { key: 'prepare', x: 280, y: 176 },
+  { key: 'intent_route', x: 280, y: 256 },
+  { key: 'chitchat', x: 500, y: 256, terminal: true },
+  { key: 'retrieve', x: 280, y: 336 },
+  { key: 'rerank', x: 280, y: 416 },
+  { key: 'threshold', x: 280, y: 496 },
+  { key: 'zero_recall', x: 500, y: 496, terminal: true },
+  { key: 'generate', x: 280, y: 576 },
+  { key: 'rag_qa', x: 500, y: 576, terminal: true },
 ]
-/** 边 = [from, to]。竖线走主链，三个分支横线通向终端。 */
-const FLOW_EDGES: [string, string][] = [
-  ['received', 'cache_check'],
-  ['cache_check', 'cache_hit'],
-  ['cache_check', 'prepare'],
-  ['prepare', 'intent_route'],
-  ['intent_route', 'chitchat'],
-  ['intent_route', 'retrieve'],
-  ['retrieve', 'rerank'],
-  ['rerank', 'threshold'],
-  ['threshold', 'zero_recall'],
-  ['threshold', 'generate'],
-  ['generate', 'rag_qa'],
+
+interface FlowEdge {
+  from: string
+  to: string
+  /** 分支语义（只有岔路口有）：命中/未命中、闲聊/知识问答、不通过/有通过。 */
+  label?: string
+}
+const FLOW_EDGES: FlowEdge[] = [
+  { from: 'received', to: 'cache_check' },
+  { from: 'cache_check', to: 'cache_hit', label: '命中' },
+  { from: 'cache_check', to: 'prepare', label: '未命中' },
+  { from: 'prepare', to: 'intent_route' },
+  { from: 'intent_route', to: 'chitchat', label: '闲聊' },
+  { from: 'intent_route', to: 'retrieve', label: '知识问答' },
+  { from: 'retrieve', to: 'rerank' },
+  { from: 'rerank', to: 'threshold' },
+  { from: 'threshold', to: 'zero_recall', label: '全部低于阈值' },
+  { from: 'threshold', to: 'generate', label: '有通过' },
+  { from: 'generate', to: 'rag_qa' },
 ]
-const NODE_W = 150
-const NODE_H = 36
+const NODE_W = 180
+const NODE_H = 44
 
 function nodeOf(key: string): FlowNode {
   return FLOW_NODES.find((n) => n.key === key)!
@@ -195,24 +204,39 @@ function nodeOf(key: string): FlowNode {
 function pathSet(row: QaTraceRow): Set<string> {
   return new Set(row.flow_path)
 }
+/** 节点角标：本次执行到该状态是第几步（1 起）；不在路径里返回 null。 */
+function stepOf(row: QaTraceRow, key: string): number | null {
+  const i = row.flow_path.indexOf(key)
+  return i < 0 ? null : i + 1
+}
 /** 边是否实走：两端都在路径里且**相邻**（分支边只有实走时才点亮）。 */
 function edgeActive(row: QaTraceRow, from: string, to: string): boolean {
   const p = row.flow_path
   const i = p.indexOf(from)
   return i >= 0 && p[i + 1] === to
 }
-function edgeLine([from, to]: [string, string]): { x1: number; y1: number; x2: number; y2: number } {
-  const a = nodeOf(from)
-  const b = nodeOf(to)
+function edgeLine(e: FlowEdge): { x1: number; y1: number; x2: number; y2: number } {
+  const a = nodeOf(e.from)
+  const b = nodeOf(e.to)
   if (a.y === b.y) {
-    // 同行的分支：从主链节点右边缘 → 终端节点左边缘
+    // 同行的分支：主链节点右边缘 → 终端节点左边缘
     const [left, right] = a.x < b.x ? [a, b] : [b, a]
     return { x1: left.x + NODE_W / 2, y1: a.y + NODE_H / 2, x2: right.x - NODE_W / 2, y2: a.y + NODE_H / 2 }
   }
   return { x1: a.x, y1: a.y + NODE_H, x2: b.x, y2: b.y }
 }
+/** 分支语义标签的位置：横线放中点上方；竖线放线右侧。 */
+function edgeLabelPos(e: FlowEdge): { x: number; y: number; anchor: string } {
+  const a = nodeOf(e.from)
+  const b = nodeOf(e.to)
+  if (a.y === b.y) {
+    const l = edgeLine(e)
+    return { x: (l.x1 + l.x2) / 2, y: l.y1 - 8, anchor: 'middle' }
+  }
+  return { x: a.x + 10, y: (a.y + NODE_H + b.y) / 2, anchor: 'start' }
+}
 function nodeLabel(key: string): string {
-  // 状态中文名由后端 STATE_LABELS 同源维护；这里按 key 兜底直译，
+  // 状态中文名与后端 STATE_LABELS 同源维护；这里兜底直译，
   // 漂移的代价只是图形上的字不对，不影响数据。
   const LABELS: Record<string, string> = {
     received: '收到问题',
@@ -358,30 +382,62 @@ function nodeLabel(key: string): string {
           <span class="muted">{{ formatDateTime(detail.created_at) }} · {{ Math.round(detail.elapsed_ms) }}ms</span>
         </div>
 
-        <!-- 实走路径高亮（flow_path 由后端派生） -->
+        <!-- 完整状态机：实走路径高亮 + 岔路口标注 + 执行顺序角标（flow_path 由后端派生） -->
         <h3 class="sec">实走路径</h3>
         <div class="flow-wrap">
-          <svg viewBox="0 0 580 496" class="flow-svg" role="img" aria-label="问答流程状态机">
-            <g v-for="[f, t] in FLOW_EDGES" :key="`${f}-${t}`">
+          <svg viewBox="0 0 620 644" class="flow-svg" role="img" aria-label="问答流程状态机（本次实走路径高亮）">
+            <defs>
+              <marker id="fa-on" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f766e" />
+              </marker>
+              <marker id="fa-off" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#cbd5e1" />
+              </marker>
+            </defs>
+
+            <!-- 边（先画线再画节点，节点盖住线的起止） -->
+            <g v-for="e in FLOW_EDGES" :key="`${e.from}-${e.to}`">
               <line
-                v-bind="edgeLine([f, t])"
-                :class="edgeActive(detail, f, t) ? 'edge on' : 'edge'"
+                v-bind="edgeLine(e)"
+                :class="edgeActive(detail, e.from, e.to) ? 'edge on' : 'edge'"
+                :marker-end="edgeActive(detail, e.from, e.to) ? 'url(#fa-on)' : 'url(#fa-off)'"
               />
+              <text
+                v-if="e.label"
+                :x="edgeLabelPos(e).x" :y="edgeLabelPos(e).y"
+                :text-anchor="edgeLabelPos(e).anchor"
+                :class="edgeActive(detail, e.from, e.to) ? 'elabel on' : 'elabel'"
+              >{{ e.label }}</text>
             </g>
+
+            <!-- 节点：实走 = 实心（终端更深），未走 = 虚线灰 -->
             <g v-for="n in FLOW_NODES" :key="n.key">
               <rect
-                :x="n.x - NODE_W / 2" :y="n.y" :width="NODE_W" :height="NODE_H" rx="8"
+                :x="n.x - NODE_W / 2" :y="n.y" :width="NODE_W" :height="NODE_H" rx="10"
                 :class="[
                   'node',
-                  pathSet(detail).has(n.key) ? (n.terminal ? 'on-term' : 'on') : '',
+                  pathSet(detail).has(n.key)
+                    ? (n.terminal ? 'on-term' : 'on')
+                    : 'off',
                 ]"
               />
-              <text :x="n.x" :y="n.y + NODE_H / 2 + 4" text-anchor="middle"
+              <text :x="n.x" :y="n.y + NODE_H / 2 + 5" text-anchor="middle"
                     :class="pathSet(detail).has(n.key) ? 't-on' : 't-off'">
                 {{ nodeLabel(n.key) }}
               </text>
+              <!-- 执行顺序角标：本次路径里的第几步 -->
+              <g v-if="stepOf(detail, n.key) !== null">
+                <circle :cx="n.x - NODE_W / 2" :cy="n.y" r="11" class="stepbg" />
+                <text :x="n.x - NODE_W / 2" :y="n.y + 4" text-anchor="middle" class="steptext">
+                  {{ stepOf(detail, n.key) }}
+                </text>
+              </g>
             </g>
           </svg>
+          <div class="flow-legend">
+            <span><i class="lg lg-on"></i>实线绿 = 本次实走（角标 = 第几步）</span>
+            <span><i class="lg lg-off"></i>虚线灰 = 没走的分支</span>
+          </div>
         </div>
 
         <!-- 关键指标 -->
@@ -517,16 +573,36 @@ function nodeLabel(key: string): string {
   height: auto;
   display: block;
 }
-.flow-svg .node {
-  fill: #f1f5f9;
-  stroke: #e2e8f0;
-}
+.flow-svg .node { stroke-width: 1.5; }
 .flow-svg .node.on { fill: #0f766e; stroke: #0f766e; }
-.flow-svg .node.on-term { fill: #065f46; stroke: #065f46; }
-.flow-svg .t-off { fill: #94a3b8; font-size: 13px; }
-.flow-svg .t-on { fill: #fff; font-size: 13px; font-weight: 600; }
-.flow-svg .edge { stroke: #e2e8f0; stroke-width: 1.5; }
-.flow-svg .edge.on { stroke: #0f766e; stroke-width: 2.5; }
+.flow-svg .node.on-term { fill: #065f46; stroke: #047857; }
+.flow-svg .node.off { fill: #f8fafc; stroke: #cbd5e1; stroke-dasharray: 4 3; }
+.flow-svg .t-on { fill: #fff; font-size: 14px; font-weight: 600; }
+.flow-svg .t-off { fill: #94a3b8; font-size: 14px; }
+.flow-svg .edge { stroke: #cbd5e1; stroke-width: 1.5; stroke-dasharray: 5 4; }
+.flow-svg .edge.on { stroke: #0f766e; stroke-width: 2.5; stroke-dasharray: none; }
+.flow-svg .elabel { fill: #94a3b8; font-size: 12px; }
+.flow-svg .elabel.on { fill: #0f766e; font-weight: 600; }
+.flow-svg .stepbg { fill: #065f46; stroke: #fff; stroke-width: 1.5; }
+.flow-svg .steptext { fill: #fff; font-size: 11px; font-weight: 700; }
+.flow-legend {
+  display: flex;
+  gap: 18px;
+  padding: 8px 4px 0;
+  font-size: 12px;
+  color: var(--text-2, #475569);
+}
+.flow-legend .lg {
+  display: inline-block;
+  width: 22px;
+  height: 0;
+  margin-right: 5px;
+  vertical-align: middle;
+  border-top: 2.5px solid #0f766e;
+}
+.flow-legend .lg-off {
+  border-top: 2px dashed #cbd5e1;
+}
 
 .metrics, .qs {
   display: grid;
