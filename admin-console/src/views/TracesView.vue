@@ -153,27 +153,32 @@ function candidatesOf(row: QaTraceRow): CandRow[] {
 // --------------------------------------------------------------------------- //
 interface FlowNode {
   key: string
-  x: number
-  y: number
+  x: number // 中心 x
+  y: number // 中心 y
+  kind: 'rect' | 'diamond' // 判断节点用菱形，其余用圆角矩形
+  w: number
+  h: number
+  /** 阶段色带：蓝=缓存、紫=意图、青=检索、橙=重排/阈值、红=拒答、绿=生成、灰=闲聊 */
+  color: string
   terminal?: boolean
 }
 /**
- * 主链居中一列（cx=280，自上而下 = 实际执行顺序），四个终端在右侧一列（cx=500）。
- * 岔路口横向引出终端——「走了哪条、没走哪条」一眼可读。
+ * 主链居中一列（cx=250，自上而下 = 实际执行顺序），四个终端横向岔出（cx=520）。
+ * 三个判断节点画菱形；配色按阶段区分，实走/未走用实线 vs 虚线 + 饱和度表达。
  */
 const FLOW_NODES: FlowNode[] = [
-  { key: 'received', x: 280, y: 16 },
-  { key: 'cache_check', x: 280, y: 96 },
-  { key: 'cache_hit', x: 500, y: 96, terminal: true },
-  { key: 'prepare', x: 280, y: 176 },
-  { key: 'intent_route', x: 280, y: 256 },
-  { key: 'chitchat', x: 500, y: 256, terminal: true },
-  { key: 'retrieve', x: 280, y: 336 },
-  { key: 'rerank', x: 280, y: 416 },
-  { key: 'threshold', x: 280, y: 496 },
-  { key: 'zero_recall', x: 500, y: 496, terminal: true },
-  { key: 'generate', x: 280, y: 576 },
-  { key: 'rag_qa', x: 500, y: 576, terminal: true },
+  { key: 'received', x: 250, y: 46, kind: 'rect', w: 190, h: 48, color: 'blue' },
+  { key: 'cache_check', x: 250, y: 126, kind: 'diamond', w: 210, h: 84, color: 'blue' },
+  { key: 'cache_hit', x: 520, y: 126, kind: 'rect', w: 180, h: 48, color: 'blue', terminal: true },
+  { key: 'prepare', x: 250, y: 200, kind: 'rect', w: 190, h: 48, color: 'purple' },
+  { key: 'intent_route', x: 250, y: 276, kind: 'diamond', w: 210, h: 84, color: 'purple' },
+  { key: 'chitchat', x: 520, y: 276, kind: 'rect', w: 180, h: 48, color: 'gray', terminal: true },
+  { key: 'retrieve', x: 250, y: 352, kind: 'rect', w: 190, h: 48, color: 'teal' },
+  { key: 'rerank', x: 250, y: 418, kind: 'rect', w: 190, h: 48, color: 'amber' },
+  { key: 'threshold', x: 250, y: 494, kind: 'diamond', w: 210, h: 84, color: 'amber' },
+  { key: 'zero_recall', x: 520, y: 494, kind: 'rect', w: 180, h: 48, color: 'red', terminal: true },
+  { key: 'generate', x: 250, y: 570, kind: 'rect', w: 190, h: 48, color: 'green' },
+  { key: 'rag_qa', x: 250, y: 646, kind: 'rect', w: 190, h: 48, color: 'green', terminal: true },
 ]
 
 interface FlowEdge {
@@ -195,8 +200,6 @@ const FLOW_EDGES: FlowEdge[] = [
   { from: 'threshold', to: 'generate', label: '有通过' },
   { from: 'generate', to: 'rag_qa' },
 ]
-const NODE_W = 180
-const NODE_H = 44
 
 function nodeOf(key: string): FlowNode {
   return FLOW_NODES.find((n) => n.key === key)!
@@ -215,15 +218,20 @@ function edgeActive(row: QaTraceRow, from: string, to: string): boolean {
   const i = p.indexOf(from)
   return i >= 0 && p[i + 1] === to
 }
+function topOf(n: FlowNode): number {
+  return n.y - n.h / 2
+}
+function bottomOf(n: FlowNode): number {
+  return n.y + n.h / 2
+}
 function edgeLine(e: FlowEdge): { x1: number; y1: number; x2: number; y2: number } {
   const a = nodeOf(e.from)
   const b = nodeOf(e.to)
   if (a.y === b.y) {
-    // 同行的分支：主链节点右边缘 → 终端节点左边缘
-    const [left, right] = a.x < b.x ? [a, b] : [b, a]
-    return { x1: left.x + NODE_W / 2, y1: a.y + NODE_H / 2, x2: right.x - NODE_W / 2, y2: a.y + NODE_H / 2 }
+    // 同行的分支：主链节点右顶点 → 终端节点左边缘
+    return { x1: a.x + a.w / 2, y1: a.y, x2: b.x - b.w / 2, y2: b.y }
   }
-  return { x1: a.x, y1: a.y + NODE_H, x2: b.x, y2: b.y }
+  return { x1: a.x, y1: bottomOf(a), x2: b.x, y2: topOf(b) }
 }
 /** 分支语义标签的位置：横线放中点上方；竖线放线右侧。 */
 function edgeLabelPos(e: FlowEdge): { x: number; y: number; anchor: string } {
@@ -231,23 +239,35 @@ function edgeLabelPos(e: FlowEdge): { x: number; y: number; anchor: string } {
   const b = nodeOf(e.to)
   if (a.y === b.y) {
     const l = edgeLine(e)
-    return { x: (l.x1 + l.x2) / 2, y: l.y1 - 8, anchor: 'middle' }
+    return { x: (l.x1 + l.x2) / 2, y: l.y1 - 9, anchor: 'middle' }
   }
-  return { x: a.x + 10, y: (a.y + NODE_H + b.y) / 2, anchor: 'start' }
+  return { x: a.x + 10, y: (bottomOf(a) + topOf(b)) / 2, anchor: 'start' }
+}
+/** 菱形顶点串（cx, cy 为中心）。 */
+function diamondPoints(n: FlowNode): string {
+  return [
+    `${n.x},${n.y - n.h / 2}`,
+    `${n.x + n.w / 2},${n.y}`,
+    `${n.x},${n.y + n.h / 2}`,
+    `${n.x - n.w / 2},${n.y}`,
+  ].join(' ')
+}
+function nodeClass(n: FlowNode, row: QaTraceRow): string[] {
+  return ['nd', `c-${n.color}`, pathSet(row).has(n.key) ? 'on' : 'off']
 }
 function nodeLabel(key: string): string {
   // 状态中文名与后端 STATE_LABELS 同源维护；这里兜底直译，
   // 漂移的代价只是图形上的字不对，不影响数据。
   const LABELS: Record<string, string> = {
     received: '收到问题',
-    cache_check: '查问答缓存',
+    cache_check: '查问答缓存？',
     cache_hit: '缓存命中',
     prepare: '并行前段',
-    intent_route: '意图路由',
+    intent_route: '意图路由？',
     chitchat: '闲聊应答',
     retrieve: '检索召回',
     rerank: '重排',
-    threshold: '阈值过滤',
+    threshold: '阈值过滤？',
     zero_recall: '零召回拒答',
     generate: 'RAG 生成',
     rag_qa: '检索作答',
@@ -375,7 +395,7 @@ function nodeLabel(key: string): string {
     </div>
 
     <!-- 详情抽屉 -->
-    <el-drawer v-model="detailVisible" title="轨迹详情" size="640px">
+    <el-drawer v-model="detailVisible" title="轨迹详情" size="700px">
       <template v-if="detail">
         <div class="detail-head">
           <span class="badge" :class="DECISION_CLASS[detail.decision]">{{ decisionLabel(detail.decision) }}</span>
@@ -385,10 +405,10 @@ function nodeLabel(key: string): string {
         <!-- 完整状态机：实走路径高亮 + 岔路口标注 + 执行顺序角标（flow_path 由后端派生） -->
         <h3 class="sec">实走路径</h3>
         <div class="flow-wrap">
-          <svg viewBox="0 0 620 644" class="flow-svg" role="img" aria-label="问答流程状态机（本次实走路径高亮）">
+          <svg viewBox="0 0 680 700" class="flow-svg" role="img" aria-label="问答流程状态机（本次实走路径高亮）">
             <defs>
               <marker id="fa-on" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f766e" />
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569" />
               </marker>
               <marker id="fa-off" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="#cbd5e1" />
@@ -410,33 +430,48 @@ function nodeLabel(key: string): string {
               >{{ e.label }}</text>
             </g>
 
-            <!-- 节点：实走 = 实心（终端更深），未走 = 虚线灰 -->
+            <!-- 节点：判断节点用菱形；配色按阶段；实走 = 实线饱和，未走 = 虚线浅色 -->
             <g v-for="n in FLOW_NODES" :key="n.key">
-              <rect
-                :x="n.x - NODE_W / 2" :y="n.y" :width="NODE_W" :height="NODE_H" rx="10"
-                :class="[
-                  'node',
-                  pathSet(detail).has(n.key)
-                    ? (n.terminal ? 'on-term' : 'on')
-                    : 'off',
-                ]"
+              <polygon
+                v-if="n.kind === 'diamond'"
+                :points="diamondPoints(n)"
+                :class="nodeClass(n, detail)"
               />
-              <text :x="n.x" :y="n.y + NODE_H / 2 + 5" text-anchor="middle"
-                    :class="pathSet(detail).has(n.key) ? 't-on' : 't-off'">
+              <rect
+                v-else
+                :x="n.x - n.w / 2" :y="n.y - n.h / 2" :width="n.w" :height="n.h" rx="10"
+                :class="nodeClass(n, detail)"
+              />
+              <text :x="n.x" :y="n.y + 5" text-anchor="middle"
+                    :class="pathSet(detail).has(n.key) ? 'tt on' : 'tt off'">
                 {{ nodeLabel(n.key) }}
               </text>
               <!-- 执行顺序角标：本次路径里的第几步 -->
               <g v-if="stepOf(detail, n.key) !== null">
-                <circle :cx="n.x - NODE_W / 2" :cy="n.y" r="11" class="stepbg" />
-                <text :x="n.x - NODE_W / 2" :y="n.y + 4" text-anchor="middle" class="steptext">
+                <circle
+                  :cx="n.x - n.w / 2" :cy="n.kind === 'diamond' ? n.y : n.y - n.h / 2" r="11"
+                  class="stepbg"
+                />
+                <text
+                  :x="n.x - n.w / 2" :y="(n.kind === 'diamond' ? n.y : n.y - n.h / 2) + 4"
+                  text-anchor="middle" class="steptext"
+                >
                   {{ stepOf(detail, n.key) }}
                 </text>
               </g>
             </g>
           </svg>
           <div class="flow-legend">
-            <span><i class="lg lg-on"></i>实线绿 = 本次实走（角标 = 第几步）</span>
-            <span><i class="lg lg-off"></i>虚线灰 = 没走的分支</span>
+            <span><i class="dot d-blue"></i>缓存</span>
+            <span><i class="dot d-purple"></i>意图</span>
+            <span><i class="dot d-teal"></i>检索</span>
+            <span><i class="dot d-amber"></i>重排/阈值</span>
+            <span><i class="dot d-green"></i>生成</span>
+            <span><i class="dot d-red"></i>拒答</span>
+            <span><i class="dot d-gray"></i>闲聊</span>
+            <span class="sep"></span>
+            <span><i class="lg lg-on"></i>实线 = 实走（角标 = 第几步）</span>
+            <span><i class="lg lg-off"></i>虚线 = 未走</span>
           </div>
         </div>
 
@@ -573,24 +608,59 @@ function nodeLabel(key: string): string {
   height: auto;
   display: block;
 }
-.flow-svg .node { stroke-width: 1.5; }
-.flow-svg .node.on { fill: #0f766e; stroke: #0f766e; }
-.flow-svg .node.on-term { fill: #065f46; stroke: #047857; }
-.flow-svg .node.off { fill: #f8fafc; stroke: #cbd5e1; stroke-dasharray: 4 3; }
-.flow-svg .t-on { fill: #fff; font-size: 14px; font-weight: 600; }
-.flow-svg .t-off { fill: #94a3b8; font-size: 14px; }
-.flow-svg .edge { stroke: #cbd5e1; stroke-width: 1.5; stroke-dasharray: 5 4; }
-.flow-svg .edge.on { stroke: #0f766e; stroke-width: 2.5; stroke-dasharray: none; }
-.flow-svg .elabel { fill: #94a3b8; font-size: 12px; }
-.flow-svg .elabel.on { fill: #0f766e; font-weight: 600; }
-.flow-svg .stepbg { fill: #065f46; stroke: #fff; stroke-width: 1.5; }
+.flow-svg .nd { stroke-width: 1.5; }
+/* 实走 = 实线饱和（100 底 + 600 边）；未走 = 虚线浅（50 底 + 400 边） */
+.c-blue.on { fill: #B5D4F4; stroke: #185FA5; }
+.c-blue.off { fill: #E6F1FB; stroke: #85B7EB; stroke-dasharray: 5 4; opacity: 0.75; }
+.c-purple.on { fill: #CECBF6; stroke: #534AB5; }
+.c-purple.off { fill: #EEEDFE; stroke: #AFA9EC; stroke-dasharray: 5 4; opacity: 0.75; }
+.c-teal.on { fill: #9FE1CB; stroke: #0F6E56; }
+.c-teal.off { fill: #E1F5EE; stroke: #5DCAA5; stroke-dasharray: 5 4; opacity: 0.75; }
+.c-amber.on { fill: #FAC775; stroke: #854F0B; }
+.c-amber.off { fill: #FAEEDA; stroke: #EF9F27; stroke-dasharray: 5 4; opacity: 0.75; }
+.c-red.on { fill: #F7C1C1; stroke: #A32D2D; }
+.c-red.off { fill: #FCEBEB; stroke: #F09595; stroke-dasharray: 5 4; opacity: 0.75; }
+.c-green.on { fill: #C0DD97; stroke: #3B6D11; }
+.c-green.off { fill: #EAF3DE; stroke: #97C459; stroke-dasharray: 5 4; opacity: 0.75; }
+.c-gray.on { fill: #D3D1C7; stroke: #5F5E5A; }
+.c-gray.off { fill: #F1EFE8; stroke: #B4B2A9; stroke-dasharray: 5 4; opacity: 0.75; }
+.flow-svg .tt.on { fill: #1F2937; font-size: 14px; font-weight: 600; }
+.flow-svg .tt.off { fill: #9CA3AF; font-size: 14px; }
+.flow-svg .edge { stroke: #CBD5E1; stroke-width: 1.5; stroke-dasharray: 5 4; }
+.flow-svg .edge.on { stroke: #475569; stroke-width: 2.5; stroke-dasharray: none; }
+.flow-svg .elabel { fill: #9CA3AF; font-size: 12px; }
+.flow-svg .elabel.on { fill: #334155; font-weight: 600; }
+.flow-svg .stepbg { fill: #334155; stroke: #fff; stroke-width: 1.5; }
 .flow-svg .steptext { fill: #fff; font-size: 11px; font-weight: 700; }
 .flow-legend {
   display: flex;
-  gap: 18px;
+  gap: 12px;
   padding: 8px 4px 0;
   font-size: 12px;
   color: var(--text-2, #475569);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.flow-legend .dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.d-blue { background: #B5D4F4; }
+.d-purple { background: #CECBF6; }
+.d-teal { background: #9FE1CB; }
+.d-amber { background: #FAC775; }
+.d-green { background: #C0DD97; }
+.d-red { background: #F7C1C1; }
+.d-gray { background: #D3D1C7; }
+.flow-legend .sep {
+  display: inline-block;
+  width: 1px;
+  height: 14px;
+  background: var(--border, #e5e7eb);
 }
 .flow-legend .lg {
   display: inline-block;
@@ -598,7 +668,7 @@ function nodeLabel(key: string): string {
   height: 0;
   margin-right: 5px;
   vertical-align: middle;
-  border-top: 2.5px solid #0f766e;
+  border-top: 2.5px solid #475569;
 }
 .flow-legend .lg-off {
   border-top: 2px dashed #cbd5e1;
