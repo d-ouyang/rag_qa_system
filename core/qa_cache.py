@@ -21,6 +21,7 @@ import time
 from typing import Any
 
 from config.settings import settings
+from core.config_flags import flag_value
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ def lookup_answer(question: str, client: Any | None = None) -> dict[str, Any] | 
     命中则返回答案载荷，并把这条挪到最近使用的一端。
     版本对不上、Redis 不可用、缓存关闭，都返回 None，调用方走原链路。
     """
-    if not settings.QA_CACHE_ENABLED:
+    if not flag_value("qa_cache_enabled"):
         return None
     normalized = normalize_question(question)
     if not normalized:
@@ -176,7 +177,7 @@ def store_answer(
     client: Any | None = None,
 ) -> bool:
     """写入一条。超限时删最久没被用到的。失败只记日志，不影响这次回答。"""
-    if not settings.QA_CACHE_ENABLED:
+    if not flag_value("qa_cache_enabled"):
         return False
     normalized = normalize_question(question)
     if not normalized or not answer:
@@ -218,7 +219,7 @@ def bump_kb_version(client: Any | None = None) -> int | None:
     知识库变了：版本 +1，并清掉池子。
     旧答案即使文本相同也不能再吐出去。
     """
-    if not settings.QA_CACHE_ENABLED:
+    if not flag_value("qa_cache_enabled"):
         return None
     redis = client or _client()
     try:

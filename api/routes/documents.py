@@ -77,6 +77,7 @@ from core import document_repo as repo
 from core import kb_acl
 from core import kb_service
 from core.bm25_index import invalidate_bm25_index
+from core.config_flags import flag_value
 from core.document_loader import DocumentLoader
 from core.identity import (
     Actor,
@@ -389,7 +390,8 @@ def my_kb_capabilities(actor: Actor = Depends(current_actor)) -> dict[str, Any]:
     # P3-2：下载是**唯一**一个「ACL ∩ 部署开关」的能力 ——
     # 开关关掉时它必须 false（前端据此不渲染按钮），
     # 但 kb_role 与其余能力不受影响（那个人并不是「没权限」，是功能没开）。
-    caps["download"] = caps["download"] and bool(settings.DOC_DOWNLOAD_ENABLED)
+    # P4-2 起开关走 ConfigService（管理端可热改）。
+    caps["download"] = caps["download"] and bool(flag_value("doc_download_enabled"))
     return {
         "kb_role": actor.kb_role,
         "capabilities": caps,
@@ -418,8 +420,8 @@ def download_document(
     doc_id: int = Query(..., description="文档 ID"),
     actor: Actor = Depends(require_kb_download),
 ) -> FileResponse:
-    # ① 部署开关（在 ACL 之前：关掉时整个功能不存在）
-    if not settings.DOC_DOWNLOAD_ENABLED:
+    # ① 部署开关（在 ACL 之前：关掉时整个功能不存在；P4-2 起管理端可热改）
+    if not flag_value("doc_download_enabled"):
         raise HTTPException(status_code=404, detail="下载功能未开放")
     record = repo.get(doc_id)
     if record is None:

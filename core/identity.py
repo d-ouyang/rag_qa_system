@@ -517,6 +517,23 @@ def require_admin(actor: Actor = Depends(current_actor)) -> Actor:
     return actor
 
 
+def require_superadmin(actor: Actor = Depends(current_actor)) -> Actor:
+    """
+    系统配置变更的门槛（v4.0.0 P4-2）：``kb_role=superadmin`` 专属。
+
+    为什么不用 require_admin（role=admin）：两个维度管的事不同——
+    ``role`` 管的是「管理端进得来吗」（账号/组织/密码），``kb_role`` 管的是
+    「知识库与系统能力」（P2-14 的分工）。改检索阈值/开关属于后者；
+    判据与 kb_acl 的取值清单共用同一出处（core/kb_acl.py），不另立一套。
+    """
+    if actor.kb_role != kb_acl.KB_ROLE_SUPERADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="该操作仅知识库超管（kb_role=superadmin）可用",
+        )
+    return actor
+
+
 def require_kb(action: str) -> Any:
     """
     知识库写权限门槛的**唯一**构造处 —— `require_kb_upload` /

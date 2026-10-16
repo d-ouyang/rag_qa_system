@@ -85,6 +85,7 @@ from langchain_core.chat_history import BaseChatMessageHistory, InMemoryChatMess
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from config.settings import settings
+from core.config_flags import flag_value
 from core.session_store import SessionSnapshot, SessionStore, build_session_store
 
 logger = logging.getLogger(__name__)
@@ -152,7 +153,11 @@ class MemoryManager:
         """
         # 注意不能用 `or` 兜底：0 是合法值（测试里 ttl_seconds=0 表示「立刻过期」），
         # `0 or 默认值` 会把 0 静默吞掉换成默认值
-        self.max_turns: int = int(max_turns if max_turns is not None else settings.MEMORY_MAX_TURNS)
+        # P4-2：max_turns 改为**属性热读**——显式传参仍是最高优先（测试契约不变），
+        #       缺省时每次取值都走 ConfigService（管理端改了即时生效，无需重启）。
+        self._max_turns_override: int | None = (
+            int(max_turns) if max_turns is not None else None
+        )
         self.ttl_seconds: int = int(
             ttl_seconds if ttl_seconds is not None else settings.MEMORY_SESSION_TTL_SECONDS
         )
@@ -174,6 +179,18 @@ class MemoryManager:
             from core.redis_monitor import start_redis_memory_monitor
 
             start_redis_memory_monitor(cleanup_hook=self.cleanup_expired)
+
+    @property
+    def max_turns(self) -> int:
+        """送进模型的最近轮数：显式构造参数 > ConfigService（热更新）。
+
+        为什么做成属性而不是构造时快照：这个值是「运维随时会调」的参数
+        （P4-2 设置页），快照意味着每改一次都要重启——而它只是
+        「截历史取几条」这种每次调用都能重新决定的读点，没有快照的理由。
+        """
+        if self._max_turns_override is not None:
+            return self._max_turns_override
+        return int(flag_value("memory_max_turns"))
 
     # ------------------------------------------------------------------ #
     # 存储层适配
