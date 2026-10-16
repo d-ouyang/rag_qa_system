@@ -167,18 +167,18 @@ interface FlowNode {
  * 三个判断节点画菱形；配色按阶段区分，实走/未走用实线 vs 虚线 + 饱和度表达。
  */
 const FLOW_NODES: FlowNode[] = [
-  { key: 'received', x: 250, y: 46, kind: 'rect', w: 190, h: 48, color: 'blue' },
-  { key: 'cache_check', x: 250, y: 126, kind: 'diamond', w: 210, h: 84, color: 'blue' },
-  { key: 'cache_hit', x: 520, y: 126, kind: 'rect', w: 180, h: 48, color: 'blue', terminal: true },
-  { key: 'prepare', x: 250, y: 200, kind: 'rect', w: 190, h: 48, color: 'purple' },
-  { key: 'intent_route', x: 250, y: 276, kind: 'diamond', w: 210, h: 84, color: 'purple' },
-  { key: 'chitchat', x: 520, y: 276, kind: 'rect', w: 180, h: 48, color: 'gray', terminal: true },
-  { key: 'retrieve', x: 250, y: 352, kind: 'rect', w: 190, h: 48, color: 'teal' },
-  { key: 'rerank', x: 250, y: 418, kind: 'rect', w: 190, h: 48, color: 'amber' },
-  { key: 'threshold', x: 250, y: 494, kind: 'diamond', w: 210, h: 84, color: 'amber' },
-  { key: 'zero_recall', x: 520, y: 494, kind: 'rect', w: 180, h: 48, color: 'red', terminal: true },
-  { key: 'generate', x: 250, y: 570, kind: 'rect', w: 190, h: 48, color: 'green' },
-  { key: 'rag_qa', x: 250, y: 646, kind: 'rect', w: 190, h: 48, color: 'green', terminal: true },
+  { key: 'received', x: 250, y: 40, kind: 'rect', w: 190, h: 48, color: 'blue' },
+  { key: 'cache_check', x: 250, y: 142, kind: 'diamond', w: 210, h: 84, color: 'blue' },
+  { key: 'cache_hit', x: 520, y: 142, kind: 'rect', w: 180, h: 48, color: 'blue', terminal: true },
+  { key: 'prepare', x: 250, y: 244, kind: 'rect', w: 190, h: 48, color: 'purple' },
+  { key: 'intent_route', x: 250, y: 346, kind: 'diamond', w: 210, h: 84, color: 'purple' },
+  { key: 'chitchat', x: 520, y: 346, kind: 'rect', w: 180, h: 48, color: 'gray', terminal: true },
+  { key: 'retrieve', x: 250, y: 448, kind: 'rect', w: 190, h: 48, color: 'teal' },
+  { key: 'rerank', x: 250, y: 532, kind: 'rect', w: 190, h: 48, color: 'amber' },
+  { key: 'threshold', x: 250, y: 634, kind: 'diamond', w: 210, h: 84, color: 'amber' },
+  { key: 'zero_recall', x: 520, y: 634, kind: 'rect', w: 180, h: 48, color: 'red', terminal: true },
+  { key: 'generate', x: 250, y: 736, kind: 'rect', w: 190, h: 48, color: 'green' },
+  { key: 'rag_qa', x: 250, y: 820, kind: 'rect', w: 190, h: 48, color: 'green', terminal: true },
 ]
 
 interface FlowEdge {
@@ -405,7 +405,7 @@ function nodeLabel(key: string): string {
         <!-- 完整状态机：实走路径高亮 + 岔路口标注 + 执行顺序角标（flow_path 由后端派生） -->
         <h3 class="sec">实走路径</h3>
         <div class="flow-wrap">
-          <svg viewBox="0 0 680 700" class="flow-svg" role="img" aria-label="问答流程状态机（本次实走路径高亮）">
+          <svg viewBox="0 0 680 860" class="flow-svg" role="img" aria-label="问答流程状态机（本次实走路径高亮）">
             <defs>
               <marker id="fa-on" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569" />
