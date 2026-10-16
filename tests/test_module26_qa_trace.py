@@ -377,5 +377,81 @@ finally:
     rc._record_qa_trace = _orig_record_qa_trace  # type: ignore[assignment]
 
 
+
+# --------------------------------------------------------------------------- #
+# 第 5 组：改写重试（P4-7b）——「那 X 呢？」被原样返回 = 改写失败，必须触发重试
+# --------------------------------------------------------------------------- #
+print("\n== 第 5 组：改写重试（指代问句原样返回 = 失败）==")
+
+
+class _ScriptedLLM:
+    """按脚本依次返回内容的假 LLM；记录每次收到的完整 prompt。"""
+
+    def __init__(self, outputs):
+        self.outputs = list(outputs)
+        self.prompts = []
+
+    def invoke(self, pv):
+        self.prompts.append(str(pv))
+        return SimpleNamespace(content=self.outputs.pop(0), usage_metadata=None)
+
+    def stream(self, _pv):
+        yield SimpleNamespace(content="", usage_metadata=None)
+
+
+class _ScriptedClient:
+    provider = "fake"
+    model_name = "fake"
+
+    def __init__(self, llm):
+        self._llm = llm
+
+    def get_llm(self):
+        # rewrite_query 走 (prompt | llm) 管道，llm 必须是 Runnable；
+        # 用 RunnableLambda 包一层，返回值保持 SimpleNamespace(.content) 形态
+        from langchain_core.runnables import RunnableLambda
+
+        def _invoke(pv):
+            self._llm.prompts.append(str(pv))
+            return SimpleNamespace(content=self._llm.outputs.pop(0), usage_metadata=None)
+
+        return RunnableLambda(_invoke)
+
+    def get_model_info(self):
+        return {"provider": "fake"}
+
+
+_orig_glc = rc.get_llm_client
+try:
+    # 5a. 指代问句 + 模型偷懒原样返回 → 必须触发带强化指令的重试
+    llm = _ScriptedLLM(["那病假呢？", "病假如何申请？"])
+    rc.get_llm_client = lambda: _ScriptedClient(llm)
+    out = rc.rewrite_query(
+        "那病假呢？",
+        chat_history=[("human", "怎么请事假？"), ("ai", "……请假申请单流程……")],
+    )
+    check("指代问句原样返回触发重试，第二次拿到改写结果",
+          out == "病假如何申请？", f"实际 {out!r}")
+    check("重试确实发生（LLM 被调 2 次）", len(llm.prompts) == 2, f"实际 {len(llm.prompts)}")
+    check("重试带强化指令（prompt 含『必须消解指代』）",
+          len(llm.prompts) == 2 and "必须消解指代" in llm.prompts[1])
+
+    # 5b. 非指代问题原样返回 = 合法（本就独立），不重试
+    llm2 = _ScriptedLLM(["怎么请事假"])
+    rc.get_llm_client = lambda: _ScriptedClient(llm2)
+    out2 = rc.rewrite_query("怎么请事假", chat_history=[])
+    check("非指代问题原样返回不重试（只调 1 次）",
+          out2 == "怎么请事假" and len(llm2.prompts) == 1,
+          f"实际 {out2!r} 调用 {len(llm2.prompts)} 次")
+
+    # 5c. 指代问句 + 模型一次改写到位 → 不重试
+    llm3 = _ScriptedLLM(["病假如何申请？"])
+    rc.get_llm_client = lambda: _ScriptedClient(llm3)
+    out3 = rc.rewrite_query("那病假呢？", chat_history=[("human", "怎么请事假？")])
+    check("正常改写不触发重试", out3 == "病假如何申请？" and len(llm3.prompts) == 1)
+finally:
+    rc.get_llm_client = _orig_glc
+
+
 print(f"\n== 结果：{PASS} 通过 / {FAIL} 失败 ==")
 sys.exit(1 if FAIL else 0)

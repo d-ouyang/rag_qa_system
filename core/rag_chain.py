@@ -66,7 +66,7 @@ from core.config_service import config_service
 from core.intent_router import Intent, IntentResult, get_intent_classifier
 from core.llm_client import LLMClient, get_llm_client
 from core.memory_manager import MemoryManager, get_memory_manager
-from core.qa_cache import is_standalone_question, lookup_answer, store_answer
+from core.qa_cache import is_standalone_question, looks_anaphoric, lookup_answer, store_answer
 from core import qa_flow
 from core import qa_trace_repo
 from core.retriever import RAGRetriever, get_rag_retriever
@@ -163,12 +163,38 @@ def rewrite_query(
 
     多轮（有历史）用于消除指代；单轮（无历史）用于把口语化 / 不规范问法
     规整成检索友好句。供生产链路与评测脚本复用同一份逻辑。
+
+    P4-7b：**原样返回 ≠ 一定合法**。改写模型有时会把「那病假呢？」这类
+    指代问句原样吐回来（实测同句两次改写成功、一次原样返回——温度非零的
+    随机性，且提示词里「如果问题本身已经是独立的，原样返回」在诱导它偷懒）。
+    原样返回的指代问句拿去检索必然落空（向量 embed 不了「那 X 呢」，
+    实测 top1 0.02~0.09 → 零召回拒答）。所以：原问题**含指代信号**却原样
+    返回 → 判定改写失败，带更强指令**重试一次**；重试仍原样就认了
+    （不无限重试，最多损失一次检索质量）。
     """
     llm = get_llm_client().get_llm()
+    history = list(chat_history or [])
     message = (_contextualize_q_prompt | llm).invoke(
-        {"input": question, "chat_history": list(chat_history or [])}
+        {"input": question, "chat_history": history}
     )
-    return _sanitize_rewrite(str(message.content), question)
+    rewritten = _sanitize_rewrite(str(message.content), question)
+    if rewritten.strip() != question.strip():
+        return rewritten
+    # 走到这里 = 模型原样返回。问题不含指代 → 合法（本就独立）；含指代 → 失败，重试。
+    if not looks_anaphoric(question):
+        return rewritten
+    logger.warning("改写原样返回但问题含指代，带强化指令重试一次 | q=%.32s", question)
+    retry_message = (_contextualize_q_prompt | llm).invoke(
+        {
+            "input": (
+                f"{question}\n\n"
+                "（注意：上一轮你没有输出改写结果。这个问题依赖对话历史，必须消解指代——"
+                "例如「那病假呢？」应改写为「病假如何申请？」。只输出改写后的那一个问题。）"
+            ),
+            "chat_history": history,
+        }
+    )
+    return _sanitize_rewrite(str(retry_message.content), question)
 
 
 def generate_hypo_answer(question: str) -> str:

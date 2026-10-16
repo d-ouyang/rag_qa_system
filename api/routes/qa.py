@@ -162,6 +162,12 @@ class MessageItem(BaseModel):
     elapsed_ms: float | None = Field(
         default=None, description="本轮总耗时毫秒（仅 assistant 消息携带）",
     )
+    # P4-7b：⚠️ 这个字段**必须显式声明**——handler 往 dict 里塞了 qa_trace，
+    # 但 response_model 序列化会剥掉模型未声明的字段（P4-5 上线后实测：
+    # 流式帧有检索详情、刷新后历史接口里 qa_trace 全变 None，就是被这里滤掉的）。
+    qa_trace: dict[str, Any] | None = Field(
+        default=None, description="本轮流程回溯轨迹（P4-5；老轮次为 None）",
+    )
 
 
 class SessionHistoryResponse(BaseModel):
