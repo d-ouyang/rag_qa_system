@@ -5,6 +5,8 @@ P2-11a 起是**八张**表：user / department / position / user_password_histor
 audit_log / folder / session / chat_message / document。
 前四张是组织、账号与审计（本期新增），后四张是 P0-1/P0-3 的存量。
 P3-6 起追加第十张 `quota_usage_monthly`（月度用量快照，归档审计）。
+site-mood（0010）起追加 `site_mood_submission`（念安站心情收集，独立于 RAG）。
+v4.0.0 P4-1 起追加 `system_config`（运行时业务配置，ConfigService 热更新真相源）。
 
 --------------------------------------------------------------------------
 与 alembic/versions/0001_*.py 的关系（别把这两份合并）
@@ -375,6 +377,33 @@ site_mood_submission_table = sa.Table(
     **TABLE_KW,
 )
 
+# --------------------------------------------------------------------------- #
+# v4.0.0 P4-1：运行时业务配置（ConfigService 的热更新真相源）
+# --------------------------------------------------------------------------- #
+# ⚠️ 列注释与 alembic/versions/0011 逐字相同（compare_metadata 守着，diff 必须为 0）。
+# 与 .env 的分工：**基础设施**（DB/Redis/Chroma 连接、密钥、端口、CORS）留 .env、
+# 重启才生效；**业务开关 / 参数**进本表，管理端（P4-2）改了即时生效。
+# 读写门面是 core/config_service.py（进程内缓存 + TTL 回源），请求链路不直接碰本表。
+system_config_table = sa.Table(
+    "system_config",
+    metadata,
+    sa.Column("config_key", sa.String(128), nullable=False,
+              comment="配置键（如 query_rewrite）；不用裸 key 作列名——KEY 在 MySQL 关键字清单里，带前缀省掉反引号的麻烦"),
+    sa.Column("config_value", sa.Text(), nullable=False,
+              comment="配置值，JSON 序列化（bool/int/float/str 原生类型）；不按类型分列，加类型不改表"),
+    sa.Column("value_type", sa.String(16), nullable=False, server_default="str",
+              comment="值类型标注：bool/int/float/str；set_flag 拒绝跨类型改写，get_flag 按此守卫"),
+    sa.Column("description", sa.String(255), nullable=False, server_default="",
+              comment="人类可读说明；管理端设置页展示，空串=未填"),
+    sa.Column("updated_at", mysql.DATETIME(fsp=6), nullable=False,
+              comment="最后修改时间；由应用显式写入（now_db() 口径），不依赖 DB 时区"),
+    sa.Column("updated_by", sa.String(64), nullable=False, server_default="",
+              comment="最后修改人（用户名或 system）；审计用，不建 FK——配置修改不随账号删除而失效"),
+    sa.PrimaryKeyConstraint("config_key"),
+    comment="运行时业务配置（P4-1）：业务开关热更新的真相源；基础设施配置仍留 .env，见 settings.py CONFIG_BACKEND",
+    **TABLE_KW,
+)
+
 __all__ = [
     "metadata",
     "user_table",
@@ -387,4 +416,5 @@ __all__ = [
     "document_table",
     "quota_usage_monthly_table",
     "site_mood_submission_table",
+    "system_config_table",
 ]

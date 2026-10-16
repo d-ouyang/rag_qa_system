@@ -2,13 +2,30 @@ from pathlib import Path
 from typing import ClassVar, Literal
 from urllib.parse import quote_plus
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from config.version import PROJECT_NAME as _VERSION_NAME
+from config.version import PROJECT_VERSION as _VERSION_STRING
 
 class Settings(BaseSettings):
     # 项目信息
-    PROJECT_NAME : str = "锅圈RAG 智能问答系统"
-    PROJECT_VERSION : str = "1.0.0"
+    # ⚠️ 版本号真相源是**入库的 config/version.py**（随代码/tag 同步，PLAN-v4.0.0 §1.1）：
+    #    `.env` 的 PROJECT_VERSION 只是「本地开发覆盖」，服务器 .env 删掉该行即跟随代码。
+    #    别再手动改服务器 .env 的版本行——那是 2026-10-16 之前「UI 显示老版本」的根因。
+    PROJECT_NAME : str = _VERSION_NAME
+    PROJECT_VERSION : str = _VERSION_STRING
     BASE_DIR : Path = Path(__file__).parent.parent.resolve()
+
+    @field_validator("PROJECT_VERSION")
+    @classmethod
+    def _version_not_empty(cls, v: str) -> str:
+        """`.env` 写了空串（`PROJECT_VERSION=` 留空）时兜底回代码入库版本。
+
+        没有这道校验，一次手滑的空值会让 UI 设置页与 /system/health 的版本号
+        显示成空字符串——排查时第一眼会以为是部署没生效，方向直接跑偏。
+        """
+        return v or _VERSION_STRING
 
     # 数据目录
     DATA_DIR : Path = BASE_DIR / "data"
@@ -52,6 +69,8 @@ class Settings(BaseSettings):
     # 跨页拼接的 markdown —— 但它按次计费且依赖外部服务，所以只做「路由增强」，
     # 失败一律降级回 PyMuPDF，绝不让上传链路的可用性绑定在一个外部 API 上。
     # 总开关：false = PDF 一律 PyMuPDF（行为与 P3-7b 之前一致）。
+    # ⚠️ 与 RETRIEVAL_HYBRID 同一个坑：真实开关在 `.env`，本地已设 true（按次计费），
+    #    判断线上开没开要读 `.env`，别拿代码默认值下结论。
     MINERU_ENABLED : bool = False
     MINERU_API_KEY : str = ""
     MINERU_API_BASE : str = "https://mineru.net/api/v4"
@@ -84,10 +103,20 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # 混合检索（v3.0.0 P3-4）：向量召回 + BM25 关键词召回 → RRF 融合 → 原 reranker
     # ------------------------------------------------------------------ #
-    # ⚠️ 代码默认 false：这个开关的取舍由 P3-3 的评测基线说话，不是由「做了就该开」决定。
-    #    达标判据（三条全中才翻 true）：recall@20 +5pp、MRR@10 +0.05、拒答正确率不降。
-    #    不达标就永远保持 false —— 混合检索只扩召回面，**不动 reranker 与 0.1 阈值**，
-    #    所以它开与不开，拒答口径与引用质量都应该是同一套。
+    # ⚠️ 默认值保持 False，**不要改这个默认值**：回归必须可复现
+    #    （scripts/test_sandbox.sh 强制 RETRIEVAL_HYBRID=false；module20 有断言盯住默认值，
+    #     翻 true 会让回归红）。**真实开关在 `.env`**（.env 覆盖代码默认值）——
+    #     判断线上到底开没开，读 `.env`，别读这里。
+    #
+    # 📌 决策沿革（2026-10-12 两次定论，别只读首轮结论就下判断）：
+    #   · 首轮 A/B：recall@20 判据不达标 → 负结论记档，默认保持 false。
+    #   · 决策变更（同日）：判据口径失效 ≠ 功能无效 —— 基线在 k=20 已摸天花板
+    #     （hit@20=1.0），recall@20 结构性不可能达标；而 recall@5 有 +4.45pp 实证增益、
+    #     唯一失手的编号题被 BM25 第一名救回 → 用户拍板 **`.env` 翻 true**，已生效。
+    #     观察 / 关回指标 = `bm25_only`；完整论证见迭代文档 §7 修订 1，PLAN §3 P3-4 同注。
+    #    混合检索只扩召回面，**不动 reranker 与 0.1 阈值** —— 开与不开，
+    #    拒答口径与引用质量都应是同一套。
+    # ⚠️ 运维：服务器 `/opt/qa/.env` 需同步改 true（.env 不入 git），改完重启后端。
     RETRIEVAL_HYBRID : bool = False
     # RRF 融合常数 k：`score(d) = Σ 1/(k + rank_i(d))`，逐路累加。
     # k 越大，名次差异被压得越平（第 1 名与第 10 名的贡献差越小）；
@@ -108,6 +137,26 @@ class Settings(BaseSettings):
     # 仅当 QUERY_REWRITE 或本开关打开时才执行改写（HyDE 需要一条干净问句去展开）；
     # 单独开 HyDE 会自动先走一次改写。开关关时零行为变化。
     QUERY_HYDE : bool = False
+
+    # ------------------------------------------------------------------ #
+    # 运行时配置服务（v4.0.0 P4-1，PLAN-v4.0.0.md）
+    # ------------------------------------------------------------------ #
+    # 定位：把「业务开关 / 参数」从进程启动期冻结的 `.env` 解耦到**热更新**数据源，
+    #       改开关不再需要 recreate 容器（基础设施配置仍留 .env，那是应得的重启代价）。
+    # 真相源 = MySQL `system_config` 表（迁移 0011 / core/schema.py）；
+    # 读取 = core/config_service.py 的进程内缓存 + TTL 回源，请求链路零 DB 开销。
+    # 与 Redis 的分工不变：Redis 在 P2 只做变更广播 + 热缓存，**不存真相**。
+    #
+    # 后端选择（与 MEMORY_BACKEND 同哲学）：
+    #   memory = 进程内 dict。本地开发 / 测试用（重启即忘，无需 MySQL）；
+    #   mysql  = system_config 表。**生产用**，改一次全站生效、重启不丢。
+    # ⚠️ 默认 memory 是刻意的：让所有离线测试（module23/24）不依赖 MySQL 也能跑。
+    #    生产要在 .env 显式配 mysql——「以为配了热更新、其实存在内存里」比
+    #    「重启才生效」更难排查（后者至少每次重启行为一致）。
+    CONFIG_BACKEND : Literal["memory", "mysql"] = "memory"
+    # 配置缓存 TTL（秒）。P1 靠它兜底最终一致（别的实例/脚本直改库后，
+    # 最多这么久全站可见）；P2 加 Redis pub/sub 即时失效后它仍是第二道保险。
+    CONFIG_TTL_SECONDS : int = 60
 
     # ------------------------------------------------------------------ #
     # 月度用量快照（P3-6，归档审计；判定路径不读它）

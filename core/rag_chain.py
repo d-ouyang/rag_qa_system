@@ -62,6 +62,7 @@ from langchain_core.runnables import (
 )
 
 from config.settings import settings
+from core.config_service import config_service
 from core.intent_router import Intent, IntentResult, get_intent_classifier
 from core.llm_client import LLMClient, get_llm_client
 from core.memory_manager import MemoryManager, get_memory_manager
@@ -624,6 +625,7 @@ class RAGChain:
             · 意图识别（ollama 小模型 ~2s）决定路由；
             · 投机检索：先用原问题检索。首轮必中（无重写）；改写后若与原问题一致也可复用；
             · 问题重写（有历史，或 QUERY_REWRITE / QUERY_HYDE 开关开启时）与意图/检索并行。
+               开关经 ConfigService 读取（DB > .env > 代码默认），管理端可热更新。
 
         检索前 Query 增强（§6.4 D，v3.1.0-p3.7d）：
             开关关闭时行为与原版完全一致（无历史 → 不重写、不 HyDE）；
@@ -638,7 +640,11 @@ class RAGChain:
         retriever = self.retriever  # 直接用 RAGRetriever：retrieve 支持 vector_query（HyDE 透传）
 
         # 检索前 Query 增强：多轮（有历史）或任一开关开启时都跑改写
-        enhance_on = settings.QUERY_REWRITE or settings.QUERY_HYDE
+        # 开关改走 ConfigService（v4.0.0 P4-1）：取值优先级 DB > .env > 代码默认，
+        # 管理端改了即时生效，不再需要 recreate 容器。settings.XXX 仅作默认档。
+        rewrite_on = config_service.get_flag("query_rewrite", settings.QUERY_REWRITE)
+        hyde_on = config_service.get_flag("query_hyde", settings.QUERY_HYDE)
+        enhance_on = rewrite_on or hyde_on
         should_rewrite = bool(chat_history) or enhance_on
 
         intent_future = _PIPELINE_EXECUTOR.submit(classifier.classify, question)
@@ -659,12 +665,12 @@ class RAGChain:
         vector_query: str | None = None
         if rewrite_future is not None:
             standalone, rewrite_usage = rewrite_future.result()
-            if settings.QUERY_HYDE:
+            if hyde_on:
                 # 用改写后的干净问句生成假设答案，其 embedding 替代原问句做向量召回
                 vector_query = generate_hypo_answer(standalone)
             # 改写无变化且不开 HyDE → 复用投机结果（省 ~1s 检索+重排）；
             # 开了 HyDE 即便改写无变化也要用 vector_query 重新检索
-            if standalone.strip() == question.strip() and not settings.QUERY_HYDE:
+            if standalone.strip() == question.strip() and not hyde_on:
                 docs: list[Document] = retrieve_future.result()
             else:
                 docs = retriever.retrieve(standalone, vector_query=vector_query)
