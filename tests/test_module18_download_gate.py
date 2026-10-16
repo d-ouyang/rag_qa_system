@@ -200,8 +200,11 @@ _src = (ROOT / "api/routes/documents.py").read_text(encoding="utf-8")
 _dl_body = _src[_src.index("def download_document("):]
 _dl_body = _dl_body[:_dl_body.index("\ndef _resolve_inside_upload_dir")]
 check("🔴 源码里开关判断在 doc_id 查库之前（关掉时不回答「这份文档在不在」）",
-      _dl_body.index("DOC_DOWNLOAD_ENABLED") < _dl_body.index("repo.get("),
+      _dl_body.index('flag_value("doc_download_enabled")') < _dl_body.index("repo.get("),
       _dl_body[:300])
+check("🔴 老读取点已清干净（P4-2 起开关走 ConfigService，防双源漂移）",
+      "settings.DOC_DOWNLOAD_ENABLED" not in _src,
+      "documents.py 里还残留 settings.DOC_DOWNLOAD_ENABLED")
 check("🔴 路由**有** ACL 依赖（不是只挂开关）",
       "require_kb_download" in _src, "源码里没有 require_kb_download")
 check("下载仍用原始文件名落 Content-Disposition（中文名 RFC 5987 不回归）",

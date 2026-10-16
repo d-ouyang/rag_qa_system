@@ -54,6 +54,7 @@ from pydantic import ConfigDict
 
 from config.settings import settings
 from core.bm25_index import get_bm25_index
+from core.config_flags import flag_value
 from core.vector_store import (
     VectorStoreManager,
     chunk_id_of_metadata,
@@ -475,20 +476,30 @@ class RAGRetriever:
             必须同时注入一个绑到同一库上的 BM25Index。
         """
         self.vector_store: VectorStoreManager = vector_store or get_vector_store_manager()
-        self.top_k: int = int(top_k or settings.SEARCH_TOP_K)
+        # P4-2：top_k / 阈值改为**属性热读**——显式构造参数仍最高优先（测试契约不变），
+        #       缺省时每次检索都走 ConfigService（管理端改了即时生效）。见 _effective_*。
+        self._top_k_override: int | None = int(top_k) if top_k else None
         self.candidate_multiplier: int = int(
             candidate_multiplier or settings.RERANK_CANDIDATE_MULTIPLIER
         )
+        # 构造时初始阈值：仍是「显式参数 > settings」，重排器对象拿它做初始值；
+        # 但每次检索的**实际**阈值走 _effective_threshold()（热读）。
         self.score_threshold: float | None = (
             score_threshold if score_threshold is not None else settings.RERANK_SCORE_THRESHOLD
         )
+        self._threshold_override: float | None = score_threshold
         # 混合检索（P3-4）。⚠️ 开关在**每次检索时**读而不是构造时读：
         # 它是本次 P3-4 A/B 的被测变量，读一次锁死会让「同一进程内对比两种配置」
         # 变成必须重启 —— 重启会让 A/B 之间多出一个冷启动变量。
         self.last_hybrid_trace: dict[str, Any] | None = None
         self._bm25_override = bm25_index
+        # P4-2 热开启去重标记：rerank_enabled 从关到开时只尝试构建一次
+        self._reranker_build_attempted = False
 
         enable: bool = settings.USE_RERANKER if use_reranker is None else use_reranker
+        # P4-2：显式构造参数 = **实例级锁死**（测试契约「这个实例不重排」不许被
+        # 热开启绕过）；不传（None）才走配置热读 + 热构建。生产单例不传参 → 热路径。
+        self._rerank_override: bool | None = None if use_reranker is None else bool(use_reranker)
         self.reranker: CrossEncoderReranker | SiliconFlowReranker | None = (
             self._build_reranker(reranker_model) if enable else None
         )
@@ -502,6 +513,61 @@ class RAGRetriever:
             self.reranker.model_path if self.reranker else "关闭",
             self.vector_store.store_type,
         )
+
+    # ------------------------------------------------------------------ #
+    # 热读属性（P4-2）：显式构造参数 > ConfigService（DB > .env > 代码默认）
+    # ------------------------------------------------------------------ #
+    @property
+    def top_k(self) -> int:
+        """最终返回条数。做成属性而不是构造快照：它是运维随时会调的参数，
+        而它只影响「本次取几条」这种每次检索都能重新决定的事，没有快照的理由。"""
+        if self._top_k_override is not None:
+            return self._top_k_override
+        return int(flag_value("search_top_k"))
+
+    def _effective_threshold(self) -> float | None:
+        """本次检索实际使用的重排分数阈值；0 视为「关闭过滤」（None）。"""
+        if self._threshold_override is not None:
+            return self._threshold_override
+        value = float(flag_value("rerank_score_threshold"))
+        return value if value > 0 else None
+
+    def _rerank_active(self) -> bool:
+        """
+        本次检索重排是否真的会跑。三层判定，语义各有出处：
+
+            ① 开关关 → 关（热更新，本次检索立即生效）；
+            ② 重排器对象**在** → 开（对象是事实：显式构建的、测试注入的都算，
+               module20「构造禁用后注入打桩器」的惯例依赖这一点）；
+            ③ 对象不在且构造时**显式禁用过** → 关（不许为了绕过显式禁用而
+               热构建一个真重排器去打测试/打网络）；
+            ④ 对象不在且构造时未表态 → 热构建（仅 siliconflow，见 _maybe_build_reranker）。
+        """
+        if not flag_value("rerank_enabled"):
+            return False
+        if self.reranker is not None:
+            return True
+        if self._rerank_override is False:
+            return False
+        self._maybe_build_reranker()
+        return self.reranker is not None
+
+    def _maybe_build_reranker(self) -> None:
+        """
+        rerank_enabled 从关到开的热构建。
+
+        siliconflow 后端零权重加载（一个 HTTP 客户端），可安全即时构建；
+        local 后端要拉 ~1.1GB CrossEncoder 权重，**保持「重启生效」语义**——
+        内存预算（PLAN §11.1）不该被一个拨开关的动作悄悄打爆。
+        """
+        if self._reranker_build_attempted:
+            return
+        self._reranker_build_attempted = True
+        if settings.RERANK_BACKEND != "siliconflow":
+            logger.info("rerank_enabled 已开启，但重排后端为 local（需加载本地权重），维持「重启生效」语义")
+            return
+        logger.info("rerank_enabled 配置热开启，构建硅基流动重排器")
+        self.reranker = self._build_reranker(None)
 
     # ------------------------------------------------------------------ #
     # 初始化
@@ -541,8 +607,9 @@ class RAGRetriever:
 
         启用重排时必须放大候选池，否则「重排」退化成「给同样的 K 条换个顺序」，
         召回率没有任何提升 —— 这是重排落地时最常见的无效实现。
+        （P4-2：判定走 _rerank_active() 热读，开关关的当次检索不放大候选池。）
         """
-        if self.reranker is None or self.candidate_multiplier <= 1:
+        if not self._rerank_active() or self.candidate_multiplier <= 1:
             return target_k
         candidate_k = target_k * self.candidate_multiplier
         logger.debug(
@@ -605,7 +672,7 @@ class RAGRetriever:
             "检索完成 | 候选=%d 返回=%d 重排=%s 混合=%s 耗时=%.2fs | query=%.24s",
             len(pairs),
             len(scored),
-            "开" if self.reranker else "关",
+            "开" if self._rerank_active() else "关",
             "开" if settings.RETRIEVAL_HYBRID else "关",
             time.perf_counter() - start,
             query,
@@ -727,13 +794,18 @@ class RAGRetriever:
         docs = [doc for doc, _ in pairs]
 
         # 不重排：保持向量库的顺序，只截断到目标条数
-        if self.reranker is None:
+        # （P4-2：热判——开关关的当次检索直接走这条降级路，重排器对象仍留在实例上）
+        if not self._rerank_active():
             return [(doc, float(score)) for doc, score in pairs[:target_k]]
 
         # 用 id() 建立「对象 -> 余弦相似度」映射，后续按同一个对象反查。
         # 不能靠 Document.__eq__ 反查：内容相同的两个不同文件会被判定为相等而错配。
         vector_similarities: dict[int, float] = {id(doc): float(score) for doc, score in pairs}
 
+        # P4-2 阈值热更新：检索前把当前生效阈值写到重排器上（重排器内部逻辑一行不动）。
+        # 并发说明：生产路径所有线程写的都是同一个全局配置值，竞态无害；
+        # 测试直接调 rerank() 不经过这里，各自的 self.score_threshold 不受影响。
+        self.reranker.score_threshold = self._effective_threshold()
         reranked = self.reranker.rerank(query, docs, top_k=target_k)
         if reranked is None:
             # 重排不可用（模型没加载成功或打分失败）-> 降级为纯向量结果

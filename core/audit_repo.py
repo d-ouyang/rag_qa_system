@@ -93,9 +93,20 @@ ACTION_LABELS: Final[dict[str, str]] = {
     "auth.login.success": "登录成功",
     "auth.login.failure": "登录失败",
     "auth.logout": "登出",
+    # v4.0.0 P4-2：运行时配置变更（管理端设置页）。target_type 用 `system`
+    # （target_label 存配置键，如 query_rewrite）—— 配置不属于任何用户/文档，
+    # 但「谁在什么时候把哪个开关拨成了什么」必须能单独筛出来。
+    "config.update": "修改系统配置",
 }
 
-TARGET_TYPES: Final[tuple[str, ...]] = ("user", "department", "position", "auth", "document")
+TARGET_TYPES: Final[tuple[str, ...]] = (
+    "user",
+    "department",
+    "position",
+    "auth",
+    "document",
+    "system",
+)
 
 
 # --------------------------------------------------------------------------- #

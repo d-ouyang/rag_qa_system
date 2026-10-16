@@ -1,17 +1,27 @@
 <script setup lang="ts">
 /**
  * 系统设置页（右侧内容区 · settings 视图）。
- * 只读展示当前问答系统关键配置项（分组卡片），
- * 配置来源 .env + 环境变量，修改后需重启后端生效。
+ *
+ * 两层内容（P4-2）：
+ *   ① 「运行时开关」卡片（页面最上方）：来自 /admin/config 注册表，
+ *      superadmin 可改、**确认修改后下一个请求即生效**（无需重启）；
+ *      非 superadmin 请求 403 → 整块不渲染，页面退回纯只读。
+ *   ② 只读配置卡片：来自 /system/settings 汇总，配置来源于配置文件，
+ *      修改需重启（卡片下方有 note 说明的属于「改了还要重建索引」的重灾区）。
  */
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useUiStore } from '@/stores/ui'
+import { ApiError } from '@/api/http'
+import { getRuntimeConfig, patchRuntimeConfig, type RuntimeFlag } from '@/api/system'
 
 const settingsStore = useSettingsStore()
 const ui = useUiStore()
 
-onMounted(() => void settingsStore.refresh())
+onMounted(() => {
+  void settingsStore.refresh()
+  void loadFlags()
+})
 
 const s = computed(() => settingsStore.settings)
 
@@ -28,6 +38,7 @@ const groups = computed(() => {
         ['监听地址', `${s.value.project.api_host}:${s.value.project.api_port}`],
         ['日志级别', s.value.project.log_level],
       ] as [string, string][],
+      note: '本卡为运行信息与基础设施配置，修改需重启服务。',
     },
     {
       title: '大语言模型（LLM）',
@@ -44,6 +55,7 @@ const groups = computed(() => {
           ? [['思考链 reasoning', s.value.llm.reasoning_enabled ? '开启' : '关闭'] as [string, string]]
           : []),
       ] as [string, string][],
+      note: '模型切换属 P4-3（全局白名单），本期暂不开放编辑。',
     },
     {
       title: '检索与重排',
@@ -64,6 +76,7 @@ const groups = computed(() => {
             ] as [string, string][])
           : []),
       ] as [string, string][],
+      note: '本卡的 top_k / 重排开关 / 阈值已可在上方「检索与重排」运行时开关里热改（此处为启动时快照）。',
     },
     {
       title: '向量库与嵌入',
@@ -80,6 +93,7 @@ const groups = computed(() => {
           ? [['片段总量', String(s.value.vector_store.total_vectors)] as [string, string]]
           : []),
       ] as [string, string][],
+      note: '⚠️ 更换嵌入模型 = 更换向量空间 = 必须整库重建，禁止随意切换。',
     },
     {
       title: '文档切分',
@@ -88,6 +102,7 @@ const groups = computed(() => {
         ['片段大小 chunk_size', `${s.value.chunking.chunk_size} 字符`],
         ['重叠 chunk_overlap', `${s.value.chunking.chunk_overlap} 字符`],
       ] as [string, string][],
+      note: '⚠️ 更改切分参数 = 全库切片重排 = 必须重建索引（后续版本经确认按钮触发异步重建，暂不开放编辑）。',
     },
     {
       title: '会话记忆',
@@ -96,6 +111,7 @@ const groups = computed(() => {
         ['最大保留轮数', `${s.value.memory.max_turns} 轮`],
         ['会话过期时间', `${Math.round(s.value.memory.session_ttl_seconds / 3600)} 小时`],
       ] as [string, string][],
+      note: '记忆轮数已可在上方「会话记忆」运行时开关里热改（此处为启动时快照）。',
     },
     {
       title: '意图识别',
@@ -108,6 +124,81 @@ const groups = computed(() => {
     },
   ]
 })
+
+// --------------------------------------------------------------------------- //
+// 运行时开关（P4-2）
+// --------------------------------------------------------------------------- //
+const flags = ref<RuntimeFlag[]>([])
+const flagsLoading = ref(false)
+const flagsError = ref('')
+/** false = 非 superadmin（后端 403）→ 整块不渲染，页面保持纯只读 */
+const canEdit = ref(false)
+/** 草稿：key → 用户改过的值。与 f.value 不同即为「脏」，出现「确认修改」按钮 */
+const drafts = reactive<Record<string, boolean | number>>({})
+const savingKey = ref<string | null>(null)
+
+/** 按注册表的 card 字段分组（卡片顺序 = 注册表里 key 字典序的稳定结果） */
+const flagCards = computed(() => {
+  const byCard = new Map<string, RuntimeFlag[]>()
+  for (const f of flags.value) {
+    const list = byCard.get(f.card) ?? []
+    list.push(f)
+    byCard.set(f.card, list)
+  }
+  return [...byCard.entries()].map(([card, items]) => ({ card, items }))
+})
+
+async function loadFlags() {
+  flagsLoading.value = true
+  flagsError.value = ''
+  try {
+    const res = await getRuntimeConfig()
+    flags.value = res.flags
+    canEdit.value = res.can_edit
+    for (const f of res.flags) drafts[f.key] = f.value
+  } catch (e) {
+    // 403 是预期路径（非 superadmin），不是错误——静默退回只读模式
+    if (e instanceof ApiError && e.status === 403) {
+      canEdit.value = false
+      flags.value = []
+    } else {
+      flagsError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    flagsLoading.value = false
+  }
+}
+
+function isDirty(f: RuntimeFlag): boolean {
+  const d = drafts[f.key]
+  return d !== undefined && d !== f.value
+}
+
+function toggleBool(f: RuntimeFlag) {
+  drafts[f.key] = !drafts[f.key]
+}
+
+async function saveFlag(f: RuntimeFlag) {
+  if (!isDirty(f) || savingKey.value) return
+  // 数字输入可能拿到空串（v-model.number 对空输入给 ''）——先收敛成 number
+  const raw = drafts[f.key]
+  const payload = f.value_type === 'bool' ? Boolean(raw) : Number(raw)
+  if (Number.isNaN(payload)) {
+    ui.toast(`「${f.label}」的值不是有效数字`, 'error')
+    return
+  }
+  savingKey.value = f.key
+  try {
+    const res = await patchRuntimeConfig(f.key, payload)
+    f.value = res.value
+    drafts[f.key] = res.value
+    ui.toast(`「${f.label}」已保存，下一个请求即生效`, 'success')
+  } catch (e) {
+    ui.toast(e instanceof Error ? e.message : '保存失败', 'error')
+  } finally {
+    savingKey.value = null
+  }
+}
 </script>
 
 <template>
@@ -115,10 +206,13 @@ const groups = computed(() => {
     <header class="page-header">
       <div>
         <h2>系统设置</h2>
-        <p class="page-desc">当前问答系统运行配置（只读）。配置来源于系统配置文件，修改后需重启系统生效。</p>
+        <p class="page-desc">
+          「运行时开关」修改**即时生效**（无需重启）；其余卡片来源于系统配置文件，修改需重启。
+          运行时开关仅知识库超管（kb_role=superadmin）可改。
+        </p>
       </div>
       <div class="header-actions">
-        <button class="btn-ghost" :disabled="settingsStore.loading" @click="settingsStore.refresh()">
+        <button class="btn-ghost" :disabled="settingsStore.loading" @click="settingsStore.refresh(); loadFlags()">
           刷新
         </button>
         <button class="btn-primary" @click="ui.switchView('chat')">返回会话</button>
@@ -131,17 +225,78 @@ const groups = computed(() => {
       <button class="btn-primary" style="margin-left: 12px" @click="settingsStore.refresh()">重试</button>
     </div>
 
-    <div v-else class="groups">
-      <div v-for="g in groups" :key="g.title" class="card group">
-        <h3 class="group-title"><span class="group-icon">{{ g.icon }}</span>{{ g.title }}</h3>
-        <dl class="kv">
-          <template v-for="[key, val] in g.rows" :key="key">
-            <dt>{{ key }}</dt>
-            <dd :class="{ mono: /目录|地址|Collection/.test(key) }" :title="val">{{ val }}</dd>
-          </template>
-        </dl>
+    <template v-else>
+      <!-- ① 运行时开关（superadmin 专属；非超管 403 → 整块不渲染） -->
+      <div v-if="flagsLoading" class="card group muted-note">读取运行时开关中…</div>
+      <div v-else-if="flagsError" class="card error-card">
+        运行时开关读取失败：{{ flagsError }}
+        <button class="btn-primary" style="margin-left: 12px" @click="loadFlags()">重试</button>
       </div>
-    </div>
+      <div v-else-if="flagCards.length" class="groups">
+        <div v-for="c in flagCards" :key="c.card" class="card group">
+          <h3 class="group-title">
+            <span class="group-icon">🎛</span>{{ c.card }}
+            <span class="hot-badge">即时生效</span>
+          </h3>
+          <div v-for="f in c.items" :key="f.key" class="flag-row">
+            <div class="flag-info">
+              <div class="flag-label">
+                {{ f.label }}
+                <code class="flag-key">{{ f.key }}</code>
+              </div>
+              <div class="flag-desc">{{ f.description }}</div>
+            </div>
+            <div class="flag-control">
+              <template v-if="f.value_type === 'bool'">
+                <button
+                  class="toggle"
+                  :class="{ on: Boolean(drafts[f.key]) }"
+                  :disabled="savingKey === f.key"
+                  :aria-label="f.label"
+                  @click="toggleBool(f)"
+                >
+                  <span class="knob"></span>
+                </button>
+                <span class="flag-val">{{ drafts[f.key] ? '开启' : '关闭' }}</span>
+              </template>
+              <template v-else>
+                <input
+                  v-model.number="drafts[f.key]"
+                  class="num-input"
+                  type="number"
+                  :step="f.value_type === 'float' ? '0.05' : '1'"
+                  :min="f.min ?? undefined"
+                  :max="f.max ?? undefined"
+                  :disabled="savingKey === f.key"
+                />
+              </template>
+              <button
+                v-if="isDirty(f)"
+                class="btn-primary btn-save"
+                :disabled="savingKey === f.key"
+                @click="saveFlag(f)"
+              >
+                {{ savingKey === f.key ? '保存中…' : '确认修改' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ② 只读配置卡片 -->
+      <div class="groups">
+        <div v-for="g in groups" :key="g.title" class="card group">
+          <h3 class="group-title"><span class="group-icon">{{ g.icon }}</span>{{ g.title }}</h3>
+          <dl class="kv">
+            <template v-for="[key, val] in g.rows" :key="key">
+              <dt>{{ key }}</dt>
+              <dd :class="{ mono: /目录|地址|Collection/.test(key) }" :title="val">{{ val }}</dd>
+            </template>
+          </dl>
+          <p v-if="g.note" class="group-note">{{ g.note }}</p>
+        </div>
+      </div>
+    </template>
   </section>
 </template>
 
@@ -222,11 +377,125 @@ const groups = computed(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
+.group-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
 .error-card {
   padding: 18px;
   color: var(--danger);
   font-size: 13.5px;
   display: flex;
   align-items: center;
+}
+.muted-note {
+  padding: 14px 18px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+/* ---- 运行时开关（P4-2）---- */
+.hot-badge {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent, #4a9eff);
+  color: var(--accent, #4a9eff);
+}
+.flag-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 0;
+}
+.flag-row + .flag-row {
+  border-top: 1px dashed var(--border);
+}
+.flag-info {
+  min-width: 0;
+}
+.flag-label {
+  font-size: 13px;
+  color: var(--text-1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.flag-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-3);
+  background: var(--bg-hover);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.flag-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.55;
+}
+.flag-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+.flag-val {
+  font-size: 12.5px;
+  color: var(--text-2);
+  width: 30px;
+}
+.toggle {
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+.toggle .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-3);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.toggle.on {
+  background: var(--accent, #4a9eff);
+  border-color: var(--accent, #4a9eff);
+}
+.toggle.on .knob {
+  transform: translateX(18px);
+  background: #fff;
+}
+.toggle:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.num-input {
+  width: 84px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-content);
+  color: var(--text-1);
+  font-size: 13px;
+}
+.btn-save {
+  padding: 6px 12px;
+  font-size: 12.5px;
+  white-space: nowrap;
 }
 </style>
