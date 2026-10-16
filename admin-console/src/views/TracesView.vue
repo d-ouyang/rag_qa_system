@@ -148,6 +148,43 @@ function candidatesOf(row: QaTraceRow): CandRow[] {
   return (row.candidates ?? []) as unknown as CandRow[]
 }
 
+// ---- 候选原文（P4-7）：点「原文」时批量拉当前轨迹全部候选的正文并缓存 ----
+// 两层缓存：traceId → (chunkId → 原文)。同一条轨迹来回开合不重复请求。
+const chunkContents = ref<Record<number, Record<string, import('@/api/admin').ChunkContent | null>>>({})
+const openChunks = ref<Set<string>>(new Set())
+const chunkLoading = ref(false)
+
+async function toggleChunk(row: QaTraceRow, id: string) {
+  const next = new Set(openChunks.value)
+  if (next.has(id)) {
+    next.delete(id)
+    openChunks.value = next
+    return
+  }
+  next.add(id)
+  openChunks.value = next
+  // 该轨迹首次展开时一次拉全（后端单次 ≤20 个）
+  if (chunkContents.value[row.id]) return
+  chunkLoading.value = true
+  try {
+    const ids = candidatesOf(row).map((c) => String(c.chunk_id)).filter(Boolean)
+    const res = await api.fetchChunkContents(ids)
+    chunkContents.value = { ...chunkContents.value, [row.id]: res.items }
+  } catch (e) {
+    toast('error', e instanceof ApiError ? e.message : '加载切片原文失败')
+  } finally {
+    chunkLoading.value = false
+  }
+}
+// 打开新轨迹时清掉展开状态（正文缓存按 trace id 保留，来回切换不重复请求）
+function openDetail(row: QaTraceRow) {
+  detail.value = row
+  openChunks.value = new Set()
+}
+function contentOf(row: QaTraceRow, id: string): import('@/api/admin').ChunkContent | null | undefined {
+  return chunkContents.value[row.id]?.[id]
+}
+
 // --------------------------------------------------------------------------- //
 // 状态机图：完整链路 + 本次实走路径高亮（flow_path 由后端派生，前端不推分支）
 // --------------------------------------------------------------------------- //
@@ -375,7 +412,7 @@ function nodeLabel(key: string): string {
             </td>
             <td class="mono nowrap">{{ Math.round(row.elapsed_ms) }}ms</td>
             <td class="mono muted nowrap" :title="row.session_id">{{ shortSession(row.session_id) }}</td>
-            <td class="nowrap"><button class="btn btn-ghost" @click="detail = row">详情</button></td>
+            <td class="nowrap"><button class="btn btn-ghost" @click="openDetail(row)">详情</button></td>
           </tr>
           <tr v-if="!rows.length">
             <td colspan="8" class="empty">没有符合条件的轨迹</td>
@@ -499,22 +536,41 @@ function nodeLabel(key: string): string {
           <div class="m"><span class="k">HyDE 向量文本</span><span>{{ detail.vector_query ?? '—' }}</span></div>
         </div>
 
-        <!-- 候选清单 -->
+        <!-- 候选清单（重排前，可展开原文人工校验） -->
         <template v-if="candidatesOf(detail).length">
-          <h3 class="sec">候选清单（重排前）</h3>
+          <h3 class="sec">候选清单（重排前，按分数降序）</h3>
           <table class="grid cands">
             <thead>
-              <tr><th>#</th><th>来源</th><th>切片</th><th>重排分</th><th>向量分</th><th>过阈值</th></tr>
+              <tr><th>#</th><th>来源</th><th>切片</th><th>重排分</th><th>向量分</th><th>过阈值</th><th></th></tr>
             </thead>
             <tbody>
-              <tr v-for="(c, i) in candidatesOf(detail)" :key="i">
-                <td class="muted">{{ i + 1 }}</td>
-                <td>{{ c.file_name ?? '—' }}</td>
-                <td class="mono">{{ c.chunk_id ?? '—' }}</td>
-                <td class="mono">{{ num(c.rerank_score as number | null) }}</td>
-                <td class="mono">{{ num(c.vector_similarity as number | null) }}</td>
-                <td>{{ c.passed_threshold ? '✓' : '✗' }}</td>
-              </tr>
+              <template v-for="(c, i) in candidatesOf(detail)" :key="i">
+                <tr>
+                  <td class="muted">{{ i + 1 }}</td>
+                  <td>{{ c.file_name ?? '—' }}</td>
+                  <td class="mono">{{ c.chunk_id ?? '—' }}</td>
+                  <td class="mono">{{ num(c.rerank_score as number | null) }}</td>
+                  <td class="mono">{{ num(c.vector_similarity as number | null) }}</td>
+                  <td>{{ c.passed_threshold ? '✓' : '✗' }}</td>
+                  <td>
+                    <button class="btn btn-ghost" @click="toggleChunk(detail, String(c.chunk_id))">
+                      {{ openChunks.has(String(c.chunk_id)) ? '收起' : '原文' }}
+                    </button>
+                  </td>
+                </tr>
+                <tr v-if="c.chunk_id && openChunks.has(String(c.chunk_id))">
+                  <td colspan="7" class="chunk-cell">
+                    <div v-if="chunkLoading && contentOf(detail, String(c.chunk_id)) === undefined" class="muted">加载中…</div>
+                    <template v-else-if="contentOf(detail, String(c.chunk_id))">
+                      <div class="chunk-file mono">{{ contentOf(detail, String(c.chunk_id))!.file_name || '—' }}</div>
+                      <pre class="chunk-pre">{{ contentOf(detail, String(c.chunk_id))!.content }}</pre>
+                    </template>
+                    <span v-else-if="contentOf(detail, String(c.chunk_id)) === null" class="muted">
+                      该切片已失效（文档被删除或重新解析后位置变化）
+                    </span>
+                  </td>
+                </tr>
+              </template>
             </tbody>
           </table>
         </template>
@@ -691,6 +747,14 @@ function nodeLabel(key: string): string {
 }
 .cands {
   margin-top: 4px;
+}
+.chunk-cell { background: #f8fafc; }
+.chunk-file { font-size: 12px; color: var(--text-3, #94a3b8); margin-bottom: 4px; }
+.chunk-pre {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.7; color: var(--text-1, #111827);
+  max-height: 320px; overflow: auto;
 }
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

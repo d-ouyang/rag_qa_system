@@ -48,6 +48,7 @@ from core import user_repo as repo
 from core.identity import Actor, require_admin, require_kb, require_staff
 from core.intent_router import INTENT_LABELS
 from core.qa_flow import STATE_LABELS, TERMINAL_STATES
+from core.vector_store import fetch_chunk_contents
 
 logger = logging.getLogger(__name__)
 
@@ -581,6 +582,31 @@ def list_qa_traces(
         ],
         "intents": [{"value": k, "label": v} for k, v in INTENT_LABELS.items()],
     }
+
+
+@router.get("/qa-traces/chunks", summary="按 chunk_id 批量取切片原文（P4-7：溯源页人工校验）")
+def get_qa_trace_chunks(
+    ids: str = Query(..., description="逗号分隔的 chunk_id，如 812:1,812:2（单次最多 20 个）"),
+    _: Actor = Depends(require_staff),
+    __: Actor = Depends(require_kb(kb_acl.ACTION_VIEW_QA_TRACES)),
+) -> dict[str, Any]:
+    """
+    溯源页「候选原文」的按需查询：候选清单里只存定位键（chunk_id + 分数），
+    正文点开时现查 —— 避免把 20 个候选的全文塞进镜像表（每轮多 40KB 没必要）。
+
+    权限与 /qa-traces 主接口一致（staff + view_qa_traces）：
+    能看轨迹的人必然能看轨迹里引用过的切片原文，不另设一档。
+    """
+    id_list = [x.strip() for x in ids.split(",") if x.strip()]
+    if not id_list:
+        raise HTTPException(status_code=400, detail="ids 不能为空")
+    if len(id_list) > 20:
+        raise HTTPException(status_code=400, detail="单次最多查询 20 个切片")
+    try:
+        items = fetch_chunk_contents(id_list)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"items": items}
 
 
 # --------------------------------------------------------------------------- #

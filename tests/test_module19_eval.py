@@ -79,17 +79,17 @@ section("第 1 组：golden.jsonl 的结构与配比")
 
 cases = ev.load_golden(GOLDEN)
 check("golden.jsonl 能被 load_golden 读进来且非空", len(cases) > 0, f"读到 {len(cases)} 条")
-check("共 40 条（PLAN §P3-3 定的量）", len(cases) == 40, f"实际 {len(cases)}")
+check("共 41 条（P3-3 的 40 条 + P4-7 病假负样本）", len(cases) == 41, f"实际 {len(cases)}")
 
 in_scope = [c for c in cases if c["should_answer"]]
 out_scope = [c for c in cases if not c["should_answer"]]
-check("库内 30 条 / 库外 10 条", len(in_scope) == 30 and len(out_scope) == 10,
+check("库内 30 条 / 库外 11 条（P4-7 加病假负样本）", len(in_scope) == 30 and len(out_scope) == 11,
       f"库内={len(in_scope)} 库外={len(out_scope)}")
 
 counts: dict[str, int] = {}
 for c in cases:
     counts[c["category"]] = counts.get(c["category"], 0) + 1
-EXPECTED_COUNTS = {"term": 10, "numbered": 8, "paraphrase": 7, "cross": 5, "out_of_scope": 10}
+EXPECTED_COUNTS = {"term": 10, "numbered": 8, "paraphrase": 7, "cross": 5, "out_of_scope": 11}
 check("分类配比 = 10 专名 / 8 编号 / 7 改写 / 5 跨文档 / 10 库外",
       counts == EXPECTED_COUNTS, f"实际 {counts}")
 

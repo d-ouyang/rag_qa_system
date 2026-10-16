@@ -593,3 +593,16 @@ export function fetchQaTraces(params: {
   query.set('offset', String(params.offset ?? 0))
   return get<QaTraceListResult>(`/api/v1/admin/qa-traces?${query.toString()}`)
 }
+
+/** 候选切片原文（P4-7：轨迹详情「看原文」按需查询；取不到 = 引用已随文档失效）。 */
+export interface ChunkContent {
+  chunk_id: string
+  file_name: string
+  content: string
+}
+
+export function fetchChunkContents(ids: string[]): Promise<{ items: Record<string, ChunkContent | null> }> {
+  return get<{ items: Record<string, ChunkContent | null> }>(
+    `/api/v1/admin/qa-traces/chunks?ids=${encodeURIComponent(ids.join(','))}`,
+  )
+}

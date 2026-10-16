@@ -282,6 +282,36 @@ try:
         "/api/v1/admin/qa-traces", params={"min_top1_gap": 0.9})
     check("min_top1_gap 大值 = 空而不炸（参数界内）",
           resp_g.status_code == 200 and resp_g.json()["total"] == 0)
+
+    # 4f. 候选原文（P4-7）：批量取 + 参数校验（正文查询走桩，不碰 Chroma）
+    import api.routes.admin as admin_routes
+
+    orig_fetch = admin_routes.fetch_chunk_contents
+    admin_routes.fetch_chunk_contents = lambda ids: {
+        i: {"chunk_id": i, "file_name": "a.md", "content": f"正文-{i}"} for i in ids
+    }
+    try:
+        resp_c = _client_with(_actor("superadmin")).get(
+            "/api/v1/admin/qa-traces/chunks", params={"ids": "812:1,812:2"})
+        check("chunks 批量取原文 200", resp_c.status_code == 200
+              and resp_c.json()["items"]["812:1"]["content"] == "正文-812:1",
+              f"实际 {resp_c.status_code} {resp_c.text[:150]}")
+        resp_denied = _client_with(_actor("qa")).get(
+            "/api/v1/admin/qa-traces/chunks", params={"ids": "812:1"})
+        check("qa 档看原文 403（与主接口同门禁）", resp_denied.status_code == 403,
+              f"实际 {resp_denied.status_code}")
+    finally:
+        admin_routes.fetch_chunk_contents = orig_fetch
+
+    # 参数校验用**真函数**（桩会把解析也替掉，400 路径测不到）：
+    # 非法格式在 parse_chunk_id 处抛 ValueError → 400，碰不到 Chroma
+    resp_empty = _client_with(_actor("superadmin")).get(
+        "/api/v1/admin/qa-traces/chunks", params={"ids": ","})
+    check("ids 全空 400", resp_empty.status_code == 400, f"实际 {resp_empty.status_code}")
+    resp_illegal = _client_with(_actor("superadmin")).get(
+        "/api/v1/admin/qa-traces/chunks", params={"ids": "not-a-chunk"})
+    check("非法 chunk_id 400", resp_illegal.status_code == 400,
+          f"实际 {resp_illegal.status_code}")
 finally:
     with session_scope() as session:
         session.execute(sa.delete(qa_trace_table).where(qa_trace_table.c.session_id.like("p45b\\_%")))
