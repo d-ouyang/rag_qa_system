@@ -3,7 +3,7 @@
 > 2026-10-16 讨论产出（IDENTITY_MODE=dev→gateway 切换完成后顺势提出）。涉及 api/core/frontend/admin-console 与现有「系统设置」页。
 > 铁律不变：每任务 = 迭代文档 + tag `4.0.0-p4.N` + RELEASES + CHANGELOG + 版本号（见 §1 新规则）+ 本表更新状态。
 > 判新旧看 `git log` 不看编号；开打前 `git tag | grep 'p4\.'` 查占用。
-> 优先级：**P4-1 / P4-2 为本轮核心；P4-3 / P4-4 降为低优先级，待 P4-1/P4-2 落地后视需求排期**（仍为 ConfigService 的消费者，依赖 P4-1）。
+> 优先级：**P4-1 / P4-2 已收官（已上线）；P4-5（问答流程回溯）为当前核心，正在做一期**；P4-3 / P4-4 仍为低优先级，待需求排期（均依赖 P4-1 的 ConfigService）。
 
 ---
 
@@ -55,8 +55,10 @@
 | P4-2 | 设置页改造：现有只读「系统设置」页升级为分层可操作面板（热项可编辑 + 确认按钮 + 需重启徽标）+ 后端 admin/config 路由 | api/core/frontend | ✅ 完成（2026-10-16，8 标志全链路热化 + superadmin 门禁 + 审计） | `v4.0.0-p4.2` | **高** |
 | P4-3 | 模型切换：白名单 + 全局生效模型（qa_cache key 带模型名；嵌入模型保持只读+重建任务） | api/core/frontend | 🔲 未开始 | `4.0.0-p4.3` | 低（P4-1/2 后） |
 | P4-4 | 会话三层存储 L1：进程内缓存层（TTL+LRU），读 L1→L2→L3、写 L3 先行，ACL 不过缓存 | api/core | 🔲 未开始 | `4.0.0-p4.4` | 低（P4-1/2 后） |
+| P4-5 | **问答流程回溯（Q&A Trace）**：检索轨迹按请求采集 + 随轮落库 `turn_meta.qa_trace` + 历史接口回吐 + 前端「检索详情」改读持久化（**一期**）；跨会话分析表 + 溯源可视化页（**二期**） | api/core/frontend | ✅ 一期完成（2026-10-16，四终端状态全落库 + 流式同源 + 前端落库优先） | `v4.0.0-p4.5` | **高（当前）** |
 
 依赖：P4-2 依赖 P4-1（UI 编辑的是 ConfigService）；P4-3 / P4-4 依赖 P4-1（消费者）。P4-1 独立可先做。
+P4-5 独立（只动检索轨迹 + 落库 + 前端展示），不依赖其它任务，可即做。
 
 ---
 
@@ -137,3 +139,36 @@
 - **P4-4 只做 L1**：进程内缓存层（TTL + LRU 容量上限，4C4G 内存紧），开关接入 ConfigService；**ACL/owner 校验永不过缓存**。
 - L2 Redis 视实际收益放后续（backend 重启暖启动 / 多副本），与 ConfigService **共用同一套 Redis pub/sub**。
 - MySQL 永不关，开关只剩 L1/L2 两个，语义干净。
+
+---
+
+### P4-5 问答流程回溯（Q&A Trace）
+
+> 立项动机：反复要回答「这一轮为什么这么答 / 为什么拒答」。p2.23 交付的「检索详情」面板**只在当轮流式过程中可见**，刷新即消失 —— 当时刻意没做持久化（v2.0.0-p2.23 §1/§6 明写"待有真实需求再立项"）。本任务就是那个真实需求：把每轮的完整链路决策 + 检索细节**落库**，可回看、可分析。
+
+**现状事实**
+- `chat_message.turn_meta`（JSON 列）已随轮持久化 `sources / intent / route / standalone_question / usage / elapsed_ms / ts / cache_hit`，**但没有候选级检索细节**（重排分/阈值/top1/filtered_count/hybrid 轨迹）。
+- 检索轨迹挂在重排器实例的 `last_trace` / 检索器的 `last_hybrid_trace`（P2-23「最近一次」口径，并发会互相覆盖）。
+- 一次问答的终端状态有四种（隐式分支，无正式状态机）：`cache_hit` / `chitchat` / `zero_recall` / `rag_qa`。
+
+**方案（一期：落库 + 历史回看）**
+1. **轨迹按请求采集**：`RAGRetriever.retrieve()` 加**可选出参** `trace_out`（不改返回值、不加位置参数 → 测试注入的打桩重排器 `rerank(query, documents, top_k=None)` 零影响）；`_rank()` 在 `rerank()` 一返回就取走 `last_trace`（把「最近一次」窗口从整个请求缩到本次调用）。`_prepare_parallel` 生成一份 `trace` 传给检索，收进 `prepared["retrieval_trace"]`（重新检索时换新的一份）。
+2. **组装 + 落库**：新增 `_build_qa_trace()`（复用 `_retrieval_debug_event` 产出检索段，保证「流式看到的 = 落库存的」）/ `_cache_qa_trace()`（缓存命中轮）；`query()` / `stream()` / `_finish_cached()` 把 `qa_trace` 写进 `exchange_meta` → 随 `turn_meta` 落 `chat_message`。**无需 alembic 迁移**（JSON 列）。
+3. **接口回吐**：`GET /qa/sessions/{id}` 给 assistant 消息补 `qa_trace`（老轮次为 None，前端据此不展示）。
+4. **前端**：`MessageBubble` 的「检索详情」面板数据源改为 `qa_trace ?? retrieval_debug`（落库优先、流式回退）—— **刷新 / 历史回看不再丢面板**。
+
+**方案（二期：跨会话分析 + 可视化溯源页）**（本次不做，另行排期）
+- 新增 `qa_trace` 表（alembic，按 decision/intent/日期建索引）+ `GET /admin/qa-traces`（superadmin/ops，`decision` / `min_top1_gap` / `date` 过滤）。
+- 前端「问答溯源」页：会话时间线高亮每轮**实际走过的路径** + 完整状态机参照图。
+- 抽 `QaFlowMachine`（`QaFlowState` 枚举）把 `implied` 分支收口成可测决策点。
+
+**改动文件（一期）**：`core/retriever.py`、`core/rag_chain.py`、`api/routes/qa.py`、`frontend/src/{types.ts,components/MessageBubble.vue}`、`tests/test_module26_qa_trace.py`（新）、`scripts/test_sandbox.sh`。
+
+**验收（一期）**
+- 四个终端状态（cache_hit / chitchat / zero_recall / rag_qa）都产出 `qa_trace` 并随轮落库（`memory.get_exchange_meta` 可读）。
+- `qa_trace` 的检索段与流式 `retrieval` 帧**同源同值**（同构断言守，防两处漂移）。
+- 刷新 / 重进会话后「检索详情」面板仍可展开（后端 `GET /qa/sessions/{id}` 回吐 `qa_trace`）。
+- 不传 `trace_out` 的调用（含测试打桩重排器）行为逐字节不变。
+- `tests/test_module26_qa_trace.py` 全绿；`make test-sandbox` 连跑两遍仅基线红。
+
+**已知边界**：轨迹仍是「重排器实例级即时取走」而非真·按请求隔离（彻底隔离要改 `rerank()` 返回值，会打挂 module20 打桩器，收益与破坏面不成比例）；`turn_meta` 因多存候选清单会变大（单轮约 1~3KB，可接受）。

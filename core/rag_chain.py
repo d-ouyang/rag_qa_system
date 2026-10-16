@@ -445,6 +445,93 @@ def _retrieval_debug_event(
     }
 
 
+def _cache_qa_trace(
+    question: str, intent: str, route: str, elapsed_ms: float, sources_count: int
+) -> dict[str, Any]:
+    """
+    缓存命中轮的回溯轨迹（P4-5）。
+
+    复用缓存不跑检索，所以没有候选 / 阈值 / top1 —— 这些一律写 None 而不是 0：
+    「没跑检索」和「跑了但一条没捞到」是两种完全不同的排查方向，
+    与 `_retrieval_debug_event` 里 bm25_hits 的口径同款。
+    """
+    return {
+        "question": question,
+        "decision": "cache_hit",
+        "intent": intent,
+        "route": route,
+        "intent_source": "cache",
+        "rewritten_query": None,
+        "vector_query": None,
+        "candidates": [],
+        "threshold": None,
+        "top1_before_filter": None,
+        "filtered_count": 0,
+        "docs_returned": sources_count,
+        "bm25_hits": None,
+        "bm25_only": None,
+        "rrf_top": None,
+        "hyde_used": False,
+        "elapsed_ms": elapsed_ms,
+        "sources_count": sources_count,
+        "rejected": False,
+    }
+
+
+def _build_qa_trace(
+    question: str,
+    intent_result: IntentResult,
+    prepared: dict[str, Any] | None,
+    decision: str,
+    elapsed_ms: float,
+    sources_count: int,
+) -> dict[str, Any]:
+    """
+    组装本轮的流程回溯轨迹（P4-5），随 turn_meta 落进 `chat_message`。
+
+    `decision` 是这一轮最终走到的**终端状态**（四选一，见 PLAN-v4.0.0 P4-5）：
+        cache_hit / chitchat / zero_recall / rag_qa
+
+    检索细节**复用 `_retrieval_debug_event`**（同一份口径，只剥掉流式用的 type 键）——
+    「流式面板看到的」和「落库里存的」必须是同一份数据，否则两套口径迟早漂移。
+    """
+    if prepared is None:
+        # 闲聊：压根没检索。同上，一律 None 而不是 0。
+        retrieval: dict[str, Any] = {
+            "rewritten_query": None,
+            "vector_query": None,
+            "candidates": [],
+            "threshold": None,
+            "top1_before_filter": None,
+            "filtered_count": 0,
+            "docs_returned": 0,
+            "bm25_hits": None,
+            "bm25_only": None,
+            "rrf_top": None,
+        }
+    else:
+        rtrace = prepared.get("retrieval_trace") or {}
+        event = _retrieval_debug_event(
+            intent_result, prepared, rtrace.get("rerank"), rtrace.get("hybrid")
+        )
+        event.pop("type", None)
+        retrieval = event
+
+    trace: dict[str, Any] = {
+        "question": question,
+        "decision": decision,
+        "intent": intent_result.intent.value,
+        "route": intent_result.route,
+        "intent_source": intent_result.source,
+        "hyde_used": bool(prepared and prepared.get("vector_query")),
+        "elapsed_ms": elapsed_ms,
+        "sources_count": sources_count,
+        "rejected": decision == "zero_recall",
+    }
+    trace.update(retrieval)
+    return trace
+
+
 def _strip_leading_blank(text: str) -> str:
     """
     裁掉答案**开头**的空白，中间与结尾一律不动。
@@ -635,6 +722,7 @@ class RAGChain:
 
         :return: (意图结果, prepared) —— prepared 含 standalone_question/docs/context/
                  rewrite_usage，以及 HyDE 用的 vector_query（None = 未启用）
+                 与 P4-5 的 retrieval_trace（本次检索轨迹，随轮落库）
         """
         classifier = get_intent_classifier()
         retriever = self.retriever  # 直接用 RAGRetriever：retrieve 支持 vector_query（HyDE 透传）
@@ -647,9 +735,13 @@ class RAGChain:
         enhance_on = rewrite_on or hyde_on
         should_rewrite = bool(chat_history) or enhance_on
 
+        # P4-5：本次调用的检索轨迹（按请求一份），随轮落库做流程回溯
+        trace: dict[str, Any] = {}
         intent_future = _PIPELINE_EXECUTOR.submit(classifier.classify, question)
         # 投机检索用原问题（与改写并行；改写无变化时复用其结果，与原行为一致）
-        retrieve_future = _PIPELINE_EXECUTOR.submit(retriever.retrieve, question)
+        retrieve_future = _PIPELINE_EXECUTOR.submit(
+            retriever.retrieve, question, trace_out=trace
+        )
         rewrite_future = (
             _PIPELINE_EXECUTOR.submit(self._rewrite_question, question, chat_history)
             if should_rewrite
@@ -673,7 +765,12 @@ class RAGChain:
             if standalone.strip() == question.strip() and not hyde_on:
                 docs: list[Document] = retrieve_future.result()
             else:
-                docs = retriever.retrieve(standalone, vector_query=vector_query)
+                # 重新检索 → 换一份新轨迹：真正进回答的是这一次，
+                # 投机那次的轨迹必须整体作废，不能留在 prepared 里造成「看的不是这次」
+                trace = {}
+                docs = retriever.retrieve(
+                    standalone, vector_query=vector_query, trace_out=trace
+                )
         else:
             standalone = question
             docs = retrieve_future.result()
@@ -684,6 +781,7 @@ class RAGChain:
             "context": format_docs(docs),
             "rewrite_usage": rewrite_usage,
             "vector_query": vector_query,  # HyDE 假设答案；None = 未启用
+            "retrieval_trace": trace,      # P4-5：本次检索轨迹（rerank / hybrid 两段）
         }
 
     @staticmethod
@@ -810,6 +908,10 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
             "cache_hit": True,
+            # P4-5：缓存命中也是一个终端状态，同样留一条轨迹（无检索细节）
+            "qa_trace": _cache_qa_trace(
+                question, intent, route, elapsed_ms, len(sources)
+            ),
         }, owner_id=owner_id)
         logger.info(
             "问答缓存复用 | session_id=%s 耗时=%.0fms | query=%.24s",
@@ -934,9 +1036,10 @@ class RAGChain:
             if not prepared["docs"]:
                 # 零召回短路：不进 LLM，固定拒答（防幻觉护栏，与流式同口径）
                 # P2-23：结构化日志留下「差多少分」的证据
+                # P4-5：轨迹取本次调用那份（不再读实例级「最近一次」）
                 _log_rejection(
                     prepared["standalone_question"],
-                    self.retriever.get_last_rerank_trace(),
+                    (prepared.get("retrieval_trace") or {}).get("rerank"),
                 )
                 answer = _NO_CONTEXT_ANSWER
             else:
@@ -965,6 +1068,12 @@ class RAGChain:
         # 每轮详情先算好再统一写记忆：sources/usage/耗时/时间戳随轮持久化，
         # 刷新页面后前端从历史接口原样恢复（引用不再丢失）
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+        # P4-5：终端状态 —— 这一轮最终走的是哪条分支（四选一）
+        decision = (
+            "chitchat" if prepared is None
+            else "zero_recall" if not prepared["docs"]
+            else "rag_qa"
+        )
         exchange_meta = {
             "sources": result["sources"],
             "intent": result["intent"],
@@ -974,6 +1083,11 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
             "cache_hit": False,
+            # 流程回溯轨迹（P4-5）：随 turn_meta 落库，刷新后仍可回看整条链路
+            "qa_trace": _build_qa_trace(
+                question, intent_result, prepared, decision,
+                elapsed_ms, len(result["sources"]),
+            ),
         }
         self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
                                  owner_id=owner_id)
@@ -1070,16 +1184,17 @@ class RAGChain:
                 "sources": self._extract_sources(prepared["docs"]),
             }
             # P2-23：检索调试事件（生成开始前下发；不传 debug 的调用方不会走到这）
+            # P4-5：与落库用同一份本次调用轨迹（流式面板和库里存的是同一份数据）
             if debug:
+                rtrace = prepared.get("retrieval_trace") or {}
                 yield _retrieval_debug_event(
-                    intent_result, prepared, self.retriever.get_last_rerank_trace(),
-                    self.retriever.get_last_hybrid_trace(),
+                    intent_result, prepared, rtrace.get("rerank"), rtrace.get("hybrid"),
                 )
             if not prepared["docs"]:
                 # 零召回短路：与同步链路同口径，不进 LLM，拒答作为唯一 chunk 下发
                 _log_rejection(
                     prepared["standalone_question"],
-                    self.retriever.get_last_rerank_trace(),
+                    (prepared.get("retrieval_trace") or {}).get("rerank"),
                 )
                 yield {"type": "chunk", "content": _NO_CONTEXT_ANSWER}
                 answer = _NO_CONTEXT_ANSWER
@@ -1104,11 +1219,16 @@ class RAGChain:
 
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
         # 每轮详情随轮写入记忆（同 query 口径），历史接口按轮回填
+        # 溯源只算一次：add_exchange / _maybe_store_cache / qa_trace 三处共用
+        sources = [] if prepared is None else self._extract_sources(prepared["docs"])
+        # P4-5：终端状态 —— 这一轮最终走的是哪条分支（四选一）
+        decision = (
+            "chitchat" if prepared is None
+            else "zero_recall" if not prepared["docs"]
+            else "rag_qa"
+        )
         self.memory.add_exchange(session_id, question, answer, meta={
-            "sources": (
-                [] if prepared is None
-                else self._extract_sources(prepared["docs"])
-            ),
+            "sources": sources,
             "intent": intent_result.intent.value,
             "route": intent_result.route,
             "standalone_question": None if prepared is None else prepared["standalone_question"],
@@ -1116,6 +1236,10 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
             "cache_hit": False,
+            # 流程回溯轨迹（P4-5）：随 turn_meta 落库，刷新后仍可回看整条链路
+            "qa_trace": _build_qa_trace(
+                question, intent_result, prepared, decision, elapsed_ms, len(sources),
+            ),
         }, owner_id=owner_id)
         self._maybe_store_cache(
             question,
@@ -1124,7 +1248,7 @@ class RAGChain:
                 "intent": intent_result.intent.value,
                 "route": intent_result.route,
                 "standalone_question": None if prepared is None else prepared["standalone_question"],
-                "sources": [] if prepared is None else self._extract_sources(prepared["docs"]),
+                "sources": sources,
             },
             bool(chat_history),
         )

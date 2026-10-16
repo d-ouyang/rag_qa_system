@@ -583,6 +583,10 @@ def get_session_history(
                 "intent": meta.get("intent"),
                 "usage": meta.get("usage"),
                 "elapsed_ms": meta.get("elapsed_ms"),
+                # P4-5：流程回溯轨迹（该轮落库的那份）。没有则为 None ——
+                # 老轮次（P4-5 之前）本来就没存，前端据此不展示面板，
+                # 与「存了但检索被全过滤」区分开（后者有轨迹、候选为空）。
+                "qa_trace": meta.get("qa_trace"),
             })
         items.append(item)
     return {

@@ -45,6 +45,14 @@
 # ② 沙箱库是**新库**，没有种子数据。部分测试若断言「表里有种子数据」，
 #    在沙箱下可能不成立 —— **失败不等于代码坏了**。
 # ③ 慢：建库 + 全量迁移约 20~40 秒。
+# ④ **退出期原生崩溃**（2026-10-16 实测，约 1/3 概率）：`test_module4_llm_and_retriever`
+#    会在**所有断言跑完之后**、解释器退出阶段崩在原生库，退出码 134（SIGABRT）：
+#        libc++abi: terminating ... recursive_mutex lock failed: Invalid argument
+#    此时断言是 87 通过 / 0 失败 —— **不是代码坏了**，是 macOS 上
+#    torch/MPS + ollama HTTP 客户端在 finalization 时的遗留线程问题。
+#    实测三次单跑：134 / 0 / 0，三轮断言均 87/0（改动前的版本同样会中，非回归）。
+#    → 判据：退出码 **134** 且 输出含「汇总：通过 N 项，失败 0 项」→ 计入已知 flake，
+#      不算失败（见下面 `_run_test`）；中途真崩（没打出汇总行）仍照常算失败。
 #
 # --------------------------------------------------------------------------
 # 用法
@@ -175,13 +183,38 @@ echo "── 跑迁移 ───────────────────
 echo
 
 # ---- 跑测试 ----
+# 跑单个测试脚本，并把「退出期原生崩溃」从「真失败」里摘出来（已知局限 ④）。
+# 判据必须**同时**满足：退出码 134（SIGABRT）**且** 输出里有「…失败 0 项」的汇总行。
+# 只满足一半（真崩、没跑到汇总）仍然算失败 —— 不放过真问题。
+# 只摘 134：其他非零码一律算失败，避免把真实断言失败误判成 flake。
+TEARDOWN_ABORT=""
+_run_test() {
+  local script="$1" logf rc
+  logf="$(mktemp)"
+  if "$PY" "$script" 2>&1 | tee "$logf"; then
+    rc=0
+  else
+    rc=${PIPESTATUS[0]}
+  fi
+  if [ "$rc" -ne 0 ] && [ "$rc" -eq 134 ] \
+     && grep -qE "汇总：通过 [0-9]+ 项，失败 0 项|通过 / 0 失败" "$logf"; then
+    echo "⚠️  $(basename "$script") 退出期原生崩溃（SIGABRT/134），但断言全过"
+    echo "    → 已知环境 flake，见本脚本头部「已知局限」④，不计入失败"
+    TEARDOWN_ABORT="${TEARDOWN_ABORT} $(basename "$script")"
+    rm -f "$logf"
+    return 0
+  fi
+  rm -f "$logf"
+  return "$rc"
+}
+
 if [ -n "${s:-}" ]; then
   echo "── 只跑 module${s} ─────────────────────────────────"
   # shellcheck disable=SC2086
   _SF=""
   for f in tests/test_module${s}_*.py; do
     echo "--- $f"
-    if ! "$PY" "$f"; then
+    if ! _run_test "$f"; then
       echo "❌ $f 失败"
       _SF="${_SF} ${f}"
     fi
@@ -215,6 +248,7 @@ else
     test_module23_query_enhance
     test_module24_config_service
     test_module25_admin_config
+    test_module26_qa_trace
   "
   # 🔴 **不在第一个失败处停下**（2026-10-11 改，P3-2 的教训）：
   #    原来写的是 `|| { echo "❌ $t 失败"; exit 1; }`，于是
@@ -225,11 +259,15 @@ else
   FAILED=""
   for t in $TESTS; do
     echo "--- $t"
-    if ! "$PY" "tests/${t}.py"; then
+    if ! _run_test "tests/${t}.py"; then
       echo "❌ ${t} 失败"
       FAILED="${FAILED} ${t}"
     fi
   done
+  if [ -n "$TEARDOWN_ABORT" ]; then
+    echo
+    echo "── 退出期原生崩溃（断言全过，计入已知 flake）──${TEARDOWN_ABORT}"
+  fi
   if [ -n "$FAILED" ]; then
     echo
     echo "═══ 失败的模块：${FAILED} ═══"

@@ -226,8 +226,13 @@ class _FakeLLMClient:
 
 
 class _FakeRetriever:
-    """只暴露 RAGChain 用到的四个面：reranker / get_last_rerank_trace /
-    get_last_hybrid_trace（P3-4）/ 真实度不重要。"""
+    """只暴露 RAGChain 用到的面：reranker / get_last_rerank_trace /
+    get_last_hybrid_trace（P3-4）/ 真实度不重要。
+
+    P4-5 起 stream / query 的检索轨迹改从 `prepared["retrieval_trace"]` 取
+    （按请求一份，见 _probe_stream 的桩），不再读这里的实例级 getter ——
+    getter 仍保留，避免 RAGChain 其它路径（如 get_chain_info）AttributeError。
+    """
 
     def __init__(self, trace: dict | None) -> None:
         self.reranker = object() if trace is not None else None
@@ -250,6 +255,9 @@ def _probe_stream(debug: bool, docs: list[Document], trace: dict | None) -> list
             "docs": docs,
             "context": "\n".join(d.page_content for d in docs),
             "rewrite_usage": _usage_zero(),
+            # P4-5：检索轨迹现在经 prepared 传递（生产路径由 _prepare_parallel
+            # 放进这里），桩同步提供，断言的期望值不变、只换数据来源。
+            "retrieval_trace": {"rerank": trace, "hybrid": None},
         },
     )
     probe._maybe_store_cache = lambda *a, **k: None  # type: ignore[method-assign]
