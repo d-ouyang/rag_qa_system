@@ -180,7 +180,10 @@ try:
         check("缺 decision 拒绝镜像", True)
     record(session_id=SID, owner_id=7, trace=_trace("zero_recall", top1_before_filter=0.31, threshold=0.35))
     record(session_id=_OTHER, owner_id=8, trace=_trace("chitchat"))
-    record(session_id=_OTHER, owner_id=8, trace=_trace("cache_hit", intent="chitchat", route="chitchat"))
+    # P4-5c 回归锚：rrf_top 实际是 chunk_id 字符串（"822:0"）而非分数——
+    # 首版误建 DOUBLE 让镜像每轮必失败（Data truncated），此处锁死字符串可落库
+    record(session_id=_OTHER, owner_id=8,
+           trace=_trace("cache_hit", intent="chitchat", route="chitchat", rrf_top="822:0"))
 
     # 3b. describe 派生字段（列表按 id 倒序，别假设首行是哪条 —— 按决策取）
     rows = list_traces(session_id=SID)
@@ -198,6 +201,9 @@ try:
     # 3c. 决策 / 意图 / 关键词 / 差距
     check("decision 筛", len(list_traces(decision="zero_recall", session_id=SID)) == 1)
     check("intent 筛", len(list_traces(intent="policy_consult")) >= 2)
+    check("rrf_top 存字符串 chunk_id（P4-5c 回归锚：首版 DOUBLE 必失败）",
+          any(r["rrf_top"] == "822:0" for r in list_traces(session_id=_OTHER)),
+          f"实际 {[r['rrf_top'] for r in list_traces(session_id=_OTHER)]}")
     check("keyword 筛命中原始问题", any(r["session_id"] == SID for r in list_traces(keyword="p45b测试")))
     check("min_top1_gap：差距 ≥0.03 只留 zero_recall 那条",
           [r["decision"] for r in list_traces(min_top1_gap=0.03)] == ["zero_recall"],

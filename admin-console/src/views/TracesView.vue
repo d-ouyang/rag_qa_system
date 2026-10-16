@@ -395,7 +395,7 @@ function nodeLabel(key: string): string {
           <div class="m"><span class="k">差多少分</span><span>{{ num(detail.top1_gap) }}</span></div>
           <div class="m"><span class="k">BM25 命中</span><span>{{ detail.bm25_hits ?? '未开启' }}</span></div>
           <div class="m"><span class="k">仅 BM25</span><span>{{ detail.bm25_only ?? '—' }}</span></div>
-          <div class="m"><span class="k">RRF top</span><span>{{ num(detail.rrf_top) }}</span></div>
+          <div class="m"><span class="k">RRF top</span><span class="mono">{{ detail.rrf_top ?? '未开启' }}</span></div>
           <div class="m"><span class="k">HyDE</span><span>{{ detail.hyde_used ? '用了' : '没用' }}</span></div>
         </div>
 

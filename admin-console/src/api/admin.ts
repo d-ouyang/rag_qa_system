@@ -548,7 +548,8 @@ export interface QaTraceRow {
   sources_count: number
   bm25_hits: number | null
   bm25_only: number | null
-  rrf_top: number | null
+  /** RRF 融合后排首位的 chunk_id（如 "822:0"）；混合未开启为 null。是 ID 不是分数。 */
+  rrf_top: string | null
   hyde_used: boolean
   elapsed_ms: number
   rejected: boolean

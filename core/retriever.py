@@ -43,10 +43,10 @@ import json
 import logging
 import threading
 import time
-import urllib.request
 from pathlib import Path
 from typing import Any, Sequence
 
+import httpx
 from langchain_core.documents import Document
 from langchain_core.documents.compressor import BaseDocumentCompressor
 from langchain_core.retrievers import BaseRetriever
@@ -350,25 +350,30 @@ class SiliconFlowReranker(BaseDocumentCompressor):
         start = time.perf_counter()
         try:
             url = settings.SILICONFLOW_BASE_URL.rstrip("/") + "/rerank"
-            payload = json.dumps({
+            req_body = json.dumps({
                 "model": self.model_path or settings.SILICONFLOW_RERANK_MODEL,
                 "query": query,
                 "documents": [doc.page_content for doc in documents],
                 "top_n": len(documents),
                 "return_documents": False,
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.SILICONFLOW_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(req, timeout=settings.LLM_TIMEOUT) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
+            })
+            headers = {
+                "Authorization": f"Bearer {settings.SILICONFLOW_API_KEY}",
+                "Content-Type": "application/json",
+            }
+            # ⚠️ trust_env=False：与旧实现的 `ProxyHandler({})` 同语义 —— 刻意绕代理直连。
+            # ⚠️ local_address="0.0.0.0" 强制 IPv4：api.siliconflow.cn 带AAAA记录，
+            #    而本机 IPv6 路由黑洞（实测 connect 75s 超时）。urllib 串行回退，
+            #    每次重排挂 120~150s（P4-5c 实测：同 payload curl 0.55s / urllib 150.38s，
+            #    返回分数完全一致——纯连接层问题）。绑定 v4 源地址后 anyio 只搜 v4。
+            with httpx.Client(
+                trust_env=False,
+                timeout=settings.LLM_TIMEOUT,
+                transport=httpx.HTTPTransport(local_address="0.0.0.0"),
+            ) as client:
+                resp = client.post(url, content=req_body, headers=headers)
+                resp.raise_for_status()
+                body = resp.json()
 
             scored: list[tuple[Document, float]] = []
             for item in body.get("results") or []:
