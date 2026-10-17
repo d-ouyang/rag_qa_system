@@ -553,9 +553,15 @@ export interface QaTraceRow {
   hyde_used: boolean
   elapsed_ms: number
   rejected: boolean
+  /** P4-6 依据校验：true/false/未校验为 null */
+  grounded: boolean | null
+  /** P4-6 未被资料支持的论断清单 */
+  unsupported: string[] | null
   created_at: string
   /** 后端按 qa_flow 状态机派生的实走路径（状态名序列）——前端只高亮，不重算分支。 */
   flow_path: string[]
+  /** P4-6 top1 是否落在低置信带（0.25~0.35），后端从 top1_before_filter 派生 */
+  low_confidence: boolean
   /** threshold - top1_before_filter；任一为 null 时也是 null（「没跑检索」口径）。 */
   top1_gap: number | null
 }

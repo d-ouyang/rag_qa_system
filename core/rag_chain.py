@@ -62,11 +62,13 @@ from langchain_core.runnables import (
 )
 
 from config.settings import settings
+from core.config_flags import flag_value
 from core.config_service import config_service
 from core.intent_router import Intent, IntentResult, get_intent_classifier
 from core.llm_client import LLMClient, get_llm_client
 from core.memory_manager import MemoryManager, get_memory_manager
 from core.qa_cache import is_standalone_question, looks_anaphoric, lookup_answer, store_answer
+from core.groundedness import check_groundedness, is_low_confidence
 from core import qa_flow
 from core import qa_trace_repo
 from core.retriever import RAGRetriever, get_rag_retriever
@@ -233,7 +235,10 @@ _QA_SYSTEM_PROMPT = (
     "「根据现有制度未查到相关规定，请补充对应制度文档或联系人力资源部门确认」，禁止推测；\n"
     "3. {intent_instruction}\n"
     "4. 如果资料与问题无关，忽略资料并如实告知。\n"
-    "5. 不要输出任何乱码、特殊符号或者不连贯的句子。\n\n"
+    "5. 不要输出任何乱码、特殊符号或者不连贯的句子。\n"
+    "6. 回答引用了资料中的具体条款时，在答案末尾另起一行列出依据，"
+    "格式：「依据：文件名 第X条」（多个依据用顿号分隔）；"
+    "「未查到」类回答不加此行。\n\n"
     "检索到的资料：\n{context}"
 )
 
@@ -1136,6 +1141,19 @@ class RAGChain:
             prepared_present=prepared is not None,
             docs_count=len(prepared["docs"]) if prepared else 0,
         )
+        # P4-6：低置信带判定 + 依据校验（只在 rag_qa 轮；校验热开关可关）
+        low_confidence = False
+        grounded: dict[str, Any] | None = None
+        if decision == "rag_qa":
+            low_confidence = is_low_confidence(
+                (prepared.get("retrieval_trace") or {}).get("rerank", {}).get("top1_before_filter")
+            )
+            if flag_value("groundedness_check"):
+                grounded = check_groundedness(
+                    question=question,
+                    context=prepared["context"],
+                    answer=answer,
+                )
         exchange_meta = {
             "sources": result["sources"],
             "intent": result["intent"],
@@ -1145,12 +1163,19 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
             "cache_hit": False,
+            # P4-6：依据校验与低置信徽标（前端据此后挂警示标记）
+            "low_confidence": low_confidence,
+            "grounded": grounded,
             # 流程回溯轨迹（P4-5）：随 turn_meta 落库，刷新后仍可回看整条链路
             "qa_trace": _build_qa_trace(
                 question, intent_result, prepared, decision,
                 elapsed_ms, len(result["sources"]),
             ),
         }
+        if grounded is not None:
+            # 依据校验结果同时写进轨迹（镜像表经 _TRACE_KEYS 透传到 grounded/unsupported 列）
+            exchange_meta["qa_trace"]["grounded"] = grounded.get("grounded")
+            exchange_meta["qa_trace"]["unsupported"] = grounded.get("unsupported") or []
         self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
                                  owner_id=owner_id)
         # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
@@ -1166,6 +1191,8 @@ class RAGChain:
         result["elapsed_ms"] = elapsed_ms
         result["usage"] = usage
         result["cache_hit"] = False
+        result["low_confidence"] = low_confidence
+        result["grounded"] = grounded
         logger.info(
             "问答完成 | session_id=%s 意图=%s(%s) 引用=%d条 耗时=%.0fms tokens=%d+%d | query=%.24s",
             session_id,
@@ -1291,6 +1318,26 @@ class RAGChain:
             prepared_present=prepared is not None,
             docs_count=len(prepared["docs"]) if prepared else 0,
         )
+        # P4-6：低置信带判定 + 依据校验（与 query() 同口径；校验在答案流完之后）
+        low_confidence = False
+        grounded: dict[str, Any] | None = None
+        if decision == "rag_qa":
+            low_confidence = is_low_confidence(
+                (prepared.get("retrieval_trace") or {}).get("rerank", {}).get("top1_before_filter")
+            )
+            if flag_value("groundedness_check"):
+                grounded = check_groundedness(
+                    question=question,
+                    context=prepared["context"],
+                    answer=answer,
+                )
+                # 校验结果作为独立帧下发（答案已流出，不撤回，只挂标记）
+                yield {
+                    "type": "grounded",
+                    "grounded": grounded.get("grounded"),
+                    "unsupported": grounded.get("unsupported") or [],
+                    "low_confidence": low_confidence,
+                }
         exchange_meta = {
             "sources": sources,
             "intent": intent_result.intent.value,
@@ -1300,11 +1347,17 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
             "cache_hit": False,
+            # P4-6：依据校验与低置信徽标（前端据此后挂警示标记）
+            "low_confidence": low_confidence,
+            "grounded": grounded,
             # 流程回溯轨迹（P4-5）：随 turn_meta 落库，刷新后仍可回看整条链路
             "qa_trace": _build_qa_trace(
                 question, intent_result, prepared, decision, elapsed_ms, len(sources),
             ),
         }
+        if grounded is not None:
+            exchange_meta["qa_trace"]["grounded"] = grounded.get("grounded")
+            exchange_meta["qa_trace"]["unsupported"] = grounded.get("unsupported") or []
         self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
                                  owner_id=owner_id)
         # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）

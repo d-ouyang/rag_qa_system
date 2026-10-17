@@ -170,6 +170,10 @@ export interface ChatMessage {
    * 展示时优先于 `retrieval_debug` —— 后者只在当轮流式过程中存在。
    */
   qa_trace?: QaTrace | null
+  /** P4-6 依据校验结果（流式 grounded 帧 / 历史接口回填）；None=未校验 */
+  grounded?: { grounded: boolean | null; unsupported: string[]; note?: string } | null
+  /** P4-6 top1 落在低置信带（0.25~0.35）时的警示标记 */
+  low_confidence?: boolean | null
   /** assistant 消息的意图识别结果（流式 meta 帧返回） */
   intent?: string
   /** 本轮 token 用量与耗时（done 帧返回，历史接口按轮回填） */
@@ -185,6 +189,7 @@ export type StreamFrame =
   | { type: 'meta'; intent: string; route: string; intent_source: string; standalone_question?: string | null; sources?: SourceItem[] }
   | ({ type: 'retrieval' } & RetrievalDebug)
   | { type: 'chunk'; content: string }
+  | { type: 'grounded'; grounded: boolean | null; unsupported: string[]; low_confidence: boolean }
   | { type: 'done'; elapsed_ms?: number; usage?: TurnUsage; session_usage?: SessionUsage }
   | { type: 'error'; status?: number; detail: string }
 

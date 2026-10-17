@@ -245,6 +245,10 @@ export const useSessionStore = defineStore('sessions', () => {
           assistantMsg.retrieval_debug = debug
         } else if (frame.type === 'chunk') {
           enqueueChunk(frame.content)
+        } else if (frame.type === 'grounded') {
+          // P4-6 依据校验帧：答案已流出，只挂标记（通过/未通过/低置信）
+          assistantMsg.grounded = { grounded: frame.grounded, unsupported: frame.unsupported }
+          assistantMsg.low_confidence = frame.low_confidence
         } else if (frame.type === 'done') {
           flushPending()
           // 每轮详情随消息存：尾部徽章 + 明细浮层的数据源，刷新后由历史接口恢复

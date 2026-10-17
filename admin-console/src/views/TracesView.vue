@@ -525,6 +525,14 @@ function nodeLabel(key: string): string {
           <div class="m"><span class="k">仅 BM25</span><span>{{ detail.bm25_only ?? '—' }}</span></div>
           <div class="m"><span class="k">RRF top</span><span class="mono">{{ detail.rrf_top ?? '未开启' }}</span></div>
           <div class="m"><span class="k">HyDE</span><span>{{ detail.hyde_used ? '用了' : '没用' }}</span></div>
+          <div class="m"><span class="k">依据校验</span>
+            <span>
+              <template v-if="detail.grounded === true">✓ 通过</template>
+              <template v-else-if="detail.grounded === false">⚠️ 未通过（{{ (detail.unsupported || []).length }} 条论断无依据）</template>
+              <template v-else>未校验</template>
+            </span>
+          </div>
+          <div class="m"><span class="k">低置信</span><span>{{ detail.low_confidence ? '是（top1 处于犬牙交错区）' : '否' }}</span></div>
         </div>
 
         <!-- 问句链 -->

@@ -91,7 +91,7 @@ check("状态标签覆盖全部状态（无第三份清单漂移）",
 # --------------------------------------------------------------------------- #
 # 2. schema ↔ 迁移 0012 列集合对齐（AST 静态）
 # --------------------------------------------------------------------------- #
-print("== 2. 结构守卫：schema 与 0012 列对齐 ==")
+print("== 2. 结构守卫：schema 与迁移链（0012 建表 + 0013 加列）列对齐 ==")
 
 
 def _columns_of(path: str) -> tuple[set[str], str]:
@@ -106,12 +106,21 @@ def _columns_of(path: str) -> tuple[set[str], str]:
             for t in node.targets:
                 if isinstance(t, ast.Name) and t.id == "revision" and isinstance(node.value, ast.Constant):
                     revision = str(node.value.value)
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        # 建表（0012 的 create_table）
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr in ("Table", "create_table") and node.args
                 and isinstance(node.args[0], ast.Constant) and node.args[0].value == "qa_trace"):
-            continue
-        for arg in node.args + [kw.value for kw in node.keywords]:
-            for sub in ast.walk(arg):
+            for arg in node.args + [kw.value for kw in node.keywords]:
+                for sub in ast.walk(arg):
+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
+                            and sub.func.attr == "Column" and sub.args \
+                            and isinstance(sub.args[0], ast.Constant) and isinstance(sub.args[0].value, str):
+                        cols.add(sub.args[0].value)
+        # 后续迁移的加列（0013 的 op.add_column("qa_trace", ...)）也要算进列集合
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_column" and node.args
+                and isinstance(node.args[0], ast.Constant) and node.args[0].value == "qa_trace"):
+            for sub in ast.walk(node):
                 if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
                         and sub.func.attr == "Column" and sub.args \
                         and isinstance(sub.args[0], ast.Constant) and isinstance(sub.args[0].value, str):
@@ -120,8 +129,16 @@ def _columns_of(path: str) -> tuple[set[str], str]:
 
 
 _schema_cols, _ = _columns_of("core/schema.py")
-_mig_cols, _rev = _columns_of("alembic/versions/0012_qa_trace.py")
-check("0012 的 revision id 正确", _rev == "0012", f"实际 {_rev}")
+import glob as _glob  # noqa: E402
+
+_mig_cols: set[str] = set()
+_rev = ""
+for _mig in sorted(_glob.glob("alembic/versions/*.py")):
+    c, r = _columns_of(_mig)
+    _mig_cols |= c
+    if r:
+        _rev = r  # 线性链：排序后最后一个文件的 revision 即链头
+check("迁移链头是 0013（qa_trace 加列）", _rev == "0013", f"实际 {_rev}")
 check("schema 与迁移列集合一致（数量含 id）",
       _schema_cols == _mig_cols,
       f"仅 schema 有: {sorted(_schema_cols - _mig_cols)}；仅迁移有: {sorted(_mig_cols - _schema_cols)}")
@@ -204,10 +221,21 @@ try:
     check("rrf_top 存字符串 chunk_id（P4-5c 回归锚：首版 DOUBLE 必失败）",
           any(r["rrf_top"] == "822:0" for r in list_traces(session_id=_OTHER)),
           f"实际 {[r['rrf_top'] for r in list_traces(session_id=_OTHER)]}")
+    # P4-6 回归锚：依据校验结果透传 + describe 派生 low_confidence
+    record(session_id=SID, owner_id=7,
+           trace=_trace("rag_qa", top1_before_filter=0.30, threshold=0.31,
+                        grounded=False, unsupported=["病假1天内不扣工资"]))
+    _g = next(r for r in list_traces(session_id=SID) if r.get("grounded") is False)
+    check("grounded/unsupported 透传", _g["unsupported"] == ["病假1天内不扣工资"],
+          f"实际 {_g.get('unsupported')!r}")
+    check("describe 派生 low_confidence（top1=0.30 落犬牙交错带）",
+          _g["low_confidence"] is True, f"实际 {_g.get('low_confidence')!r}")
     check("keyword 筛命中原始问题", any(r["session_id"] == SID for r in list_traces(keyword="p45b测试")))
-    check("min_top1_gap：差距 ≥0.03 只留 zero_recall 那条",
-          [r["decision"] for r in list_traces(min_top1_gap=0.03)] == ["zero_recall"],
-          f"实际 {[r['decision'] for r in list_traces(min_top1_gap=0.03)]}")
+    # ⚠️ 必须带 session_id 限定：独立跑在 dev 库上时有真实用户的拒答轮（gap 同样 ≥0.03），
+    # 裸查会混进线上数据——这是 2026-10-17 在 dev 实跑暴露的环境依赖断言
+    check("min_top1_gap：差距 ≥0.03 只留 zero_recall 那条（限定本会话）",
+          [r["decision"] for r in list_traces(min_top1_gap=0.03, session_id=SID)] == ["zero_recall"],
+          f"实际 {[r['decision'] for r in list_traces(min_top1_gap=0.03, session_id=SID)]}")
     check("min_top1_gap：NULL 行（闲聊/缓存）自然排除",
           all(r["top1_before_filter"] is not None for r in list_traces(min_top1_gap=0.0)))
     check("日期筛（今天）命中", count_traces(date_from=date.today(), date_to=date.today()) >= 4)

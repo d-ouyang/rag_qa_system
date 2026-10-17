@@ -377,6 +377,23 @@ async function loadChunk(id: string): Promise<void> {
             v-if="message.role === 'assistant' && !message.streaming && (message.usage || message.elapsed_ms)"
             class="turn-meta"
           >
+            <!-- P4-6 低置信徽章：top1 落在犬牙交错区（0.25~0.35），只提示不改答案 -->
+            <span
+              v-if="message.low_confidence"
+              class="meta-badge grounded-badge g-low"
+              title="本轮检索最高分处于低置信区，答案可能不完整，建议核对原文"
+            >低置信</span>
+            <!-- P4-6 依据校验徽章：通过=绿；未通过=红（title 列出未支撑论断）；未校验不显示 -->
+            <span
+              v-if="message.grounded?.grounded === true"
+              class="meta-badge grounded-badge g-ok"
+              title="答案的关键论断已通过与检索资料的依据比对"
+            >依据校验 ✓</span>
+            <span
+              v-else-if="message.grounded?.grounded === false"
+              class="meta-badge grounded-badge g-bad"
+              :title="`以下论断未在检索资料中找到依据：${(message.grounded.unsupported || []).join('；') || '（详见溯源页）'}`"
+            >⚠️ 依据未确认</span>
             <div
               v-if="message.usage"
               class="meta-badge token-badge"
@@ -621,6 +638,15 @@ async function loadChunk(id: string): Promise<void> {
   gap: 6px;
   margin-top: 8px;
 }
+.grounded-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: help;
+}
+.g-ok { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+.g-bad { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+.g-low { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
 .meta-badge {
   display: inline-flex;
   align-items: center;

@@ -29,6 +29,7 @@ from typing import Any
 import sqlalchemy as sa
 
 from core.db import now_db, session_scope
+from core.groundedness import is_low_confidence
 from core.qa_flow import flow_path
 from core.schema import qa_trace_table
 
@@ -58,6 +59,8 @@ _TRACE_KEYS: tuple[str, ...] = (
     "hyde_used",
     "elapsed_ms",
     "rejected",
+    "grounded",       # P4-6：依据校验结果（bool | None）
+    "unsupported",    # P4-6：未支撑论断清单（list[str]）
 )
 
 
@@ -199,4 +202,6 @@ def describe(row: dict[str, Any]) -> dict[str, Any]:
         logger.warning("qa_trace 行的 decision 不在状态机里 | decision=%s | id=%s",
                        decision, out.get("id"))
         out["flow_path"] = []
+    # P4-6：低置信徽标从 top1 派生（不落库——top1 已在列上，避免冗余两处不一致）
+    out["low_confidence"] = is_low_confidence(out.get("top1_before_filter"))
     return out

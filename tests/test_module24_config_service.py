@@ -272,11 +272,13 @@ def test_schema_and_migration_chain():
     check("迁移链只有一个 head", len(heads) == 1, f"heads={heads}")
     # P4-5b：头随新迁移前移（0012 = qa_trace）。这里的守卫是「链不分裂」，
     # 不是「头永远是某一张表」——那会把每次加迁移都变成改这条断言的仪式。
-    check("head 是 0012（qa_trace）", heads == ["0012"], f"heads={heads}")
+    check("head 是 0013（qa_trace 依据校验列，P4-6）", heads == ["0013"], f"heads={heads}")
     check("0011 → 0010 链接完整", revs.get("0011") == "0010",
           f"got={revs.get('0011')}")
-    check("0012 的 down_revision 是 0011", revs.get("0012") == "0011",
+    check("0012 → 0011 链接完整", revs.get("0012") == "0011",
           f"got={revs.get('0012')}")
+    check("0013 → 0012 链接完整", revs.get("0013") == "0012",
+          f"got={revs.get('0013')}")
 
 
 if __name__ == "__main__":
