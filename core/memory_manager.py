@@ -79,10 +79,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.chat_history import BaseChatMessageHistory, InMemoryChatMessageHistory
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from config.settings import settings
 from core.config_flags import flag_value
@@ -144,6 +144,7 @@ class MemoryManager:
         max_turns: int | None = None,
         ttl_seconds: int | None = None,
         store: SessionStore | None = None,
+        summarizer: Callable[[str, Any], None] | None = None,
     ) -> None:
         """
         :param max_turns: 每会话最多保留的对话轮数，缺省读 settings.MEMORY_MAX_TURNS
@@ -164,6 +165,8 @@ class MemoryManager:
         self.store: SessionStore = (
             store if store is not None else build_session_store(ttl_seconds=self.ttl_seconds)
         )
+        # P4-10：可选摘要钩子——每轮写记忆后调用（LLM 依赖由外部注入，避免本模块反向依赖 rag_chain）
+        self._summarizer = summarizer
         # 只读降级告警去重标记：水位不恢复就只提示一次，避免每轮问答刷一条 WARN
         self._readonly_warned = False
 
@@ -303,16 +306,20 @@ class MemoryManager:
     def get_recent_messages(self, session_id: str, *, owner_id: int | None,
                             turns: int | None = None) -> list[BaseMessage]:
         """
-        取送进模型和问题重写的最近若干轮。
+        取送进模型和问题重写的最近若干轮 —— **窗口原文 + 窗口外滚动摘要**（P4-10）。
 
-        库里的全文不动。默认轮数是 MEMORY_MAX_TURNS。
+        库里的全文不动。默认轮数是 MEMORY_MAX_TURNS。窗口外的内容不丢弃，
+        而是以「较早对话摘要」SystemMessage 前置，于是第 6 轮问「第一轮说的那个
+        流程」时模型仍有据可依；没有摘要时行为与旧版完全一致（不多塞任何消息）。
         """
         messages = self.get_messages(session_id, owner_id=owner_id)
         keep_turns = self.max_turns if turns is None else int(turns)
         keep = max(0, keep_turns) * 2
-        if keep == 0 or len(messages) <= keep:
-            return messages
-        return messages[-keep:]
+        window = messages if (keep == 0 or len(messages) <= keep) else messages[-keep:]
+        summary = str(self.get_session_meta(session_id, owner_id=owner_id).get("summary") or "")
+        if not summary or len(window) >= len(messages):
+            return window
+        return [SystemMessage(content=f"【较早对话摘要】{summary}"), *window]
 
     def add_exchange(
         self,
@@ -365,6 +372,12 @@ class MemoryManager:
             ok = self._save(session_id, snapshot, owner_id=owner_id)
         if ok:
             logger.info("记忆已更新 | session_id=%s 历史条数=%d", session_id, len(snapshot.messages))
+            # P4-10：把溢出窗口的部分增量压成摘要（锁外做——LLM 调用不该占着会话锁）
+            if self._summarizer is not None:
+                try:
+                    self._summarizer(session_id, owner_id)
+                except Exception:   # 摘要失败不能影响本轮问答（fail-open 最外层保险）
+                    logger.warning("摘要钩子异常已吞掉（不影响本轮问答）", exc_info=True)
 
     def clear_session(self, session_id: str, *, owner_id: int | None) -> bool:
         """
@@ -575,6 +588,11 @@ def get_memory_manager() -> MemoryManager:
         with _memory_manager_lock:
             if _memory_manager is None:
                 _memory_manager = MemoryManager()
+                # P4-10：挂上滚动摘要钩子（LLM 依赖经 session_summary 注入，
+                # 避免本模块反向依赖 rag_chain；开关在钩子里读）
+                from core.session_summary import make_summarizer_hook
+
+                _memory_manager._summarizer = make_summarizer_hook(_memory_manager)
                 logger.debug("MemoryManager 单例已创建 | 后端=%s", _memory_manager.store.name)
     return _memory_manager
 

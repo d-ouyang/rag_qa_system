@@ -133,6 +133,14 @@ FLAG_REGISTRY: dict[str, FlagSpec] = {
             min_value=1,
             max_value=20,
         ),
+        FlagSpec(
+            key="session_summary",
+            value_type="bool",
+            card="会话记忆",
+            label="长会话滚动摘要",
+            description="窗口之外的对话由模型压缩成摘要后随上下文带下去（长会话跨轮记忆）；摘要失败不影响问答",
+            default=lambda: settings.SESSION_SUMMARY_ENABLED,
+        ),
     )
 }
 
