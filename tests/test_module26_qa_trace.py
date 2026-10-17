@@ -468,10 +468,92 @@ try:
         "那事假呢？", [("human", "我想请个年假，怎么做？"), ("ai", "……年假申请流程……")],
     )
     check("生产入口 _rewrite_question 触发指代重试",
-          rw == "事假如何申请？" and len(llm4.prompts) == 2,
+          rw == ["事假如何申请？"] and len(llm4.prompts) == 2,
           f"实际 {rw!r} 调用 {len(llm4.prompts)} 次")
 finally:
     rc.get_llm_client = _orig_glc
+
+
+
+# --------------------------------------------------------------------------- #
+# 第 6 组：P4-9 查询分解——复合问题按行拆子查询 + 多路检索去重合并
+# --------------------------------------------------------------------------- #
+print("\n== 第 6 组：查询分解（P4-9）==")
+
+# 6a. _sub_queries_from：多行输出 → 子查询列表；剥编号前缀；去重
+sub = rc._sub_queries_from("事假怎么申请？\n事假扣不扣工资？", "怎么请事假？事假扣不扣钱？")
+check("复合输出拆成 2 个子查询", sub == ["事假怎么申请？", "事假扣不扣工资？"], f"实际 {sub!r}")
+sub = rc._sub_queries_from("1. 事假怎么申请？\n2. 事假扣不扣工资？", "怎么请事假？事假扣不扣钱？")
+check("编号前缀被剥掉", sub == ["事假怎么申请？", "事假扣不扣工资？"], f"实际 {sub!r}")
+sub = rc._sub_queries_from("", "那年假呢？")
+check("空输出回退原问题", sub == ["那年假呢？"], f"实际 {sub!r}")
+sub = rc._sub_queries_from("单行改写。", "那年假呢？")
+check("单行输出 = 单子查询（长度不超过原问题 4 倍，消毒放行）",
+      sub == ["单行改写。"] or sub == ["那年假呢？"], f"实际 {sub!r}")
+
+# 6b. rewrite_to_sub_queries：复合问题不触发指代重试（LLM 只调 1 次）
+llm6 = _ScriptedLLM(["事假怎么申请？\n事假扣不扣工资？"])
+rc.get_llm_client = lambda: _ScriptedClient(llm6)
+try:
+    sub6 = rc.rewrite_to_sub_queries("怎么请事假？事假扣不扣钱？", [])
+    check("复合问题一次调用拆出 2 个子查询",
+          sub6 == ["事假怎么申请？", "事假扣不扣工资？"] and len(llm6.prompts) == 1,
+          f"实际 {sub6!r} 调用 {len(llm6.prompts)} 次")
+finally:
+    rc.get_llm_client = _orig_glc
+
+# 6c. _multi_retrieve：两路检索结果按 chunk_id 去重、保留最高分、降序
+class _PerQueryRetriever:
+    """retrieve 按查询文本返回不同文档（模拟两个子问题各自召回）。"""
+
+    reranker = object()  # RAGChain 构造日志只读这个属性的存在性
+
+    def __init__(self):
+        self.queries: list[str] = []
+
+    def retrieve(self, query, top_k=None, filter_dict=None, return_score=False,
+                 vector_query=None, trace_out=None):
+        self.queries.append(query)
+        if trace_out is not None:
+            trace_out["rerank"] = {"top1_before_filter": 0.8, "threshold": 0.1}
+            trace_out["hybrid"] = {"bm25_hits": 3, "rrf_top": "1:0"}
+        if "事假怎么申请" in query:
+            doc = Document(page_content="事假流程正文",
+                           metadata={"doc_id": 820, "chunk_index": 1,
+                                     "file_name": "06_请假申请单.md",
+                                     "rerank_score": 0.60,
+                                     "vector_similarity": 0.7})
+            return [doc]
+        docs = [
+            Document(page_content="事假行表格",
+                     metadata={"doc_id": 812, "chunk_index": 2,
+                               "file_name": "05_考勤管理制度.md",
+                               "rerank_score": 0.40,
+                               "vector_similarity": 0.6}),
+            Document(page_content="事假流程正文（重复命中，分更高）",
+                     metadata={"doc_id": 820, "chunk_index": 1,
+                               "file_name": "06_请假申请单.md",
+                               "rerank_score": 0.70,
+                               "vector_similarity": 0.75}),
+        ]
+        return docs
+
+chain7 = RAGChain(retriever=_PerQueryRetriever(), llm_client=_FakeLLMClient(),
+                  memory=MemoryManager(max_turns=5, ttl_seconds=3600,
+                                       store=MemorySessionStore(ttl_seconds=3600)))
+trace7: dict = {}
+merged = chain7._multi_retrieve(["事假怎么申请？", "事假扣不扣工资？"], trace7)
+check("合并去重后 2 个候选（重复命中保一份）", len(merged) == 2, f"实际 {len(merged)}")
+check("按 rerank 分降序（重复命中保留最高分 0.70）",
+      merged[0].metadata["rerank_score"] == 0.70 and merged[1].metadata["rerank_score"] == 0.40,
+      f"实际 {[m.metadata['rerank_score'] for m in merged]}")
+check("trace.rerank.top1 取各路最大值", trace7["rerank"]["top1_before_filter"] == 0.8,
+      f"实际 {trace7['rerank']}")
+check("trace.hybrid.bm25_hits 逐路累加", trace7["hybrid"]["bm25_hits"] == 6,
+      f"实际 {trace7['hybrid']}")
+check("合并池候选全量进 candidates（均过阈值）",
+      len(trace7["rerank"]["candidates"]) == 2
+      and all(c["passed_threshold"] for c in trace7["rerank"]["candidates"]))
 
 
 print(f"\n== 结果：{PASS} 通过 / {FAIL} 失败 ==")

@@ -213,7 +213,7 @@ def test_rag_chain_integration():
     print("== 6. rag_chain 联动（config 翻开关 → _prepare_parallel 走改写，无需重启）==")
     retr = _FakeRetriever()
     chain = RAGChain(retriever=retr, llm_client=_FakeLLMClient(), memory=object())
-    chain._rewrite_question = lambda q, h: ("改写后的问题", {"input_tokens": 0,
+    chain._rewrite_question = lambda q, h: (["改写后的问题"], {"input_tokens": 0,
                                                             "output_tokens": 0,
                                                             "cache_read_tokens": 0})
     old_rw = settings.QUERY_REWRITE

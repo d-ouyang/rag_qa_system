@@ -113,9 +113,11 @@ def _make_chain(retriever, rewrite_returns="改写后的问题", hypo_returns="�
         memory=object(),
     )
     # _rewrite_question 是生产路径里真正调 LLM 的那一步，单测里固定其返回值以隔离分支逻辑
-    chain._rewrite_question = lambda q, h: (rewrite_returns, {"input_tokens": 0,
-                                                            "output_tokens": 0,
-                                                            "cache_read_tokens": 0})
+    # P4-9：_rewrite_question 契约改为返回「子查询列表」——桩同步（否则
+    # " / ".join(字符串) 会逐字符拆成单字子查询，2026-10-17 沙箱实测）
+    chain._rewrite_question = lambda q, h: ([rewrite_returns], {"input_tokens": 0,
+                                                               "output_tokens": 0,
+                                                               "cache_read_tokens": 0})
     return chain
 
 

@@ -42,6 +42,7 @@ RAG 链模块 —— 用 LCEL 把「问题重写 → 检索 → 提示词 → �
 
 from langchain_core.language_models.chat_models import BaseChatModel
 import logging
+import re
 import threading
 import time
 from collections.abc import Iterator
@@ -77,7 +78,7 @@ from core.groundedness import (
 from core import qa_flow
 from core import qa_trace_repo
 from core.retriever import RAGRetriever, get_rag_retriever
-from core.vector_store import build_chunk_id
+from core.vector_store import build_chunk_id, chunk_id_of_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +96,12 @@ _CONTEXTUALIZE_Q_SYSTEM_PROMPT = (
     "这个问题可能引用了对话历史中的内容（如「它」「这个」「上面说的」）。\n"
     "你的唯一任务是【改写问题】，绝对禁止回答问题。\n"
     "输出要求：\n"
-    "- 只输出改写后的那一个问题本身，不要任何前言、解释或多余内容\n"
+    "- 只输出改写后的问题本身，不要任何前言、解释或多余内容\n"
     "- 不要输出答案，不要输出「无法回答」之类的回应\n"
-    "- 如果问题本身已经是独立的，原样返回该问题"
+    "- 如果问题本身已经是独立的，原样返回该问题（一行）\n"
+    "- 如果一个问题里包含多个可以**各自独立回答**的子问题"
+    "（例如「怎么请事假？事假扣不扣钱？」），把每个子问题改写成独立的一行，"
+    "每行一个、按原顺序，最多 3 行；不要合并成一个长句"
 )
 
 _contextualize_q_prompt = ChatPromptTemplate.from_messages([
@@ -161,52 +165,80 @@ _HYDE_SYSTEM_PROMPT = (
 )
 
 
-def rewrite_query(
+def _sub_queries_from(raw: str, original: str) -> list[str]:
+    """
+    把改写模型的输出解析成 1~3 个子查询（P4-9）。
+
+    口径：
+        · 按行拆（模型被要求每行一个子问题）；剥掉「1. 」「- 」等列表前缀；
+        · 每行过一遍 _sanitize_rewrite（作答痕迹 / 超长 / 陈述句 → 弃行）；
+        · 去重、最多 3 行；全军覆没 → 回退 [original]（改写失败不致命）。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return [original]
+    lines: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        line = re.sub(r"^(?:\d+[.、)]\s*|[-*•]\s*)", "", line)   # 剥列表前缀
+        if not line:
+            continue
+        line = _sanitize_rewrite(line, original).strip()
+        if line and line not in lines:
+            lines.append(line)
+    if not lines:
+        return [original]
+    return lines[:3]
+
+
+def rewrite_to_sub_queries(
     question: str,
     chat_history: list[Any] | None = None,
     llm: Any = None,
-) -> str:
+) -> list[str]:
     """
-    把问题改写成独立检索句（含消毒兜底 + 指代重试）。
+    问题改写 + 复合问题分解（P4-9），输出 1~3 个独立子查询。
 
-    多轮（有历史）用于消除指代；单轮（无历史）用于把口语化 / 不规范问法
-    规整成检索友好句。供生产链路（RAGChain._rewrite_question）与评测脚本
-    （eval_retrieval --enhance）复用同一份逻辑。
+    · 单子问题：与旧行为完全一致（含 P4-7b 的指代重试）；
+    · 复合问题：模型按行输出子问题，每行独立改写。
+    供生产链路（RAGChain._rewrite_question）与评测脚本共用同一份逻辑。
 
-    :param llm: 可选的 LLM 注入。生产链路传 self.llm_client.get_llm()，
-                 保持「测试注入的假客户端仍生效」；不传则走全局客户端。
-
-    P4-7b：**原样返回 ≠ 一定合法**。改写模型有时会把「那病假呢？」这类
-    指代问句原样吐回来（实测同句两次改写成功、一次原样返回——温度非零的
-    随机性，且提示词里「如果问题本身已经是独立的，原样返回」在诱导它偷懒）。
-    原样返回的指代问句拿去检索必然落空（向量 embed 不了「那 X 呢」，
-    实测 top1 0.02~0.09 → 零召回拒答）。所以：原问题**含指代信号**却原样
-    返回 → 判定改写失败，带更强指令**重试一次**；重试仍原样就认了
-    （不无限重试，最多损失一次检索质量）。
+    :param llm: 可选注入（测试桩）；缺省走全局客户端。
     """
     llm = llm or get_llm_client().get_llm()
     history = list(chat_history or [])
     message = (_contextualize_q_prompt | llm).invoke(
         {"input": question, "chat_history": history}
     )
-    rewritten = _sanitize_rewrite(str(message.content), question)
-    if rewritten.strip() != question.strip():
-        return rewritten
-    # 走到这里 = 模型原样返回。问题不含指代 → 合法（本就独立）；含指代 → 失败，重试。
-    if not looks_anaphoric(question):
-        return rewritten
-    logger.warning("改写原样返回但问题含指代，带强化指令重试一次 | q=%.32s", question)
-    retry_message = (_contextualize_q_prompt | llm).invoke(
-        {
-            "input": (
-                f"{question}\n\n"
-                "（注意：上一轮你没有输出改写结果。这个问题依赖对话历史，必须消解指代——"
-                "例如「那病假呢？」应改写为「病假如何申请？」。只输出改写后的那一个问题。）"
-            ),
-            "chat_history": history,
-        }
-    )
-    return _sanitize_rewrite(str(retry_message.content), question)
+    sub_queries = _sub_queries_from(str(message.content), question)
+    # P4-7b：原样返回 ≠ 一定合法——原问题含指代却原样返回 = 改写失败，重试一次
+    if len(sub_queries) == 1 and sub_queries[0].strip() == question.strip() \
+            and looks_anaphoric(question):
+        logger.warning("改写原样返回但问题含指代，带强化指令重试一次 | q=%.32s", question)
+        retry_message = (_contextualize_q_prompt | llm).invoke(
+            {
+                "input": (
+                    f"{question}\n\n"
+                    "（注意：上一轮你没有输出改写结果。这个问题依赖对话历史，必须消解指代——"
+                    "例如「那病假呢？」应改写为「病假如何申请？」。只输出改写后的那一个问题。）"
+                ),
+                "chat_history": history,
+            }
+        )
+        sub_queries = _sub_queries_from(str(retry_message.content), question)
+    return sub_queries
+
+
+def rewrite_query(
+    question: str,
+    chat_history: list[Any] | None = None,
+    llm: Any = None,
+) -> str:
+    """
+    `rewrite_to_sub_queries` 的字符串包装（评测脚本 --enhance 用）：
+    多子查询以空格拼接成一个检索串；单子问题行为与旧版完全一致。
+    """
+    return " ".join(rewrite_to_sub_queries(question, chat_history, llm=llm))
 
 
 def generate_hypo_answer(question: str) -> str:
@@ -243,7 +275,10 @@ _QA_SYSTEM_PROMPT = (
     "5. 不要输出任何乱码、特殊符号或者不连贯的句子。\n"
     "6. 回答引用了资料中的具体条款时，在答案末尾另起一行列出依据，"
     "格式：「依据：文件名 第X条」（多个依据用顿号分隔）；"
-    "「未查到」类回答不加此行。\n\n"
+    "「未查到」类回答不加此行。\n"
+    "7. 用户的问题包含多个子问题时，分子问题组织回答（每个子问题一小节）；"
+    "任一子问题在资料中找不到依据的，在该子问题下明确说明「根据现有制度未查到相关规定」，"
+    "不要把多个子问题混在一起含糊作答。\n\n"
     "检索到的资料：\n{context}"
 )
 
@@ -754,21 +789,18 @@ class RAGChain:
 
     def _rewrite_question(
         self, question: str, chat_history: list[Any]
-    ) -> tuple[str, dict[str, int]]:
+    ) -> tuple[list[str], dict[str, int]]:
         """
-        问题重写 + 消毒 + 指代重试，返回 (standalone_question, 本次重写的 token 用量)。
+        问题重写 + 复合分解 + 指代重试，返回 (子查询列表 1~3 个, 重写用量)。
 
-        P4-7c：**必须走模块级 rewrite_query 单一入口**。本方法在 P4-7b 曾
-        内联一份自己的调用（prompt | llm + sanitize），结果那轮加在
-        rewrite_query 里的「指代重试」在生产链路完全没生效（今早实测
-        c860195b 会话 08:45 仍全量失败）——**修逻辑不修入口 = 没修**。
-        现在生产、LCEL prepare 链、评测脚本三者共用同一份实现；
-        差别只剩「是否记录 token 用量」这一观察性维度。
+        P4-7c：必须走模块级单一入口（本方法在 P4-7b 曾内联自己的调用，
+        指代重试在生产链路完全没生效——修逻辑不修入口 = 没修）。
+        P4-9：入口升级为 rewrite_to_sub_queries（复合问题按行拆子查询）。
         """
         llm = self.llm_client.get_llm()
-        rewritten = rewrite_query(question, chat_history, llm=llm)
+        sub_queries = rewrite_to_sub_queries(question, chat_history, llm=llm)
         usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
-        return rewritten, usage
+        return sub_queries, usage
 
     def _prepare_parallel(
         self, question: str, chat_history: list[Any]
@@ -801,7 +833,12 @@ class RAGChain:
         rewrite_on = config_service.get_flag("query_rewrite", settings.QUERY_REWRITE)
         hyde_on = config_service.get_flag("query_hyde", settings.QUERY_HYDE)
         enhance_on = rewrite_on or hyde_on
-        should_rewrite = bool(chat_history) or enhance_on
+        # P4-9：复合问题在**首轮**就会出现（无历史），不能依赖「有历史才改写」。
+        # 零成本预检：一个问句里 ≥2 个问号 → 疑似复合（如「怎么请事假？扣不扣钱？」），
+        # 触发改写/分解；代价是这类问题多一次 LLM 调用。显式多问号是最常见形态，
+        # 「和/以及」连接的单问号形态暂不覆盖（会误伤大量正常问句，等评测数据说话）。
+        looks_compound = (question.count("？") + question.count("?")) >= 2
+        should_rewrite = bool(chat_history) or enhance_on or looks_compound
 
         # P4-5：本次调用的检索轨迹（按请求一份），随轮落库做流程回溯
         trace: dict[str, Any] = {}
@@ -824,33 +861,101 @@ class RAGChain:
         rewrite_usage = _usage_zero()
         vector_query: str | None = None
         if rewrite_future is not None:
-            standalone, rewrite_usage = rewrite_future.result()
-            if hyde_on:
-                # 用改写后的干净问句生成假设答案，其 embedding 替代原问句做向量召回
-                vector_query = generate_hypo_answer(standalone)
-            # 改写无变化且不开 HyDE → 复用投机结果（省 ~1s 检索+重排）；
-            # 开了 HyDE 即便改写无变化也要用 vector_query 重新检索
-            if standalone.strip() == question.strip() and not hyde_on:
+            sub_queries, rewrite_usage = rewrite_future.result()
+            standalone = " / ".join(sub_queries)   # 展示口径：多个子查询一并可见
+            if hyde_on and len(sub_queries) == 1:
+                # HyDE 只服务单子查询（复合问题的每路各自真实检索，不掺假设答案）
+                vector_query = generate_hypo_answer(sub_queries[0])
+            if sub_queries == [question] and not hyde_on:
+                # 改写无变化 → 复用投机结果（省 ~1s 检索+重排）
                 docs: list[Document] = retrieve_future.result()
-            else:
-                # 重新检索 → 换一份新轨迹：真正进回答的是这一次，
-                # 投机那次的轨迹必须整体作废，不能留在 prepared 里造成「看的不是这次」
+            elif len(sub_queries) == 1:
+                # 单子查询：与旧行为一致，重新检索并换新轨迹
                 trace = {}
                 docs = retriever.retrieve(
-                    standalone, vector_query=vector_query, trace_out=trace
+                    sub_queries[0], vector_query=vector_query, trace_out=trace
                 )
+            else:
+                # P4-9 复合问题：每个子查询各检索一路，候选池去重合并
+                trace = {}
+                docs = self._multi_retrieve(sub_queries, trace)
         else:
+            sub_queries = [question]
             standalone = question
             docs = retrieve_future.result()
 
         return intent_result, {
             "standalone_question": standalone,
+            "sub_queries": sub_queries,    # P4-9：本轮实际检索的子查询（1~3 个）
             "docs": docs,
             "context": format_docs(docs),
             "rewrite_usage": rewrite_usage,
             "vector_query": vector_query,  # HyDE 假设答案；None = 未启用
             "retrieval_trace": trace,      # P4-5：本次检索轨迹（rerank / hybrid 两段）
         }
+
+    def _multi_retrieve(
+        self, sub_queries: list[str], trace: dict[str, Any]
+    ) -> list[Document]:
+        """
+        复合问题的多路检索（P4-9）：每个子查询各走一遍完整检索
+        （混合召回 + 重排 + 阈值），候选池按 chunk_id 去重合并。
+
+        合并口径：同一切片多路命中 → 保留 rerank 分最高的那份 Document；
+        合并后按 rerank 分降序输出。轨迹合成：rerank.top1 取各路最大值
+        （低置信带判定用它），candidates 为合并池全量（均过阈值），
+        hybrid 的 bm25_hits 逐路累加——「每路都看到」比「精确到路」更有用。
+        """
+        merged: dict[str, tuple[Document, float]] = {}
+        best_top1 = 0.0
+        threshold: float | None = None
+        bm25_total = 0
+        rrf_top: str | None = None
+        for sq in sub_queries:
+            sub_trace: dict[str, Any] = {}
+            docs = self.retriever.retrieve(sq, trace_out=sub_trace)
+            for d in docs:
+                cid = chunk_id_of_metadata(d.metadata)
+                if cid is None:
+                    continue
+                score = float(d.metadata.get("rerank_score") or 0.0)
+                if cid not in merged or score > merged[cid][1]:
+                    merged[cid] = (d, score)
+            rr = sub_trace.get("rerank") or {}
+            best_top1 = max(best_top1, float(rr.get("top1_before_filter") or 0.0))
+            if threshold is None and rr.get("threshold") is not None:
+                threshold = float(rr["threshold"])
+            hy = sub_trace.get("hybrid") or {}
+            bm25_total += int(hy.get("bm25_hits") or 0)
+            if rrf_top is None and hy.get("rrf_top"):
+                rrf_top = str(hy["rrf_top"])
+
+        ordered = sorted(merged.values(), key=lambda t: t[1], reverse=True)
+        trace["rerank"] = {
+            "top1_before_filter": best_top1,
+            "threshold": threshold,
+            "filtered_count": 0,   # 各路已各自过阈值，合并池不再过滤
+            "candidates": [
+                {
+                    "chunk_id": chunk_id_of_metadata(d.metadata),
+                    "file_name": d.metadata.get("file_name"),
+                    "rerank_score": round(score, 6),
+                    "vector_similarity": d.metadata.get("vector_similarity"),
+                    "passed_threshold": True,
+                }
+                for d, score in ordered
+            ],
+        }
+        trace["hybrid"] = {
+            "bm25_hits": bm25_total,
+            "bm25_only": None,     # 多路合并后「独有」语义模糊，不下发（None = 不适用）
+            "rrf_top": rrf_top,
+        }
+        logger.info(
+            "复合检索 | 子查询=%d 合并候选=%d best_top1=%.4f | %.24s",
+            len(sub_queries), len(ordered), best_top1, " / ".join(sub_queries),
+        )
+        return [d for d, _ in ordered]
 
     @staticmethod
     def _stream_answer(
