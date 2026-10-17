@@ -282,5 +282,43 @@ finally:
     rc.get_intent_classifier = _orig_classifier
 
 
+
+# --------------------------------------------------------------------------- #
+# 第 3 组：更正块（P4-6b）——未通过/自认未查到 → 据实追加更正并落库
+# --------------------------------------------------------------------------- #
+print("\n== 第 3 组：更正块 ==")
+from core.groundedness import (  # noqa: E402
+    answer_admits_no_basis,
+    append_groundedness_correction,
+)
+
+check("依据行自认未查到被识别", answer_admits_no_basis("……依据：未查到"))
+check("正常依据行不误伤", not answer_admits_no_basis("……依据：05_考勤管理制度.md 第八条"))
+check("无依据行不误伤", not answer_admits_no_basis("病假1天内不扣工资。"))
+
+_g = {"grounded": False, "unsupported": ["病假1天内不扣工资"]}
+corrected = append_groundedness_correction("编造的回答。", _g)
+check("更正块含勿采信警示", "请勿采信" in corrected)
+check("更正块含未支撑论断清单", "病假1天内不扣工资" in corrected)
+check("更正块含补充资料建议", "请补充对应制度文档" in corrected)
+check("grounded=True 不加更正", append_groundedness_correction("好的回答。", {"grounded": True}) == "好的回答。")
+check("grounded=None 不加更正", append_groundedness_correction("回答。", None) == "回答。")
+
+# 集成：judge 判 false → 最终答案含更正块且落库一致
+rc.get_intent_classifier = lambda: _ChainIntent(Intent.KNOWLEDGE_QUERY)
+chain5, llm5 = _mk_chain([
+    "病假1天内不扣工资。依据：未查到",
+    '{"grounded": true, "unsupported": []}',   # judge 被骗，但模型自认未查到要兜住
+])
+rc.get_llm_client = lambda: _JudgeClient(llm5)
+res5 = chain5.query("那病假呢？", "p46-corr", owner_id=None)
+check("judge 被骗但模型自认未查到 → 强制未通过",
+      res5["grounded"] is not None and res5["grounded"]["grounded"] is False,
+      f"实际 {res5.get('grounded')!r}")
+check("最终答案含更正块", "请勿采信" in res5["answer"] and "请补充对应制度文档" in res5["answer"])
+_last = chain5.memory.get_messages("p46-corr", owner_id=None)[-1]
+check("落库的 assistant 消息与返回一致（含更正块）", "请勿采信" in str(_last.content))
+
+
 print(f"\n== 结果：{PASS} 通过 / {FAIL} 失败 ==")
 sys.exit(1 if FAIL else 0)

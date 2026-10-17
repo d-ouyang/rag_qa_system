@@ -210,6 +210,11 @@ check("不传 trace_out 时行为不变（返回仍是 docs 列表）",
 # 第 4 组：桩件（RAGChain 端到端）
 # --------------------------------------------------------------------------- #
 print("\n== 第 4 组：_prepare_parallel 透传 + 端到端落库 ==")
+# P4-6：端到端轮次不做真实 judge 调用（桩 LLM 会把 judge 打到真实 API）；
+# 校验行为由 module28 专测
+from core.config_service import config_service  # noqa: E402
+
+config_service.set_flag("groundedness_check", False)
 import core.rag_chain as rc
 
 # P4-5b：镜像写入走桩 —— 本模块不碰 MySQL（真库不该被测试轨迹污染）；

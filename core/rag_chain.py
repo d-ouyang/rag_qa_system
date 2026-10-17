@@ -68,7 +68,12 @@ from core.intent_router import Intent, IntentResult, get_intent_classifier
 from core.llm_client import LLMClient, get_llm_client
 from core.memory_manager import MemoryManager, get_memory_manager
 from core.qa_cache import is_standalone_question, looks_anaphoric, lookup_answer, store_answer
-from core.groundedness import check_groundedness, is_low_confidence
+from core.groundedness import (
+    answer_admits_no_basis,
+    append_groundedness_correction,
+    check_groundedness,
+    is_low_confidence,
+)
 from core import qa_flow
 from core import qa_trace_repo
 from core.retriever import RAGRetriever, get_rag_retriever
@@ -1154,6 +1159,17 @@ class RAGChain:
                     context=prepared["context"],
                     answer=answer,
                 )
+        # P4-6b：依据校验未通过 / 模型自认未查到 → 据实更正。
+        # 追加更正块而不是静默替换：答案已流式流出，撤回做不到；
+        # 最诚实的做法是把「没有依据、请勿采信」钉进正文并随轮落库。
+        if answer_admits_no_basis(answer) and (grounded is None or grounded.get("grounded") is not False):
+            # 模型自己在依据行承认了未查到 —— 覆盖 judge 结论（保守）
+            grounded = {"grounded": False,
+                        "unsupported": ["模型自述未在资料中查到依据"],
+                        "note": "依据行自认未查到"}
+        if grounded is not None and grounded.get("grounded") is False:
+            answer = append_groundedness_correction(answer, grounded)
+            result["answer"] = answer  # 缓存与调用方拿到的必须是更正后的版本
         exchange_meta = {
             "sources": result["sources"],
             "intent": result["intent"],
@@ -1338,6 +1354,15 @@ class RAGChain:
                     "unsupported": grounded.get("unsupported") or [],
                     "low_confidence": low_confidence,
                 }
+        # P4-6b：同 query 口径——未通过/自认未查到 → 更正块作为额外 chunk 下发并随轮落库
+        if answer_admits_no_basis(answer) and (grounded is None or grounded.get("grounded") is not False):
+            grounded = {"grounded": False,
+                        "unsupported": ["模型自述未在资料中查到依据"],
+                        "note": "依据行自认未查到"}
+        if grounded is not None and grounded.get("grounded") is False:
+            correction = append_groundedness_correction("", grounded).strip()
+            answer = (answer.rstrip() + "\n\n" + correction) if answer else correction
+            yield {"type": "chunk", "content": "\n\n" + correction}
         exchange_meta = {
             "sources": sources,
             "intent": intent_result.intent.value,

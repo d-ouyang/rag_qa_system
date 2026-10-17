@@ -58,6 +58,43 @@ def is_low_confidence(top1_before_filter: Any) -> bool:
     return lo <= float(top1_before_filter) <= hi
 
 
+import re  # noqa: E402
+
+#: 模型在「依据：…」行里自认未查到 —— 强信号：它自己都承认没找到依据，
+#: 却可能已经在上面编完了（q041 实测复现：正文编造扣薪规则 + 依据行写「未查到」）。
+_ADMITS_NO_BASIS_RE = re.compile(r"依据[:：]\s*未查到")
+
+
+def answer_admits_no_basis(answer: str) -> bool:
+    """答案的依据行是否自认「未查到」。命中即视为未通过，无论 judge 怎么判。"""
+    return bool(_ADMITS_NO_BASIS_RE.search(answer or ""))
+
+
+def append_groundedness_correction(answer: str, grounded: dict[str, Any] | None) -> str:
+    """
+    依据校验未通过时，在答案尾部追加「未查到依据」更正块（P4-6b）。
+
+    为什么是**追加**而不是替换：答案已经流式输出给用户，撤回做不到；
+    能做的最诚实的事是把「这段回答没有依据、请勿采信」钉在正文里，
+    连同未支撑论断清单和补充资料建议一起落库——刷新后看到的和当时看到的一致。
+
+    grounded 非 False（通过 / 未判定）时原样返回，一个字不加。
+    """
+    if not grounded or grounded.get("grounded") is not False:
+        return answer
+    unsupported = [str(x) for x in (grounded.get("unsupported") or []) if str(x).strip()]
+    lines = [
+        "---",
+        "⚠️ **依据校验：以上回答未能在检索资料中找到依据，请勿采信。**",
+    ]
+    if unsupported:
+        lines.append("未能找到依据的论断：" + "；".join(unsupported) + "。")
+    lines.append(
+        "根据现有制度未查到相关规定，请补充对应制度文档，或联系人力资源部门确认。"
+    )
+    return (answer or "").rstrip() + "\n\n" + "\n".join(lines)
+
+
 def check_groundedness(
     *, question: str, context: str, answer: str
 ) -> dict[str, Any]:
