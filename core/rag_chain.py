@@ -157,12 +157,17 @@ _HYDE_SYSTEM_PROMPT = (
 def rewrite_query(
     question: str,
     chat_history: list[Any] | None = None,
+    llm: Any = None,
 ) -> str:
     """
-    把问题改写成独立检索句（含消毒兜底）。
+    把问题改写成独立检索句（含消毒兜底 + 指代重试）。
 
     多轮（有历史）用于消除指代；单轮（无历史）用于把口语化 / 不规范问法
-    规整成检索友好句。供生产链路与评测脚本复用同一份逻辑。
+    规整成检索友好句。供生产链路（RAGChain._rewrite_question）与评测脚本
+    （eval_retrieval --enhance）复用同一份逻辑。
+
+    :param llm: 可选的 LLM 注入。生产链路传 self.llm_client.get_llm()，
+                 保持「测试注入的假客户端仍生效」；不传则走全局客户端。
 
     P4-7b：**原样返回 ≠ 一定合法**。改写模型有时会把「那病假呢？」这类
     指代问句原样吐回来（实测同句两次改写成功、一次原样返回——温度非零的
@@ -172,7 +177,7 @@ def rewrite_query(
     返回 → 判定改写失败，带更强指令**重试一次**；重试仍原样就认了
     （不无限重试，最多损失一次检索质量）。
     """
-    llm = get_llm_client().get_llm()
+    llm = llm or get_llm_client().get_llm()
     history = list(chat_history or [])
     message = (_contextualize_q_prompt | llm).invoke(
         {"input": question, "chat_history": history}
@@ -741,15 +746,19 @@ class RAGChain:
         self, question: str, chat_history: list[Any]
     ) -> tuple[str, dict[str, int]]:
         """
-        问题重写 + 消毒，返回 (standalone_question, 本次重写的 token 用量)。
+        问题重写 + 消毒 + 指代重试，返回 (standalone_question, 本次重写的 token 用量)。
 
-        生产路径（query/stream）与 LCEL prepare 链共用同一 prompt 与消毒函数，
-        行为差异只剩「是否记录 token 用量」这一观察性维度。
+        P4-7c：**必须走模块级 rewrite_query 单一入口**。本方法在 P4-7b 曾
+        内联一份自己的调用（prompt | llm + sanitize），结果那轮加在
+        rewrite_query 里的「指代重试」在生产链路完全没生效（今早实测
+        c860195b 会话 08:45 仍全量失败）——**修逻辑不修入口 = 没修**。
+        现在生产、LCEL prepare 链、评测脚本三者共用同一份实现；
+        差别只剩「是否记录 token 用量」这一观察性维度。
         """
         llm = self.llm_client.get_llm()
-        chain = _contextualize_q_prompt | llm
-        message = chain.invoke({"input": question, "chat_history": chat_history})
-        return _sanitize_rewrite(str(message.content), question), _extract_usage(message)
+        rewritten = rewrite_query(question, chat_history, llm=llm)
+        usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+        return rewritten, usage
 
     def _prepare_parallel(
         self, question: str, chat_history: list[Any]

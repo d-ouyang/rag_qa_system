@@ -449,6 +449,22 @@ try:
     rc.get_llm_client = lambda: _ScriptedClient(llm3)
     out3 = rc.rewrite_query("那病假呢？", chat_history=[("human", "怎么请事假？")])
     check("正常改写不触发重试", out3 == "病假如何申请？" and len(llm3.prompts) == 1)
+
+    # 5d. 生产入口 _rewrite_question 也走同一重试（P4-7c 覆盖漏洞回归：
+    #     P4-7b 曾把重试只加在模块函数里，生产链路内联调用没接上）
+    llm4 = _ScriptedLLM(["那事假呢？", "事假如何申请？"])
+    chain4 = RAGChain(
+        retriever=_StubRetriever([]),
+        llm_client=_ScriptedClient(llm4),
+        memory=MemoryManager(max_turns=5, ttl_seconds=3600,
+                             store=MemorySessionStore(ttl_seconds=3600)),
+    )
+    rw, _usage = chain4._rewrite_question(
+        "那事假呢？", [("human", "我想请个年假，怎么做？"), ("ai", "……年假申请流程……")],
+    )
+    check("生产入口 _rewrite_question 触发指代重试",
+          rw == "事假如何申请？" and len(llm4.prompts) == 2,
+          f"实际 {rw!r} 调用 {len(llm4.prompts)} 次")
 finally:
     rc.get_llm_client = _orig_glc
 
