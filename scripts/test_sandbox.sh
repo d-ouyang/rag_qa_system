@@ -254,6 +254,7 @@ else
     test_module26_qa_trace
     test_module27_qa_flow_trace
     test_module28_groundedness
+    test_module29_session_summary
   "
   # 🔴 **不在第一个失败处停下**（2026-10-11 改，P3-2 的教训）：
   #    原来写的是 `|| { echo "❌ $t 失败"; exit 1; }`，于是

@@ -23,4 +23,4 @@ settings.py 以本文件的值为默认，并带空串兜底校验（防 `.env` 
 PROJECT_NAME = "企业级RAG智能问答系统"
 
 # 当前版本号。每次迭代在此 bump，与 git tag（v4.0.0-p4.5b）逐字一致。
-PROJECT_VERSION = "4.0.0-p4.9b"
+PROJECT_VERSION = "4.0.0-p4.10"
