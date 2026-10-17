@@ -165,6 +165,40 @@ _HYDE_SYSTEM_PROMPT = (
 )
 
 
+#: 疑问标记（不计问号本身——「怎么申请事假？」只有一个疑问标记，是单问句）
+_QUESTION_MARKS: tuple[str, ...] = (
+    "怎么", "如何", "多少", "几", "是否", "能不能", "会不会", "可不可以",
+    "哪些", "什么", "吗", "呢",
+)
+#: 显式并列连词/分隔符
+_PARALLEL_MARKS: tuple[str, ...] = (
+    "以及", "另外", "还有", "同时", "并且", "而且", ";", "；", "且",
+)
+
+
+def _looks_compound(question: str) -> bool:
+    """
+    零成本判断：这个问句**疑似**包含多个可独立回答的子问题（P4-9b）。
+
+    判定只是「要不要花一次 LLM 去做改写/分解」的门，不是分解本身——
+    真正的拆分由改写模型按行输出。判宽一点的成本只是多一次调用，
+    判窄了则复合问题根本得不到分解（q042 实测：复合问句不分解 → 流程切片缺席）。
+
+    三条命中其一：
+        ① 问号 ≥2（「怎么请事假？扣不扣钱？」）；
+        ② 疑问标记 ≥2（「事假怎么申请，工资怎么算」——**无问号**也能触发）；
+        ③ 有并列连词且 ≥1 个疑问标记（「怎么申请年假？以及需要哪些材料」）。
+    刻意保守：单问号 + 单疑问标记（「怎么申请事假？」）不触发，避免误伤。
+    """
+    q = question or ""
+    if q.count("？") + q.count("?") >= 2:
+        return True
+    marks = sum(q.count(m) for m in _QUESTION_MARKS)
+    if marks >= 2:
+        return True
+    return marks >= 1 and any(m in q for m in _PARALLEL_MARKS)
+
+
 def _sub_queries_from(raw: str, original: str) -> list[str]:
     """
     把改写模型的输出解析成 1~3 个子查询（P4-9）。
@@ -834,10 +868,8 @@ class RAGChain:
         hyde_on = config_service.get_flag("query_hyde", settings.QUERY_HYDE)
         enhance_on = rewrite_on or hyde_on
         # P4-9：复合问题在**首轮**就会出现（无历史），不能依赖「有历史才改写」。
-        # 零成本预检：一个问句里 ≥2 个问号 → 疑似复合（如「怎么请事假？扣不扣钱？」），
-        # 触发改写/分解；代价是这类问题多一次 LLM 调用。显式多问号是最常见形态，
-        # 「和/以及」连接的单问号形态暂不覆盖（会误伤大量正常问句，等评测数据说话）。
-        looks_compound = (question.count("？") + question.count("?")) >= 2
+        # 零成本预检 → 触发改写/分解（真正的分解由改写模型按行输出，不是按符号切）。
+        looks_compound = _looks_compound(question)
         should_rewrite = bool(chat_history) or enhance_on or looks_compound
 
         # P4-5：本次调用的检索轨迹（按请求一份），随轮落库做流程回溯
