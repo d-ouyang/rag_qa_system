@@ -62,6 +62,35 @@ export interface RetrievalDebug {
   rrf_top?: string | null
 }
 
+/**
+ * 流程回溯轨迹（P4-5）—— 随每轮 `turn_meta` **落库**，刷新 / 历史回看仍在。
+ *
+ * 形状是 `RetrievalDebug` 的超集：检索细节那几个键与流式 retrieval 帧同名同义
+ * （后端落库时复用同一个 `_retrieval_debug_event` 产出，见 rag_chain），
+ * 所以面板可以直接把数据源从 `retrieval_debug` 换成 `qa_trace` 而不用改字段。
+ */
+export interface QaTrace extends RetrievalDebug {
+  /** 本轮原始提问 */
+  question?: string
+  /**
+   * 终端状态（这一轮最终走的是哪条分支）：
+   * cache_hit / chitchat / zero_recall / rag_qa
+   */
+  decision?: string | null
+  /** 意图判定来源：llm | rule | cache */
+  intent_source?: string | null
+  /** HyDE 假设答案（向量召回实际用的文本；未启用为 null） */
+  vector_query?: string | null
+  /** 本次是否启用了 HyDE */
+  hyde_used?: boolean
+  /** 本轮总耗时（毫秒） */
+  elapsed_ms?: number
+  /** 进入回答的引用条数 */
+  sources_count?: number
+  /** 是否被零召回短路拒答 */
+  rejected?: boolean
+}
+
 /** 切片详情（GET /api/v1/chunks/{chunk_id}，对应后端 ChunkDetail） */
 export interface ChunkDetail {
   chunk_id: string
@@ -136,6 +165,15 @@ export interface ChatMessage {
   sources?: SourceItem[]
   /** 本轮检索调试详情（流式 retrieval 帧返回，P2-23；仅 debug 开启时有） */
   retrieval_debug?: RetrievalDebug
+  /**
+   * 本轮流程回溯轨迹（P4-5）：随 turn_meta 落库，**刷新 / 历史回看仍有**。
+   * 展示时优先于 `retrieval_debug` —— 后者只在当轮流式过程中存在。
+   */
+  qa_trace?: QaTrace | null
+  /** P4-6 依据校验结果（流式 grounded 帧 / 历史接口回填）；None=未校验 */
+  grounded?: { grounded: boolean | null; unsupported: string[]; note?: string } | null
+  /** P4-6 top1 落在低置信带（0.25~0.35）时的警示标记 */
+  low_confidence?: boolean | null
   /** assistant 消息的意图识别结果（流式 meta 帧返回） */
   intent?: string
   /** 本轮 token 用量与耗时（done 帧返回，历史接口按轮回填） */
@@ -151,6 +189,7 @@ export type StreamFrame =
   | { type: 'meta'; intent: string; route: string; intent_source: string; standalone_question?: string | null; sources?: SourceItem[] }
   | ({ type: 'retrieval' } & RetrievalDebug)
   | { type: 'chunk'; content: string }
+  | { type: 'grounded'; grounded: boolean | null; unsupported: string[]; low_confidence: boolean }
   | { type: 'done'; elapsed_ms?: number; usage?: TurnUsage; session_usage?: SessionUsage }
   | { type: 'error'; status?: number; detail: string }
 

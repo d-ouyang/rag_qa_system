@@ -89,6 +89,20 @@ class Intent(str, Enum):
         return self is not Intent.CHITCHAT
 
 
+#: 意图 → 中文短名。**唯一清单**：溯源页（P4-5b）的意图下拉与徽章都从
+#: 后端这份派生（接口随列表一起下发），前端不自己再写一份 ——
+#: 那是 kb_acl ACTION_LABELS 用血泪换来的规矩：两份清单各自漂，且漂了不报错。
+INTENT_LABELS: dict[str, str] = {
+    Intent.KNOWLEDGE_QUERY.value: "知识问答",
+    Intent.OPERATION_GUIDE.value: "操作指南",
+    Intent.POLICY_CONSULT.value: "政策咨询",
+    Intent.COMPARISON_ANALYSIS.value: "对比分析",
+    Intent.DATA_STATISTICS.value: "数据统计",
+    Intent.TROUBLESHOOTING.value: "故障排查",
+    Intent.CHITCHAT.value: "闲聊",
+}
+
+
 # 类别元数据不放 enum 成员里（enum 成员只能是简单值），用外部字典管理。
 # 顺序即打分平手时的优先级顺序（列表前面的优先级高，见 _CATEGORY_PRIORITY）。
 INTENT_KEYWORDS: dict[Intent, tuple[str, ...]] = {

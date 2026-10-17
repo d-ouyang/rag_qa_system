@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>重排阈值扫档报告 · 2026-10-16T23:05:40</title>
+<style>
+  body { background:#0b1220; color:#e2e8f0; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+         margin:0; padding:32px 40px; }
+  h1 { font-size:20px; margin:0 0 4px; } h2 { font-size:15px; margin:28px 0 10px; color:#94a3b8; }
+  .sub { color:#64748b; font-size:13px; margin-bottom:20px; }
+  .card { background:#111a2e; border:1px solid #1e293b; border-radius:12px; padding:18px 20px; margin-bottom:18px; }
+  .kv { color:#64748b; font-size:12px; line-height:1.9; }
+  .kv b { color:#cbd5e1; font-weight:500; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:7px 10px; border-bottom:1px solid #1e293b; text-align:left; }
+  th { color:#94a3b8; font-weight:500; }
+  td.mono, .mono { font-family:ui-monospace,Menlo,monospace; }
+  td.q { max-width:260px; }
+  tr.oos td { color:#94a3b8; }
+  svg text { font-family:inherit; }
+  .callout { border-left:3px solid #f87171; padding:10px 14px; background:#1a2338; border-radius:6px;
+              font-size:13px; line-height:1.8; color:#cbd5e1; }
+  .legend { display:flex; gap:22px; font-size:12px; color:#94a3b8; margin:6px 0 0 60px; }
+  .legend i { display:inline-block; width:20px; height:2.5px; vertical-align:middle; margin-right:6px; }
+</style></head><body>
+<h1>重排分数阈值扫档报告</h1>
+<div class="sub">生成于 2026-10-16T23:05:40 · 评测集 /Users/ouyangding/Desktop/AIAgent/rag-qa-system/data/eval/golden.jsonl（41 题，指纹 1ab642939d29）</div>
+
+<div class="card">
+  <div class="kv">
+    检索配置：<b>top_k=5</b> · 重排=<b>BAAI/bge-reranker-v2-m3</b>
+    · 混合召回=<b>关</b> · 评测运行阈值=<b>0（关过滤，离线重算四档）</b><br>
+    库内 30 题（应答） / 库外 11 题（应拒答，含 q041 幻觉回归锚） · 耗时 18.5s
+  </div>
+</div>
+
+<h2>拒答正确率 vs 命中率 · 权衡曲线</h2>
+<div class="card">
+  <svg viewBox="0 0 640 300" width="100%">
+    <line x1="60" y1="254" x2="610" y2="254" stroke="#1e293b"/><text x="52" y="258" text-anchor="end" fill="#64748b" font-size="11">0.0</text><line x1="60" y1="198" x2="610" y2="198" stroke="#1e293b"/><text x="52" y="202" text-anchor="end" fill="#64748b" font-size="11">0.2</text><line x1="60" y1="142" x2="610" y2="142" stroke="#1e293b"/><text x="52" y="146" text-anchor="end" fill="#64748b" font-size="11">0.5</text><line x1="60" y1="86" x2="610" y2="86" stroke="#1e293b"/><text x="52" y="90" text-anchor="end" fill="#64748b" font-size="11">0.8</text><line x1="60" y1="30" x2="610" y2="30" stroke="#1e293b"/><text x="52" y="34" text-anchor="end" fill="#64748b" font-size="11">1.0</text>
+    <polyline points="60,37 243,60 427,90 610,105" fill="none" stroke="#38bdf8" stroke-width="2"/><polyline points="60,50 243,50 427,30 610,30" fill="none" stroke="#34d399" stroke-width="2"/><polyline points="60,254 243,232 427,202 610,187" fill="none" stroke="#f87171" stroke-width="2"/><circle cx="60" cy="37" r="4" fill="#38bdf8"/><text x="60" y="27" text-anchor="middle" fill="#38bdf8" font-size="11">0.97</text><circle cx="243" cy="60" r="4" fill="#38bdf8"/><text x="243" y="50" text-anchor="middle" fill="#38bdf8" font-size="11">0.87</text><circle cx="427" cy="90" r="4" fill="#38bdf8"/><text x="427" y="80" text-anchor="middle" fill="#38bdf8" font-size="11">0.73</text><circle cx="610" cy="105" r="4" fill="#38bdf8"/><text x="610" y="95" text-anchor="middle" fill="#38bdf8" font-size="11">0.67</text><circle cx="60" cy="50" r="4" fill="#34d399"/><text x="60" y="40" text-anchor="middle" fill="#34d399" font-size="11">0.91</text><circle cx="243" cy="50" r="4" fill="#34d399"/><text x="243" y="40" text-anchor="middle" fill="#34d399" font-size="11">0.91</text><circle cx="427" cy="30" r="4" fill="#34d399"/><text x="427" y="20" text-anchor="middle" fill="#34d399" font-size="11">1.00</text><circle cx="610" cy="30" r="4" fill="#34d399"/><text x="610" y="20" text-anchor="middle" fill="#34d399" font-size="11">1.00</text><circle cx="60" cy="254" r="4" fill="#f87171"/><text x="60" y="244" text-anchor="middle" fill="#f87171" font-size="11">0.00</text><circle cx="243" cy="232" r="4" fill="#f87171"/><text x="243" y="222" text-anchor="middle" fill="#f87171" font-size="11">0.10</text><circle cx="427" cy="202" r="4" fill="#f87171"/><text x="427" y="192" text-anchor="middle" fill="#f87171" font-size="11">0.23</text><circle cx="610" cy="187" r="4" fill="#f87171"/><text x="610" y="177" text-anchor="middle" fill="#f87171" font-size="11">0.30</text>
+    <text x="60" y="272" text-anchor="middle" fill="#94a3b8" font-size="12">0.1</text><text x="243" y="272" text-anchor="middle" fill="#94a3b8" font-size="12">0.3</text><text x="427" y="272" text-anchor="middle" fill="#94a3b8" font-size="12">0.5</text><text x="610" y="272" text-anchor="middle" fill="#94a3b8" font-size="12">0.7</text>
+    <text x="335" y="294" text-anchor="middle" fill="#64748b" font-size="12">重排分数阈值</text>
+  </svg>
+  <div class="legend">
+    <span><i style="background:#38bdf8"></i>命中率 hit@5（库内）</span>
+    <span><i style="background:#34d399"></i>拒答正确率（库外）</span>
+    <span><i style="background:#f87171"></i>误拒率（库内，反向代价）</span>
+  </div>
+</div>
+
+<h2>各档指标汇总</h2>
+<div class="card">
+  <table>
+    <tr><th>阈值</th><th>命中率 hit@5</th><th>recall@5</th><th>误拒（库内）</th><th>正确拒答（库外）</th><th>拒答正确率</th></tr>
+    <tr><td class="mono">0.1</td><td>0.9667</td><td>0.8944</td><td>0 / 30</td><td>10 / 11</td><td>0.9091</td></tr><tr><td class="mono">0.3</td><td>0.8667</td><td>0.7778</td><td>3 / 30</td><td>10 / 11</td><td>0.9091</td></tr><tr><td class="mono">0.5</td><td>0.7333</td><td>0.6389</td><td>7 / 30</td><td>11 / 11</td><td>1.0000</td></tr><tr><td class="mono">0.7</td><td>0.6667</td><td>0.5889</td><td>9 / 30</td><td>11 / 11</td><td>1.0000</td></tr>
+  </table>
+</div>
+
+<h2>关键案例 · q041「请病假扣工资吗？」（幻觉回归锚）</h2>
+<div class="card">
+  <div class="callout">
+    库内考勤制度只写「病假需凭医疗机构证明」（812:2），<b>没有任何病假扣薪规定</b>。
+    实测 top1=<b class="mono">0.3232</b>（812:1，考勤打卡/迟到旷工切片，不含病假）——
+    阈值 0.1 与 0.3 档都不拒答（上下文无答案 → 模型用常识编造），
+    0.5 档起才拒答。<br>
+    结论：<b>阈值挡得住「全库无相关」，挡不住「擦边相关但无答案」</b>——后者需要答案充分性校验（P4-6 Groundedness）。
+  </div>
+</div>
+
+<h2>逐题明细（按 id 排序，含每档判定）</h2>
+<div class="card">
+  <table>
+    <tr><th>id</th><th>问题</th><th>top1 分数</th><th>top1 chunk</th><th>T=0.1</th><th>T=0.3</th><th>T=0.5</th><th>T=0.7</th></tr>
+    <tr class=""><td>q001</td><td class="q">锅圈食汇这个品牌是怎么定位的？</td><td class="mono">0.9948</td><td class="mono">806:0</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q002</td><td class="q">公司的愿景是什么？</td><td class="mono">0.6682</td><td class="mono">796:3</td><td>命中</td><td>命中</td><td>命中</td><td>误拒</td></tr><tr class=""><td>q003</td><td class="q">锅圈的股票代码是多少？</td><td class="mono">0.9962</td><td class="mono">797:1</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q004</td><td class="q">华鼎冷链和锅圈是什么关系？</td><td class="mono">0.9438</td><td class="mono">803:0</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q005</td><td class="q">加盟费一年大概多少钱？</td><td class="mono">0.6761</td><td class="mono">802:1</td><td>命中</td><td>命中</td><td>命中</td><td>误拒</td></tr><tr class=""><td>q006</td><td class="q">公司账号密码的长度和复杂度要求是？</td><td class="mono">0.7168</td><td class="mono">815:1</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q007</td><td class="q">出差的住宿费报销标准是多少？</td><td class="mono">0.8940</td><td class="mono">827:0</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q008</td><td class="q">上海市居住证积分的标准分值是多少？</td><td class="mono">0.9972</td><td class="mono">822:0</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q009</td><td class="q">加班是怎么补偿的，能不能折算成工资？</td><td class="mono">0.8464</td><td class="mono">812:3</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q010</td><td class="q">门店运营专员的试用期月薪是多少？</td><td class="mono">0.8247</td><td class="mono">808:0</td><td>命中</td><td>答但未命中</td><td>答但未命中</td><td>答但未命中</td></tr><tr class=""><td>q011</td><td class="q">GQ-HR-2026-005 是哪份文件？</td><td class="mono">0.9885</td><td class="mono">812:0</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q012</td><td class="q">考勤管理制度里，迟到和早退是怎么处理的？</td><td class="mono">0.9896</td><td class="mono">812:1</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q013</td><td class="q">费用报销管理制度第六条规定的差旅费标准是什么？</td><td class="mono">0.9848</td><td class="mono">818:1</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q014</td><td class="q">IT 账号与权限管理制度由哪个部门负责解释和修订？</td><td class="mono">0.9896</td><td class="mono">815:2</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q015</td><td class="q">GQ-IT-2026-001 是什么表单？</td><td class="mono">0.9878</td><td class="mono">814:0</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q016</td><td class="q">GQ-FI-2026-001 是哪张表？</td><td class="mono">0.9009</td><td class="mono">814:0</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q017</td><td class="q">GQ-AD-2026-003 这份指引讲的是什么？</td><td class="mono">0.2806</td><td class="mono">820:0</td><td>答但未命中</td><td>误拒</td><td>误拒</td><td>误拒</td></tr><tr class=""><td>q018</td><td class="q">员工手册里对廉洁自律和保密有什么要求？</td><td class="mono">0.9318</td><td class="mono">829:2</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q019</td><td class="q">我今天迟到了十几分钟，公司会怎么处理？</td><td class="mono">0.7216</td><td class="mono">812:1</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q020</td><td class="q">想请个三天以上的事假，得找谁批？</td><td class="mono">0.2569</td><td class="mono">812:2</td><td>命中</td><td>误拒</td><td>误拒</td><td>误拒</td></tr><tr class=""><td>q021</td><td class="q">工资每个月几号发？</td><td class="mono">0.8087</td><td class="mono">824:0</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q022</td><td class="q">离职之后我的企业微信和 OA 账号什么时候会被关掉？</td><td class="mono">0.9432</td><td class="mono">809:1</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q023</td><td class="q">出差住酒店一晚上最多能报多少钱？</td><td class="mono">0.4207</td><td class="mono">818:1</td><td>命中</td><td>命中</td><td>误拒</td><td>误拒</td></tr><tr class=""><td>q024</td><td class="q">我不是上海户口，怎么才能在上海落户？</td><td class="mono">0.8766</td><td class="mono">823:0</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q025</td><td class="q">要用公司的公章，得走什么手续？</td><td class="mono">0.2701</td><td class="mono">819:0</td><td>命中</td><td>误拒</td><td>误拒</td><td>误拒</td></tr><tr class=""><td>q026</td><td class="q">公司有哪些线上销售渠道？</td><td class="mono">0.4356</td><td class="mono">796:4</td><td>命中</td><td>命中</td><td>误拒</td><td>误拒</td></tr><tr class=""><td>q027</td><td class="q">加盟一家锅圈门店，总部会给哪些支持？</td><td class="mono">0.9896</td><td class="mono">802:2</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q028</td><td class="q">公司在供应链上做过哪些收购和投资？</td><td class="mono">0.4394</td><td class="mono">803:1</td><td>命中</td><td>命中</td><td>误拒</td><td>误拒</td></tr><tr class=""><td>q029</td><td class="q">员工离职要办理哪些交接手续？</td><td class="mono">0.9585</td><td class="mono">826:0</td><td>命中</td><td>命中</td><td>命中</td><td>命中</td></tr><tr class=""><td>q030</td><td class="q">新人入职要办哪些手续、填哪些表？</td><td class="mono">0.4917</td><td class="mono">810:0</td><td>命中</td><td>命中</td><td>误拒</td><td>误拒</td></tr><tr class="oos"><td>q031</td><td class="q">今天上海天气怎么样？</td><td class="mono">0.0004</td><td class="mono">823:0</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td></tr><tr class="oos"><td>q032</td><td class="q">帮我写一首关于秋天的五言诗。</td><td class="mono">0.0009</td><td class="mono">811:0</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td></tr><tr class="oos"><td>q033</td><td class="q">Python 怎么用 pandas 读取 Excel 文件？</td><td class="mono">0.0005</td><td class="mono">826:0</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td></tr><tr class="oos"><td>q034</td><td class="q">特斯拉 Model Y 现在卖多少钱？</td><td class="mono">0.0294</td><td class="mono">796:2</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td></tr><tr class="oos"><td>q035</td><td class="q">2026 年世界杯冠军是哪支球队？</td><td class="mono">0.0016</td><td class="mono">805:0</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td></tr><tr class="oos"><td>q036</td><td class="q">红烧肉怎么做才不腻？</td><td class="mono">0.0097</td><td class="mono">800:0</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td></tr><tr class="oos"><td>q037</td><td class="q">现在首套房房贷利率是多少？</td><td class="mono">0.0007</td><td class="mono">818:2</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td></tr><tr class="oos"><td>q038</td><td class="q">推荐几本科幻小说给我。</td><td class="mono">0.0037</td><td class="mono">803:0</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td></tr><tr class="oos"><td>q039</td><td class="q">Kubernetes 和 Docker Swarm 有什么区别？</td><td class="mono">0.0010</td><td class="mono">804:4</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td></tr><tr class="oos"><td>q040</td><td class="q">公司楼下那家便利店几点关门？</td><td class="mono">0.0228</td><td class="mono">829:1</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td><td>正确拒答</td></tr><tr class="oos"><td>q041</td><td class="q">请病假扣工资吗？</td><td class="mono">0.3232</td><td class="mono">812:1</td><td>未拒答（幻觉风险）</td><td>未拒答（幻觉风险）</td><td>正确拒答</td><td>正确拒答</td></tr>
+  </table>
+</div>
+</body></html>

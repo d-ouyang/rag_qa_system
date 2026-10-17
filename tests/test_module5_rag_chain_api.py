@@ -247,6 +247,12 @@ check("删除不存在会话幂等返回 200", resp.status_code == 200 and resp.
 # 判据不是「文本长度对不对」，而是**首帧内容本身**：裁没裁掉开头空白。
 print("\n== 第 5 组：答案首帧前导空白 ==")
 from core.intent_router import Intent, IntentResult
+
+# P4-6：依据校验与本模块的「流式机制探针」无关，且桩 LLM 会把 judge 打到真实 API——
+# 进程内关掉（本模块不测校验，module28 专测）
+from core.config_service import config_service  # noqa: E402
+
+config_service.set_flag("groundedness_check", False)
 from core.rag_chain import _usage_zero
 
 

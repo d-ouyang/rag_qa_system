@@ -101,6 +101,9 @@ ACTION_REINDEX = "reindex"
 #: P3-2：下载**原始文件**。它是 GET，但**不是**「读知识库」——
 #: 见下面 `MIN_KB_ROLE_BY_ACTION` 里 `download` 那条注释。
 ACTION_DOWNLOAD = "download"
+#: P4-5b：查看「问答溯源」页。GET 权限，但走 kb 档（ops/superadmin）而不是
+#: staff 档 —— 理由见 `MIN_KB_ROLE_BY_ACTION` 里本条注释。
+ACTION_VIEW_QA_TRACES = "view_qa_traces"
 ACTIONS = frozenset({ACTION_UPLOAD, ACTION_DELETE, ACTION_REINDEX, ACTION_DOWNLOAD})
 
 #: 动作 → 允许执行它的 `kb_role` 集合。
@@ -133,6 +136,14 @@ MIN_KB_ROLE_BY_ACTION: dict[str, frozenset[str]] = {
     #    14e 把它写成了「所有 GET 不挂守卫」—— 那是表述过宽，
     #    P3-2 在测试里改成显式白名单（见 `tests/test_module12_write_acl.py` 2d）。
     ACTION_DOWNLOAD: frozenset({KB_ROLE_OPS, KB_ROLE_QA, KB_ROLE_DEV, KB_ROLE_SUPERADMIN}),
+    # ---------------------------------------------------------------------- #
+    # P4-5b：看「问答溯源」页（qa_trace 分析镜像的读权限）。
+    # 只有 ops / superadmin —— 运营看质量数据是天职；qa/dev 是**问答的消费者
+    # 与生产者**，看别人的会话轨迹不在其职责里（与 upload 档的差异就在这）。
+    # ⚠️ 刻意**不进** `ACTIONS`：那个集合是「知识库文档动作」（capabilities /
+    # 14e 结构断言按它走），溯源查看不是文档动作，混进去会漏到文档能力面。
+    # ---------------------------------------------------------------------- #
+    ACTION_VIEW_QA_TRACES: frozenset({KB_ROLE_OPS, KB_ROLE_SUPERADMIN}),
 }
 
 # --------------------------------------------------------------------------- #
@@ -151,6 +162,7 @@ ACTION_LABELS: dict[str, str] = {
     ACTION_DELETE: "删除",
     ACTION_REINDEX: "重建索引",
     ACTION_DOWNLOAD: "下载原文件",
+    ACTION_VIEW_QA_TRACES: "查看问答溯源",
 }
 
 # 中文标签（管理端下拉用）
@@ -302,6 +314,7 @@ def describe(action: str) -> str:
         ACTION_DELETE: "删除知识库文档",
         ACTION_REINDEX: "重建知识库索引",
         ACTION_DOWNLOAD: "下载知识库原始文件",
+        ACTION_VIEW_QA_TRACES: "查看问答溯源",
     }.get(action, "该操作")
     return f"没有权限执行「{action_hint}」，请联系管理员开通知识库维护权限"
 
@@ -330,6 +343,7 @@ __all__ = [
     "ACTION_LABELS",
     "ACTION_DELETE",
     "ACTION_DOWNLOAD",
+    "ACTION_VIEW_QA_TRACES",
     "ACTION_REINDEX",
     "ACTION_UPLOAD",
     "ACTIONS",

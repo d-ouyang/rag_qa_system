@@ -1146,3 +1146,36 @@ def reset_vector_store_manager() -> None:
     with _vector_store_lock:
         _vector_store_manager = None
     logger.info("向量库管理器单例已重置，下次调用将按当前配置重建")
+
+
+def fetch_chunk_contents(chunk_ids: list[str]) -> dict[str, dict[str, Any] | None]:
+    """
+    按 chunk_id 批量取切片原文（P4-7：溯源页「候选原文」人工校验用）。
+
+    返回 `{chunk_id: {"chunk_id", "file_name", "content"} | None}`，
+    取不到（文档已删 / 位置越界）的键值为 None —— 让调用方区分
+    「这篇切片还在」与「引用已随文档重解析失效」，不做静默兜底。
+
+    ⚠️ 为什么做成**按需查询**而不是把正文塞进 qa_trace 候选清单：
+    20 个候选 × ~2KB 正文 ≈ 每轮 40KB 塞进镜像表和 turn_meta，
+    而「看原文」是低频动作 —— 存定位键（chunk_id）、正文现查才对。
+
+    :raises ValueError: 任何一个 chunk_id 格式非法（调用方翻 400）。
+    """
+    manager = get_vector_store_manager()
+    out: dict[str, dict[str, Any] | None] = {}
+    for raw in chunk_ids:
+        chunk_id = str(raw)
+        doc_id, chunk_index = parse_chunk_id(chunk_id)
+        chunk = manager.get_chunk_by_position(doc_id, chunk_index)
+        if chunk is None:
+            out[chunk_id] = None
+            continue
+        # get_chunk_by_position 的返回体（_chunk_payload）自带规范 chunk_id /
+        # content / file_name —— 这里按「请求键」组织返回，前端按请求键对位。
+        out[chunk_id] = {
+            "chunk_id": str(chunk.get("chunk_id") or chunk_id),
+            "file_name": str(chunk.get("file_name") or ""),
+            "content": str(chunk.get("content") or ""),
+        }
+    return out

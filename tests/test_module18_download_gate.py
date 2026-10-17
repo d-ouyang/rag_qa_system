@@ -111,9 +111,12 @@ check("🔴 拒权文案不含任何档位名（防枚举，与 11b 同一条）
 check("🔴 capabilities() 的每个键都在 ACTION_LABELS 里（漏一个 = 500，且静默）",
       all(k in kb_acl.ACTION_LABELS for k in kb_acl.capabilities("none")),
       f"缺={sorted(set(kb_acl.capabilities('none')) - set(kb_acl.ACTION_LABELS))}")
-check("🔴 ACTION_LABELS 与 ACTIONS 一一对应（加动作必须同时加名字）",
-      set(kb_acl.ACTION_LABELS) == set(kb_acl.ACTIONS),
-      f"标签={sorted(kb_acl.ACTION_LABELS)} 动作={sorted(kb_acl.ACTIONS)}")
+check("🔴 ACTION_LABELS 覆盖全部动作（加动作必须同时加名字——describe 的 KeyError 防线）",
+      set(kb_acl.ACTIONS) <= set(kb_acl.ACTION_LABELS),
+      f"缺名字的动作={sorted(set(kb_acl.ACTIONS) - set(kb_acl.ACTION_LABELS))}")
+check("LABELS 里多出来的动作只许是「非文档动作」白名单（P4-5b：view_qa_traces 走 kb 档但不进文档动作集）",
+      set(kb_acl.ACTION_LABELS) - set(kb_acl.ACTIONS) == {"view_qa_traces"},
+      f"多出={sorted(set(kb_acl.ACTION_LABELS) - set(kb_acl.ACTIONS))}")
 check("管理端那份写死的三键字典已经不存在（改成从 kb_acl 取）",
       '{"upload": "上传", "delete": "删除", "reindex": "重建索引"}'
       not in (ROOT / "core/admin_service.py").read_text(encoding="utf-8"),

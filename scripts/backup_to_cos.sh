@@ -87,7 +87,7 @@ else
     ENDPOINT="cos.$COS_REGION.myqcloud.com"
 fi
 PREFIX="qa-backup/$(date +%Y/%m/%d)"
-echo "$LOG_PREFIX [3/3] 上传 cos://$COS_BUCKET/$PREFIX/（endpoint=$ENDPOINT）"
+echo "$LOG_PREFIX [3/3] 上传 cos://${COS_BUCKET}/${PREFIX}/（endpoint=${ENDPOINT}）"
 
 # 🔴 coscli 失败日志默认写在「当前工作目录」/coscli_output/ —— 手动 sudo 跑时
 # 以 root 落在 /opt/qa 下，会让部署脚本的 git clean 删不掉而整链失败

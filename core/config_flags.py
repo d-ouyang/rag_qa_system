@@ -60,6 +60,14 @@ FLAG_REGISTRY: dict[str, FlagSpec] = {
             default=lambda: settings.DOC_DOWNLOAD_ENABLED,
         ),
         FlagSpec(
+            key="groundedness_check",
+            value_type="bool",
+            card="问答增强",
+            label="答案依据校验",
+            description="回答生成后用模型比对「答案论断 vs 检索资料」，无依据的回答挂警示标记（q041 幻觉治理）；判定在答案输出之后，只增标记不改答案",
+            default=lambda: settings.GROUNDEDNESS_ENABLED,
+        ),
+        FlagSpec(
             key="memory_max_turns",
             value_type="int",
             card="会话记忆",

@@ -235,3 +235,13 @@ def bump_kb_version(client: Any | None = None) -> int | None:
     except Exception:
         logger.warning("更新知识库版本失败，缓存可能短暂保留旧答案", exc_info=True)
         return None
+
+
+def looks_anaphoric(text: str) -> bool:
+    """
+    问题是否含指代 / 依赖上下文的信号（与 `is_standalone_question` 同一份正则）。
+
+    P4-7b：改写链路用它区分「原样返回是合法（问题本就独立）」和
+    「原样返回是失败（问题带指代却没被消解）」—— 后者要触发重试。
+    """
+    return _ANAPHORA_RE.search(normalize_question(text)) is not None

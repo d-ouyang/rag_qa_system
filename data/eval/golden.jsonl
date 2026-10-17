@@ -38,3 +38,4 @@
 {"id": "q038", "category": "out_of_scope", "question": "推荐几本科幻小说给我。", "relevant_chunk_ids": [], "should_answer": false, "note": "闲聊"}
 {"id": "q039", "category": "out_of_scope", "question": "Kubernetes 和 Docker Swarm 有什么区别？", "relevant_chunk_ids": [], "should_answer": false, "note": "通用技术"}
 {"id": "q040", "category": "out_of_scope", "question": "公司楼下那家便利店几点关门？", "relevant_chunk_ids": [], "should_answer": false, "note": "库外事实"}
+{"id": "q041", "category": "out_of_scope", "question": "请病假扣工资吗？", "relevant_chunk_ids": [], "should_answer": false, "note": "库内考勤制度只写病假需凭证明提交材料（812:2），没有病假扣薪规定——2026-10-16 实测幻觉案例：top1=0.3229 过 0.1 阈值、上下文无病假内容、模型用常识编造答案。作为「擦边相关但无答案」的负样本回归锚"}

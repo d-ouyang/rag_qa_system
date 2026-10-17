@@ -43,10 +43,10 @@ import json
 import logging
 import threading
 import time
-import urllib.request
 from pathlib import Path
 from typing import Any, Sequence
 
+import httpx
 from langchain_core.documents import Document
 from langchain_core.documents.compressor import BaseDocumentCompressor
 from langchain_core.retrievers import BaseRetriever
@@ -350,25 +350,30 @@ class SiliconFlowReranker(BaseDocumentCompressor):
         start = time.perf_counter()
         try:
             url = settings.SILICONFLOW_BASE_URL.rstrip("/") + "/rerank"
-            payload = json.dumps({
+            req_body = json.dumps({
                 "model": self.model_path or settings.SILICONFLOW_RERANK_MODEL,
                 "query": query,
                 "documents": [doc.page_content for doc in documents],
                 "top_n": len(documents),
                 "return_documents": False,
-            }).encode("utf-8")
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.SILICONFLOW_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(req, timeout=settings.LLM_TIMEOUT) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
+            })
+            headers = {
+                "Authorization": f"Bearer {settings.SILICONFLOW_API_KEY}",
+                "Content-Type": "application/json",
+            }
+            # ⚠️ trust_env=False：与旧实现的 `ProxyHandler({})` 同语义 —— 刻意绕代理直连。
+            # ⚠️ local_address="0.0.0.0" 强制 IPv4：api.siliconflow.cn 带AAAA记录，
+            #    而本机 IPv6 路由黑洞（实测 connect 75s 超时）。urllib 串行回退，
+            #    每次重排挂 120~150s（P4-5c 实测：同 payload curl 0.55s / urllib 150.38s，
+            #    返回分数完全一致——纯连接层问题）。绑定 v4 源地址后 anyio 只搜 v4。
+            with httpx.Client(
+                trust_env=False,
+                timeout=settings.LLM_TIMEOUT,
+                transport=httpx.HTTPTransport(local_address="0.0.0.0"),
+            ) as client:
+                resp = client.post(url, content=req_body, headers=headers)
+                resp.raise_for_status()
+                body = resp.json()
 
             scored: list[tuple[Document, float]] = []
             for item in body.get("results") or []:
@@ -627,6 +632,7 @@ class RAGRetriever:
         filter_dict: dict[str, str] | None = None,
         return_score: bool = False,
         vector_query: str | None = None,
+        trace_out: dict[str, Any] | None = None,
     ) -> list[Document] | list[tuple[Document, float]]:
         """
         检索与 query 相关的文档片段。
@@ -638,6 +644,10 @@ class RAGRetriever:
         :param vector_query: 可选，用于**向量召回**的 embedding 文本（HyDE：用假设答案
             的 embedding 替代原问句）。为 None 时向量召回仍用 query。BM25 关键词召回
             **始终**用 query（真实问句关键词），不受此参数影响。
+        :param trace_out: 可选「出参」字典（P4-5）。本次调用的检索轨迹写进它
+            （`rerank` / `hybrid` 两段），供上层随轮落库做流程回溯。
+            传 None 则完全不采集 —— 与 P4-5 之前的行为逐字节一致，
+            既有调用方（含测试注入的打桩重排器）零影响。
         :return: Document 列表，或 (Document, 分数) 列表
         """
         if not query or not query.strip():
@@ -665,8 +675,16 @@ class RAGRetriever:
         if settings.RETRIEVAL_HYBRID:
             pairs = self._hybrid_merge(query, pairs, candidate_k)
 
+        # P4-5：混合轨迹在**本次调用内**即时取走。
+        # 关开关时写 None 而不是留着上一次的残值 ——「没开混合」和「开了但没命中」
+        # 是两回事（与 _retrieval_debug_event 里 bm25_hits 的口径保持一致）。
+        if trace_out is not None:
+            trace_out["hybrid"] = (
+                self.last_hybrid_trace if settings.RETRIEVAL_HYBRID else None
+            )
+
         # ② 精排 / 或直接截断
-        scored = self._rank(query, pairs, target_k)
+        scored = self._rank(query, pairs, target_k, trace_out=trace_out)
 
         logger.info(
             "检索完成 | 候选=%d 返回=%d 重排=%s 混合=%s 耗时=%.2fs | query=%.24s",
@@ -779,6 +797,7 @@ class RAGRetriever:
         query: str,
         pairs: Sequence[tuple[Document, float]],
         target_k: int,
+        trace_out: dict[str, Any] | None = None,
     ) -> list[tuple[Document, float]]:
         """
         把「候选 + 向量分数」整理成最终结果，并处理重排的降级路径。
@@ -787,8 +806,12 @@ class RAGRetriever:
             · 未重排 -> 余弦相似度 [-1, 1]，vector_store 已从后端距离换算好
             · 已重排 -> 重排分数 0~1（越大越相关）
         两种分数都写进了 Document.metadata，避免上层只能二选一。
+
+        :param trace_out: P4-5 出参，本次重排轨迹写进它的 `rerank` 键。
         """
         if not pairs:
+            if trace_out is not None:
+                trace_out["rerank"] = None
             return []
 
         docs = [doc for doc, _ in pairs]
@@ -796,6 +819,9 @@ class RAGRetriever:
         # 不重排：保持向量库的顺序，只截断到目标条数
         # （P4-2：热判——开关关的当次检索直接走这条降级路，重排器对象仍留在实例上）
         if not self._rerank_active():
+            if trace_out is not None:
+                # 没有重排就没有阈值过滤，也就没有「差多少分」这个问题（与 P2-23 同口径）
+                trace_out["rerank"] = None
             return [(doc, float(score)) for doc, score in pairs[:target_k]]
 
         # 用 id() 建立「对象 -> 余弦相似度」映射，后续按同一个对象反查。
@@ -807,6 +833,15 @@ class RAGRetriever:
         # 测试直接调 rerank() 不经过这里，各自的 self.score_threshold 不受影响。
         self.reranker.score_threshold = self._effective_threshold()
         reranked = self.reranker.rerank(query, docs, top_k=target_k)
+        # P4-5：rerank() 一返回就立刻取走轨迹。
+        # last_trace 是重排器**实例级**字段（P2-23 定的「最近一次」口径），这里把它
+        # 缩到「本次 rerank 调用刚结束」这个最小窗口 —— 比等到 debug 事件组装 /
+        # 落库时才去读（中间隔着整个生成过程）窄得多。
+        # 为什么不做成真正的按请求隔离：那要改 rerank() 的返回值，而测试注入的打桩
+        # 重排器签名是 rerank(query, documents, top_k=None)，加参会直接打挂 module20
+        # —— 收益与破坏面不成比例，作为已知边界记在迭代文档 §6。
+        if trace_out is not None:
+            trace_out["rerank"] = self.reranker.last_trace
         if reranked is None:
             # 重排不可用（模型没加载成功或打分失败）-> 降级为纯向量结果
             logger.warning("重排不可用，已降级为纯向量检索结果")

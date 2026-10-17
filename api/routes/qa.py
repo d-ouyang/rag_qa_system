@@ -162,6 +162,20 @@ class MessageItem(BaseModel):
     elapsed_ms: float | None = Field(
         default=None, description="本轮总耗时毫秒（仅 assistant 消息携带）",
     )
+    # P4-7b：⚠️ 这个字段**必须显式声明**——handler 往 dict 里塞了 qa_trace，
+    # 但 response_model 序列化会剥掉模型未声明的字段（P4-5 上线后实测：
+    # 流式帧有检索详情、刷新后历史接口里 qa_trace 全变 None，就是被这里滤掉的）。
+    qa_trace: dict[str, Any] | None = Field(
+        default=None, description="本轮流程回溯轨迹（P4-5；老轮次为 None）",
+    )
+    # P4-6：⚠️ 同 P4-7b 教训——response_model 未声明的字段会被静默剥离，
+    # 新增回填字段必须来这里声明。
+    grounded: dict[str, Any] | None = Field(
+        default=None, description="本轮依据校验结果（P4-6）：{grounded, unsupported, note}；None=未校验",
+    )
+    low_confidence: bool | None = Field(
+        default=None, description="本轮 top1 是否落在低置信带（P4-6 扫档：0.25~0.35 犬牙交错区）",
+    )
 
 
 class SessionHistoryResponse(BaseModel):
@@ -583,6 +597,13 @@ def get_session_history(
                 "intent": meta.get("intent"),
                 "usage": meta.get("usage"),
                 "elapsed_ms": meta.get("elapsed_ms"),
+                # P4-5：流程回溯轨迹（该轮落库的那份）。没有则为 None ——
+                # 老轮次（P4-5 之前）本来就没存，前端据此不展示面板，
+                # 与「存了但检索被全过滤」区分开（后者有轨迹、候选为空）。
+                "qa_trace": meta.get("qa_trace"),
+                # P4-6：依据校验与低置信徽标（未校验轮为 None/False）
+                "grounded": meta.get("grounded"),
+                "low_confidence": meta.get("low_confidence"),
             })
         items.append(item)
     return {

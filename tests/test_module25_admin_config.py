@@ -86,7 +86,7 @@ def test_registry_contract():
     flags = describe_flags()
     keys = [f["key"] for f in flags]
     check("key 字典序稳定", keys == sorted(keys), f"got={keys}")
-    check("v1 注册 8 项", len(keys) == 8, f"got={keys}")
+    check("v2 注册 9 项（v1 的 8 项 + P4-6 groundedness_check）", len(keys) == 9, f"got={keys}")
     for f in flags:
         ok = all(k in f for k in ("key", "label", "card", "value_type", "description", "value", "default", "min", "max"))
         if not ok:
@@ -154,7 +154,7 @@ def test_http_matrix():
         res = client.get("/api/v1/admin/config")
         check("superadmin GET 200", res.status_code == 200, f"got={res.status_code}")
         body = res.json()
-        check("GET 返回 can_edit=True + flags", body.get("can_edit") is True and len(body.get("flags", [])) == 8)
+        check("GET 返回 can_edit=True + flags（9 项）", body.get("can_edit") is True and len(body.get("flags", [])) == 9)
 
         res = client.patch("/api/v1/admin/config/query_rewrite", json={"value": True})
         check("superadmin PATCH 200", res.status_code == 200, f"got={res.status_code} {res.text[:120]}")

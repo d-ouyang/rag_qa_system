@@ -62,11 +62,20 @@ from langchain_core.runnables import (
 )
 
 from config.settings import settings
+from core.config_flags import flag_value
 from core.config_service import config_service
 from core.intent_router import Intent, IntentResult, get_intent_classifier
 from core.llm_client import LLMClient, get_llm_client
 from core.memory_manager import MemoryManager, get_memory_manager
-from core.qa_cache import is_standalone_question, lookup_answer, store_answer
+from core.qa_cache import is_standalone_question, looks_anaphoric, lookup_answer, store_answer
+from core.groundedness import (
+    answer_admits_no_basis,
+    append_groundedness_correction,
+    check_groundedness,
+    is_low_confidence,
+)
+from core import qa_flow
+from core import qa_trace_repo
 from core.retriever import RAGRetriever, get_rag_retriever
 from core.vector_store import build_chunk_id
 
@@ -155,18 +164,49 @@ _HYDE_SYSTEM_PROMPT = (
 def rewrite_query(
     question: str,
     chat_history: list[Any] | None = None,
+    llm: Any = None,
 ) -> str:
     """
-    把问题改写成独立检索句（含消毒兜底）。
+    把问题改写成独立检索句（含消毒兜底 + 指代重试）。
 
     多轮（有历史）用于消除指代；单轮（无历史）用于把口语化 / 不规范问法
-    规整成检索友好句。供生产链路与评测脚本复用同一份逻辑。
+    规整成检索友好句。供生产链路（RAGChain._rewrite_question）与评测脚本
+    （eval_retrieval --enhance）复用同一份逻辑。
+
+    :param llm: 可选的 LLM 注入。生产链路传 self.llm_client.get_llm()，
+                 保持「测试注入的假客户端仍生效」；不传则走全局客户端。
+
+    P4-7b：**原样返回 ≠ 一定合法**。改写模型有时会把「那病假呢？」这类
+    指代问句原样吐回来（实测同句两次改写成功、一次原样返回——温度非零的
+    随机性，且提示词里「如果问题本身已经是独立的，原样返回」在诱导它偷懒）。
+    原样返回的指代问句拿去检索必然落空（向量 embed 不了「那 X 呢」，
+    实测 top1 0.02~0.09 → 零召回拒答）。所以：原问题**含指代信号**却原样
+    返回 → 判定改写失败，带更强指令**重试一次**；重试仍原样就认了
+    （不无限重试，最多损失一次检索质量）。
     """
-    llm = get_llm_client().get_llm()
+    llm = llm or get_llm_client().get_llm()
+    history = list(chat_history or [])
     message = (_contextualize_q_prompt | llm).invoke(
-        {"input": question, "chat_history": list(chat_history or [])}
+        {"input": question, "chat_history": history}
     )
-    return _sanitize_rewrite(str(message.content), question)
+    rewritten = _sanitize_rewrite(str(message.content), question)
+    if rewritten.strip() != question.strip():
+        return rewritten
+    # 走到这里 = 模型原样返回。问题不含指代 → 合法（本就独立）；含指代 → 失败，重试。
+    if not looks_anaphoric(question):
+        return rewritten
+    logger.warning("改写原样返回但问题含指代，带强化指令重试一次 | q=%.32s", question)
+    retry_message = (_contextualize_q_prompt | llm).invoke(
+        {
+            "input": (
+                f"{question}\n\n"
+                "（注意：上一轮你没有输出改写结果。这个问题依赖对话历史，必须消解指代——"
+                "例如「那病假呢？」应改写为「病假如何申请？」。只输出改写后的那一个问题。）"
+            ),
+            "chat_history": history,
+        }
+    )
+    return _sanitize_rewrite(str(retry_message.content), question)
 
 
 def generate_hypo_answer(question: str) -> str:
@@ -194,10 +234,16 @@ def generate_hypo_answer(question: str) -> str:
 _QA_SYSTEM_PROMPT = (
     "你是一个严谨的企业知识库问答助手。请基于下面检索到的资料回答用户的问题。\n"
     "要求：\n"
-    "1. 只能依据给定资料作答，资料里没有的信息不要编造，直接说明「根据现有资料无法回答该问题」；\n"
-    "2. {intent_instruction}\n"
-    "3. 如果资料与问题无关，忽略资料并如实告知。\n\n"
-    "4. 不要输出任何乱码、特殊符号或者不连贯的句子。\n\n"
+    "1. 只能依据给定资料作答。资料里没有的信息，禁止用你的常识、经验或通用知识补充"
+    "——即使你觉得答案显而易见；\n"
+    "2. 制度 / 规则 / 流程类问题，如果资料中没有明确规定，必须回答"
+    "「根据现有制度未查到相关规定，请补充对应制度文档或联系人力资源部门确认」，禁止推测；\n"
+    "3. {intent_instruction}\n"
+    "4. 如果资料与问题无关，忽略资料并如实告知。\n"
+    "5. 不要输出任何乱码、特殊符号或者不连贯的句子。\n"
+    "6. 回答引用了资料中的具体条款时，在答案末尾另起一行列出依据，"
+    "格式：「依据：文件名 第X条」（多个依据用顿号分隔）；"
+    "「未查到」类回答不加此行。\n\n"
     "检索到的资料：\n{context}"
 )
 
@@ -445,6 +491,111 @@ def _retrieval_debug_event(
     }
 
 
+def _cache_qa_trace(
+    question: str, intent: str, route: str, elapsed_ms: float, sources_count: int
+) -> dict[str, Any]:
+    """
+    缓存命中轮的回溯轨迹（P4-5）。
+
+    复用缓存不跑检索，所以没有候选 / 阈值 / top1 —— 这些一律写 None 而不是 0：
+    「没跑检索」和「跑了但一条没捞到」是两种完全不同的排查方向，
+    与 `_retrieval_debug_event` 里 bm25_hits 的口径同款。
+    """
+    return {
+        "question": question,
+        "decision": "cache_hit",
+        "intent": intent,
+        "route": route,
+        "intent_source": "cache",
+        "rewritten_query": None,
+        "vector_query": None,
+        "candidates": [],
+        "threshold": None,
+        "top1_before_filter": None,
+        "filtered_count": 0,
+        "docs_returned": sources_count,
+        "bm25_hits": None,
+        "bm25_only": None,
+        "rrf_top": None,
+        "hyde_used": False,
+        "elapsed_ms": elapsed_ms,
+        "sources_count": sources_count,
+        "rejected": False,
+    }
+
+
+def _build_qa_trace(
+    question: str,
+    intent_result: IntentResult,
+    prepared: dict[str, Any] | None,
+    decision: str,
+    elapsed_ms: float,
+    sources_count: int,
+) -> dict[str, Any]:
+    """
+    组装本轮的流程回溯轨迹（P4-5），随 turn_meta 落进 `chat_message`。
+
+    `decision` 是这一轮最终走到的**终端状态**（四选一，见 PLAN-v4.0.0 P4-5）：
+        cache_hit / chitchat / zero_recall / rag_qa
+
+    检索细节**复用 `_retrieval_debug_event`**（同一份口径，只剥掉流式用的 type 键）——
+    「流式面板看到的」和「落库里存的」必须是同一份数据，否则两套口径迟早漂移。
+    """
+    if prepared is None:
+        # 闲聊：压根没检索。同上，一律 None 而不是 0。
+        retrieval: dict[str, Any] = {
+            "rewritten_query": None,
+            "vector_query": None,
+            "candidates": [],
+            "threshold": None,
+            "top1_before_filter": None,
+            "filtered_count": 0,
+            "docs_returned": 0,
+            "bm25_hits": None,
+            "bm25_only": None,
+            "rrf_top": None,
+        }
+    else:
+        rtrace = prepared.get("retrieval_trace") or {}
+        event = _retrieval_debug_event(
+            intent_result, prepared, rtrace.get("rerank"), rtrace.get("hybrid")
+        )
+        event.pop("type", None)
+        retrieval = event
+
+    trace: dict[str, Any] = {
+        "question": question,
+        "decision": decision,
+        "intent": intent_result.intent.value,
+        "route": intent_result.route,
+        "intent_source": intent_result.source,
+        "hyde_used": bool(prepared and prepared.get("vector_query")),
+        "elapsed_ms": elapsed_ms,
+        "sources_count": sources_count,
+        "rejected": decision == "zero_recall",
+    }
+    trace.update(retrieval)
+    return trace
+
+
+def _record_qa_trace(
+    session_id: str, owner_id: int | None, trace: dict[str, Any]
+) -> None:
+    """
+    轨迹镜像进 `qa_trace` 分析表（P4-5b），**fail-open**。
+
+    为什么吞异常而 quota / 会话不吞：这份表是运营分析用的镜子，
+    镜子碎了该有的症状是「溯源页缺数据」，绝不是「用户问不了」。
+    与 qa_cache.store_answer 的姿态一致（缓存写失败只记日志）；
+    与 audit_repo.record 的分工是「仓库层抛、调用方定姿态」——
+    测试要断言镜像内容时，让 record 原样炸出来比吞掉更好查。
+    """
+    try:
+        qa_trace_repo.record(session_id=session_id, owner_id=owner_id, trace=trace)
+    except Exception:
+        logger.warning("qa_trace 镜像落库失败（不影响本轮回答）", exc_info=True)
+
+
 def _strip_leading_blank(text: str) -> str:
     """
     裁掉答案**开头**的空白，中间与结尾一律不动。
@@ -605,15 +756,19 @@ class RAGChain:
         self, question: str, chat_history: list[Any]
     ) -> tuple[str, dict[str, int]]:
         """
-        问题重写 + 消毒，返回 (standalone_question, 本次重写的 token 用量)。
+        问题重写 + 消毒 + 指代重试，返回 (standalone_question, 本次重写的 token 用量)。
 
-        生产路径（query/stream）与 LCEL prepare 链共用同一 prompt 与消毒函数，
-        行为差异只剩「是否记录 token 用量」这一观察性维度。
+        P4-7c：**必须走模块级 rewrite_query 单一入口**。本方法在 P4-7b 曾
+        内联一份自己的调用（prompt | llm + sanitize），结果那轮加在
+        rewrite_query 里的「指代重试」在生产链路完全没生效（今早实测
+        c860195b 会话 08:45 仍全量失败）——**修逻辑不修入口 = 没修**。
+        现在生产、LCEL prepare 链、评测脚本三者共用同一份实现；
+        差别只剩「是否记录 token 用量」这一观察性维度。
         """
         llm = self.llm_client.get_llm()
-        chain = _contextualize_q_prompt | llm
-        message = chain.invoke({"input": question, "chat_history": chat_history})
-        return _sanitize_rewrite(str(message.content), question), _extract_usage(message)
+        rewritten = rewrite_query(question, chat_history, llm=llm)
+        usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+        return rewritten, usage
 
     def _prepare_parallel(
         self, question: str, chat_history: list[Any]
@@ -635,6 +790,7 @@ class RAGChain:
 
         :return: (意图结果, prepared) —— prepared 含 standalone_question/docs/context/
                  rewrite_usage，以及 HyDE 用的 vector_query（None = 未启用）
+                 与 P4-5 的 retrieval_trace（本次检索轨迹，随轮落库）
         """
         classifier = get_intent_classifier()
         retriever = self.retriever  # 直接用 RAGRetriever：retrieve 支持 vector_query（HyDE 透传）
@@ -647,9 +803,13 @@ class RAGChain:
         enhance_on = rewrite_on or hyde_on
         should_rewrite = bool(chat_history) or enhance_on
 
+        # P4-5：本次调用的检索轨迹（按请求一份），随轮落库做流程回溯
+        trace: dict[str, Any] = {}
         intent_future = _PIPELINE_EXECUTOR.submit(classifier.classify, question)
         # 投机检索用原问题（与改写并行；改写无变化时复用其结果，与原行为一致）
-        retrieve_future = _PIPELINE_EXECUTOR.submit(retriever.retrieve, question)
+        retrieve_future = _PIPELINE_EXECUTOR.submit(
+            retriever.retrieve, question, trace_out=trace
+        )
         rewrite_future = (
             _PIPELINE_EXECUTOR.submit(self._rewrite_question, question, chat_history)
             if should_rewrite
@@ -673,7 +833,12 @@ class RAGChain:
             if standalone.strip() == question.strip() and not hyde_on:
                 docs: list[Document] = retrieve_future.result()
             else:
-                docs = retriever.retrieve(standalone, vector_query=vector_query)
+                # 重新检索 → 换一份新轨迹：真正进回答的是这一次，
+                # 投机那次的轨迹必须整体作废，不能留在 prepared 里造成「看的不是这次」
+                trace = {}
+                docs = retriever.retrieve(
+                    standalone, vector_query=vector_query, trace_out=trace
+                )
         else:
             standalone = question
             docs = retrieve_future.result()
@@ -684,6 +849,7 @@ class RAGChain:
             "context": format_docs(docs),
             "rewrite_usage": rewrite_usage,
             "vector_query": vector_query,  # HyDE 假设答案；None = 未启用
+            "retrieval_trace": trace,      # P4-5：本次检索轨迹（rerank / hybrid 两段）
         }
 
     @staticmethod
@@ -801,7 +967,7 @@ class RAGChain:
         intent = str(hit.get("intent") or "knowledge_query")
         route = str(hit.get("route") or "rag_qa")
         standalone = hit.get("standalone_question") or question
-        self.memory.add_exchange(session_id, question, answer, meta={
+        exchange_meta = {
             "sources": sources,
             "intent": intent,
             "route": route,
@@ -810,7 +976,15 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
             "cache_hit": True,
-        }, owner_id=owner_id)
+            # P4-5：缓存命中也是一个终端状态，同样留一条轨迹（无检索细节）
+            "qa_trace": _cache_qa_trace(
+                question, intent, route, elapsed_ms, len(sources)
+            ),
+        }
+        self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
+                                 owner_id=owner_id)
+        # P4-5b：缓存命中轮同样镜像进分析表（decision=cache_hit，无检索细节）
+        _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
         logger.info(
             "问答缓存复用 | session_id=%s 耗时=%.0fms | query=%.24s",
             session_id, elapsed_ms, question,
@@ -934,9 +1108,10 @@ class RAGChain:
             if not prepared["docs"]:
                 # 零召回短路：不进 LLM，固定拒答（防幻觉护栏，与流式同口径）
                 # P2-23：结构化日志留下「差多少分」的证据
+                # P4-5：轨迹取本次调用那份（不再读实例级「最近一次」）
                 _log_rejection(
                     prepared["standalone_question"],
-                    self.retriever.get_last_rerank_trace(),
+                    (prepared.get("retrieval_trace") or {}).get("rerank"),
                 )
                 answer = _NO_CONTEXT_ANSWER
             else:
@@ -965,6 +1140,36 @@ class RAGChain:
         # 每轮详情先算好再统一写记忆：sources/usage/耗时/时间戳随轮持久化，
         # 刷新页面后前端从历史接口原样恢复（引用不再丢失）
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+        # P4-5：终端状态 —— 这一轮最终走的是哪条分支（四选一）。
+        # P4-5b 起判定收口到 qa_flow.resolve_decision（唯一出处，module27 穷举守着）
+        decision = qa_flow.resolve_decision(
+            prepared_present=prepared is not None,
+            docs_count=len(prepared["docs"]) if prepared else 0,
+        )
+        # P4-6：低置信带判定 + 依据校验（只在 rag_qa 轮；校验热开关可关）
+        low_confidence = False
+        grounded: dict[str, Any] | None = None
+        if decision == "rag_qa":
+            low_confidence = is_low_confidence(
+                (prepared.get("retrieval_trace") or {}).get("rerank", {}).get("top1_before_filter")
+            )
+            if flag_value("groundedness_check"):
+                grounded = check_groundedness(
+                    question=question,
+                    context=prepared["context"],
+                    answer=answer,
+                )
+        # P4-6b：依据校验未通过 / 模型自认未查到 → 据实更正。
+        # 追加更正块而不是静默替换：答案已流式流出，撤回做不到；
+        # 最诚实的做法是把「没有依据、请勿采信」钉进正文并随轮落库。
+        if answer_admits_no_basis(answer) and (grounded is None or grounded.get("grounded") is not False):
+            # 模型自己在依据行承认了未查到 —— 覆盖 judge 结论（保守）
+            grounded = {"grounded": False,
+                        "unsupported": ["模型自述未在资料中查到依据"],
+                        "note": "依据行自认未查到"}
+        if grounded is not None and grounded.get("grounded") is False:
+            answer = append_groundedness_correction(answer, grounded)
+            result["answer"] = answer  # 缓存与调用方拿到的必须是更正后的版本
         exchange_meta = {
             "sources": result["sources"],
             "intent": result["intent"],
@@ -974,9 +1179,23 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
             "cache_hit": False,
+            # P4-6：依据校验与低置信徽标（前端据此后挂警示标记）
+            "low_confidence": low_confidence,
+            "grounded": grounded,
+            # 流程回溯轨迹（P4-5）：随 turn_meta 落库，刷新后仍可回看整条链路
+            "qa_trace": _build_qa_trace(
+                question, intent_result, prepared, decision,
+                elapsed_ms, len(result["sources"]),
+            ),
         }
+        if grounded is not None:
+            # 依据校验结果同时写进轨迹（镜像表经 _TRACE_KEYS 透传到 grounded/unsupported 列）
+            exchange_meta["qa_trace"]["grounded"] = grounded.get("grounded")
+            exchange_meta["qa_trace"]["unsupported"] = grounded.get("unsupported") or []
         self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
                                  owner_id=owner_id)
+        # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
+        _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
         self._maybe_store_cache(question, result, bool(chat_history))
         # token 用量：本次问答（重写 + 主回答）累加进会话
         self.memory.add_usage(
@@ -988,6 +1207,8 @@ class RAGChain:
         result["elapsed_ms"] = elapsed_ms
         result["usage"] = usage
         result["cache_hit"] = False
+        result["low_confidence"] = low_confidence
+        result["grounded"] = grounded
         logger.info(
             "问答完成 | session_id=%s 意图=%s(%s) 引用=%d条 耗时=%.0fms tokens=%d+%d | query=%.24s",
             session_id,
@@ -1070,16 +1291,17 @@ class RAGChain:
                 "sources": self._extract_sources(prepared["docs"]),
             }
             # P2-23：检索调试事件（生成开始前下发；不传 debug 的调用方不会走到这）
+            # P4-5：与落库用同一份本次调用轨迹（流式面板和库里存的是同一份数据）
             if debug:
+                rtrace = prepared.get("retrieval_trace") or {}
                 yield _retrieval_debug_event(
-                    intent_result, prepared, self.retriever.get_last_rerank_trace(),
-                    self.retriever.get_last_hybrid_trace(),
+                    intent_result, prepared, rtrace.get("rerank"), rtrace.get("hybrid"),
                 )
             if not prepared["docs"]:
                 # 零召回短路：与同步链路同口径，不进 LLM，拒答作为唯一 chunk 下发
                 _log_rejection(
                     prepared["standalone_question"],
-                    self.retriever.get_last_rerank_trace(),
+                    (prepared.get("retrieval_trace") or {}).get("rerank"),
                 )
                 yield {"type": "chunk", "content": _NO_CONTEXT_ANSWER}
                 answer = _NO_CONTEXT_ANSWER
@@ -1104,11 +1326,45 @@ class RAGChain:
 
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
         # 每轮详情随轮写入记忆（同 query 口径），历史接口按轮回填
-        self.memory.add_exchange(session_id, question, answer, meta={
-            "sources": (
-                [] if prepared is None
-                else self._extract_sources(prepared["docs"])
-            ),
+        # 溯源只算一次：add_exchange / _maybe_store_cache / qa_trace 三处共用
+        sources = [] if prepared is None else self._extract_sources(prepared["docs"])
+        # P4-5：终端状态 —— 这一轮最终走的是哪条分支（四选一）。
+        # P4-5b 起判定收口到 qa_flow.resolve_decision（与 query() 同一出处）
+        decision = qa_flow.resolve_decision(
+            prepared_present=prepared is not None,
+            docs_count=len(prepared["docs"]) if prepared else 0,
+        )
+        # P4-6：低置信带判定 + 依据校验（与 query() 同口径；校验在答案流完之后）
+        low_confidence = False
+        grounded: dict[str, Any] | None = None
+        if decision == "rag_qa":
+            low_confidence = is_low_confidence(
+                (prepared.get("retrieval_trace") or {}).get("rerank", {}).get("top1_before_filter")
+            )
+            if flag_value("groundedness_check"):
+                grounded = check_groundedness(
+                    question=question,
+                    context=prepared["context"],
+                    answer=answer,
+                )
+                # 校验结果作为独立帧下发（答案已流出，不撤回，只挂标记）
+                yield {
+                    "type": "grounded",
+                    "grounded": grounded.get("grounded"),
+                    "unsupported": grounded.get("unsupported") or [],
+                    "low_confidence": low_confidence,
+                }
+        # P4-6b：同 query 口径——未通过/自认未查到 → 更正块作为额外 chunk 下发并随轮落库
+        if answer_admits_no_basis(answer) and (grounded is None or grounded.get("grounded") is not False):
+            grounded = {"grounded": False,
+                        "unsupported": ["模型自述未在资料中查到依据"],
+                        "note": "依据行自认未查到"}
+        if grounded is not None and grounded.get("grounded") is False:
+            correction = append_groundedness_correction("", grounded).strip()
+            answer = (answer.rstrip() + "\n\n" + correction) if answer else correction
+            yield {"type": "chunk", "content": "\n\n" + correction}
+        exchange_meta = {
+            "sources": sources,
             "intent": intent_result.intent.value,
             "route": intent_result.route,
             "standalone_question": None if prepared is None else prepared["standalone_question"],
@@ -1116,7 +1372,21 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
             "cache_hit": False,
-        }, owner_id=owner_id)
+            # P4-6：依据校验与低置信徽标（前端据此后挂警示标记）
+            "low_confidence": low_confidence,
+            "grounded": grounded,
+            # 流程回溯轨迹（P4-5）：随 turn_meta 落库，刷新后仍可回看整条链路
+            "qa_trace": _build_qa_trace(
+                question, intent_result, prepared, decision, elapsed_ms, len(sources),
+            ),
+        }
+        if grounded is not None:
+            exchange_meta["qa_trace"]["grounded"] = grounded.get("grounded")
+            exchange_meta["qa_trace"]["unsupported"] = grounded.get("unsupported") or []
+        self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
+                                 owner_id=owner_id)
+        # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
+        _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
         self._maybe_store_cache(
             question,
             {
@@ -1124,7 +1394,7 @@ class RAGChain:
                 "intent": intent_result.intent.value,
                 "route": intent_result.route,
                 "standalone_question": None if prepared is None else prepared["standalone_question"],
-                "sources": [] if prepared is None else self._extract_sources(prepared["docs"]),
+                "sources": sources,
             },
             bool(chat_history),
         )

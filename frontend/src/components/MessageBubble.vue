@@ -32,11 +32,17 @@ function fmtNum(v?: number | null): string {
 }
 
 /**
+ * 检索详情数据源：**优先用落库的那份**（P4-5 —— 刷新 / 历史回看仍在），
+ * 没有再回退到当轮流式的 retrieval 帧（P2-23 —— 只在这一次流式过程中可见）。
+ */
+const dbg = computed(() => props.message.qa_trace ?? props.message.retrieval_debug)
+
+/**
  * top1 距阈值还差多少（仅 top1 存在、阈值启用、且 top1 未过阈值时给出）。
  * 拒答气泡上这就是「差多少分」的直接答案。
  */
 const scoreGap = computed<number | null>(() => {
-  const d = props.message.retrieval_debug
+  const d = dbg.value
   if (!d || typeof d.top1_before_filter !== 'number' || typeof d.threshold !== 'number') return null
   if (d.top1_before_filter >= d.threshold) return null
   return d.threshold - d.top1_before_filter
@@ -307,45 +313,45 @@ async function loadChunk(id: string): Promise<void> {
           <!-- 检索详情（P2-23）：流式 retrieval 调试帧到达才有（admin 默认开启）。
                🔴 拒答气泡（sources 为空）同样可见 —— 本面板的核心价值：
                拒答时能看到「检索到了什么、top1 距阈值差多少分」。 -->
-          <template v-if="message.role === 'assistant' && message.retrieval_debug">
+          <template v-if="message.role === 'assistant' && dbg">
             <button class="sources-toggle" @click="showDebug = !showDebug">
               检索详情 {{ showDebug ? '▲' : '▼' }}
             </button>
             <div v-if="showDebug" class="retrieval-debug">
               <div class="debug-row">
                 <span class="debug-key">改写后查询</span>
-                <span class="debug-val">{{ message.retrieval_debug.rewritten_query || '（无）' }}</span>
+                <span class="debug-val">{{ dbg.rewritten_query || '（无）' }}</span>
               </div>
               <div class="debug-row">
                 <span class="debug-key">意图</span>
-                <span class="debug-val">{{ message.retrieval_debug.intent }}（{{ message.retrieval_debug.route }}）</span>
+                <span class="debug-val">{{ dbg.intent }}（{{ dbg.route }}）</span>
               </div>
               <div class="debug-row">
                 <span class="debug-key">阈值</span>
-                <span class="debug-val">{{ fmtScore(message.retrieval_debug.threshold) }}</span>
+                <span class="debug-val">{{ fmtScore(dbg.threshold) }}</span>
               </div>
               <div class="debug-row">
                 <span class="debug-key">top1 分数（过滤前）</span>
                 <span class="debug-val">
-                  {{ fmtScore(message.retrieval_debug.top1_before_filter) }}<template v-if="scoreGap != null">（距阈值还差 {{ scoreGap.toFixed(4) }}）</template>
+                  {{ fmtScore(dbg.top1_before_filter) }}<template v-if="scoreGap != null">（距阈值还差 {{ scoreGap.toFixed(4) }}）</template>
                 </span>
               </div>
               <!-- P3-4 混合召回。bm25_hits === null 表示「混合检索没开」，
                    这一整行不渲染 —— 不渲染比渲染成「BM25 0 条」诚实：
                    后者是「开了但一条没命中」，排查方向完全不同。 -->
-              <div v-if="message.retrieval_debug.bm25_hits != null" class="debug-row">
+              <div v-if="dbg.bm25_hits != null" class="debug-row">
                 <span class="debug-key">BM25 关键词召回</span>
                 <span class="debug-val">
-                  {{ message.retrieval_debug.bm25_hits }} 条<template v-if="message.retrieval_debug.bm25_only">（其中 {{ message.retrieval_debug.bm25_only }} 条为向量未捞到、BM25 独有）</template>
+                  {{ dbg.bm25_hits }} 条<template v-if="dbg.bm25_only">（其中 {{ dbg.bm25_only }} 条为向量未捞到、BM25 独有）</template>
                 </span>
               </div>
-              <div v-if="message.retrieval_debug.bm25_hits != null" class="debug-row">
+              <div v-if="dbg.bm25_hits != null" class="debug-row">
                 <span class="debug-key">RRF 融合 top1</span>
-                <span class="debug-val">{{ message.retrieval_debug.rrf_top || '（无）' }}</span>
+                <span class="debug-val">{{ dbg.rrf_top || '（无）' }}</span>
               </div>
-              <div v-if="message.retrieval_debug.candidates.length" class="debug-candidates">
+              <div v-if="dbg.candidates.length" class="debug-candidates">
                 <div
-                  v-for="(c, i) in message.retrieval_debug.candidates"
+                  v-for="(c, i) in dbg.candidates"
                   :key="i"
                   class="debug-cand"
                   :class="{ failed: !c.passed_threshold }"
@@ -356,9 +362,9 @@ async function loadChunk(id: string): Promise<void> {
                 </div>
               </div>
               <div class="debug-foot">
-                候选 {{ message.retrieval_debug.candidates.length }} 条 ·
-                阈值过滤 {{ message.retrieval_debug.filtered_count ?? 0 }} 条 ·
-                进入回答 {{ message.retrieval_debug.docs_returned ?? 0 }} 条
+                候选 {{ dbg.candidates.length }} 条 ·
+                阈值过滤 {{ dbg.filtered_count ?? 0 }} 条 ·
+                进入回答 {{ dbg.docs_returned ?? 0 }} 条
               </div>
             </div>
           </template>
@@ -371,6 +377,23 @@ async function loadChunk(id: string): Promise<void> {
             v-if="message.role === 'assistant' && !message.streaming && (message.usage || message.elapsed_ms)"
             class="turn-meta"
           >
+            <!-- P4-6 低置信徽章：top1 落在犬牙交错区（0.25~0.35），只提示不改答案 -->
+            <span
+              v-if="message.low_confidence"
+              class="meta-badge grounded-badge g-low"
+              title="本轮检索最高分处于低置信区，答案可能不完整，建议核对原文"
+            >低置信</span>
+            <!-- P4-6 依据校验徽章：通过=绿；未通过=红（title 列出未支撑论断）；未校验不显示 -->
+            <span
+              v-if="message.grounded?.grounded === true"
+              class="meta-badge grounded-badge g-ok"
+              title="答案的关键论断已通过与检索资料的依据比对"
+            >依据校验 ✓</span>
+            <span
+              v-else-if="message.grounded?.grounded === false"
+              class="meta-badge grounded-badge g-bad"
+              :title="`以下论断未在检索资料中找到依据：${(message.grounded.unsupported || []).join('；') || '（详见溯源页）'}`"
+            >⚠️ 依据未确认</span>
             <div
               v-if="message.usage"
               class="meta-badge token-badge"
@@ -615,6 +638,15 @@ async function loadChunk(id: string): Promise<void> {
   gap: 6px;
   margin-top: 8px;
 }
+.grounded-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: help;
+}
+.g-ok { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+.g-bad { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
+.g-low { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
 .meta-badge {
   display: inline-flex;
   align-items: center;
