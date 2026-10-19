@@ -307,14 +307,25 @@ def verify_gateway_proof(proof_header: str | None) -> None:
     而部署错误要在启动/健康检查那一层暴露（`/api/v1/system/health` 会报），
     在每个请求上抛 503 只会把它变成一片噪声、并且掩盖真正的「证明错了」。
     所以缺配置时一律按「证明不通过」处理 —— fail-closed 方向一致。
+
+    **多服务共享网关（additive 信任）**：除 RAG 自己的网关外，还认
+    `OFFICE_GATEWAY_SHARED_SECRET`（共享办公网关的凭证，可独立轮换，见 settings）。
+    两把都是「网关↔后端」这一信任关系的持有者；一把都没配仍按不通过处理。
     """
-    expected = settings.INTERNAL_SHARED_SECRET
     provided = proof_header or ""
-    if not expected or not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+    trusted = [
+        s
+        for s in (settings.INTERNAL_SHARED_SECRET, settings.OFFICE_GATEWAY_SHARED_SECRET)
+        if s
+    ]
+    matched = any(
+        hmac.compare_digest(provided.encode("utf-8"), s.encode("utf-8")) for s in trusted
+    )
+    if not trusted or not matched:
         logger.warning(
             "网关证明缺失或不匹配（gateway 模式下按 401 拒绝）| "
             "configured=%s provided_len=%d",
-            bool(expected), len(provided),
+            bool(trusted), len(provided),
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

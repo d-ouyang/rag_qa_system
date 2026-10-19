@@ -324,6 +324,18 @@ class Settings(BaseSettings):
     # 生成：python -c "import secrets; print(secrets.token_urlsafe(48))"
     INTERNAL_SHARED_SECRET : str = ""
 
+    # ---------- 共享办公网关的可信凭证（多服务共享网关，additive 信任）----------
+    # 背景：RAG 与 office 助手等同公司不同服务共用一套 API 网关（见 office 仓
+    # 《共享网关迁移设计》，认证放 B：自建共享网关）。该网关转发到 RAG 后端时，
+    # 用【本密钥】作 `X-Internal-Auth` 网关证明，后端即信任其注入的身份头。
+    #
+    # 为什么单独一把、不复用 INTERNAL_SHARED_SECRET：两者是**可独立轮换**的信任关系 ——
+    # RAG 自己的网关与共享办公网关各持一把，轮换/吊销其一不影响另一个（复用一把则
+    # 「改一处要同步三处」，正是本文件顶部反复警告的故障模式）。
+    # 留空 = 不信任共享办公网关（老路不受影响，fail-closed）。仅在 gateway 模式生效。
+    # 生成同 INTERNAL_SHARED_SECRET。
+    OFFICE_GATEWAY_SHARED_SECRET : str = ""
+
     # ---------- 密码策略（P2-11b，账号体系）----------
     # 这一组是「判定规则」的唯一出处，core/password_policy.py 只从这里取值，
     # 任何地方都不许再写死 12 / 90 / 5 / 15 这几个数字 ——
