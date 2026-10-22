@@ -93,6 +93,16 @@ DEPARTMENTS = [
     ("HQ", "总部职能中心", None, 1),
     ("OPS", "门店运营部", "HQ", 2),
     ("TECH", "技术中心", "HQ", 3),
+    # —— 以下为「再生成 50 人」时新增的部门（P4-11 批次）——
+    ("HR", "人力资源部", "HQ", 4),
+    ("FIN", "财务部", "HQ", 5),
+    ("MKT", "市场部", "HQ", 6),
+    ("PROD", "产品部", "HQ", 7),
+    ("CS", "客户服务部", "HQ", 8),
+    ("SALES", "销售部", "HQ", 9),
+    ("LEGAL", "法务部", "HQ", 10),
+    ("ADMIN", "行政部", "HQ", 11),
+    ("RD", "研发中心", "TECH", 4),
 ]
 
 POSITIONS = [
@@ -103,6 +113,9 @@ POSITIONS = [
     ("P8", "资深工程师", "P8", repo.SEQUENCE_TECH),
     ("M1", "经理", "M1", repo.SEQUENCE_MANAGEMENT),
     ("M2", "高级经理", "M2", repo.SEQUENCE_MANAGEMENT),
+    # —— 以下为「再生成 50 人」时新增的职位 ——
+    ("P4", "助理", "P4", repo.SEQUENCE_FUNCTION),
+    ("M3", "总监", "M3", repo.SEQUENCE_MANAGEMENT),
 ]
 
 EMPLOYEES = [
@@ -119,10 +132,69 @@ EMPLOYEES = [
     # 留一个「已离职」：让管理端一进去就有「离职 ≠ 删行」的样本可看。
     # 这是**创建时**写进去的；脚本重跑不会把别人改过的 status 改回来。
     ("zheng.shuang", "G0010", "郑爽", "OPS", "P6", repo.ROLE_USER, repo.STATUS_RESIGNED, "13800000010"),
+    # —— 以下为「再生成 50 人」批次（P4-11）：工号 G0011..G0060，手机号 13900000001..50 ——
+    # 部门分布：HQ5 HR4 FIN4 MKT5 PROD4 CS5 SALES5 LEGAL3 ADMIN4 OPS3 TECH3 RD5（共 50）
+    # 角色：除 HR 负责人为 hr 外均为 user；状态：默认 active，2 名 disabled 作样本。
+    ("zhou.jianguo", "G0011", "周建国", "HQ", "M2", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000001"),
+    ("lin.zhiqiang", "G0012", "林志强", "HQ", "P6", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000002"),
+    ("huang.wenbin", "G0013", "黄文斌", "HQ", "P7", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000003"),
+    ("xu.lihua", "G0014", "徐丽华", "HQ", "P8", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000004"),
+    ("gao.xiangyu", "G0015", "高翔宇", "HQ", "P5", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000005"),
+    ("he.jingyi", "G0016", "何静怡", "HR", "M1", repo.ROLE_HR, repo.STATUS_ACTIVE, "13900000006"),
+    ("luo.minjuan", "G0017", "罗敏娟", "HR", "P7", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000007"),
+    ("liang.yanhong", "G0018", "梁艳红", "HR", "P8", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000008"),
+    ("song.jiayin", "G0019", "宋佳音", "HR", "P5", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000009"),
+    ("han.xuesong", "G0020", "韩雪松", "FIN", "M1", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000010"),
+    ("feng.gangyi", "G0021", "冯刚毅", "FIN", "P7", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000011"),
+    ("deng.chaoqun", "G0022", "邓超群", "FIN", "P8", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000012"),
+    ("cao.yinghui", "G0023", "曹颖慧", "FIN", "P5", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000013"),
+    ("xie.nana", "G0024", "谢娜娜", "MKT", "M1", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000014"),
+    ("tang.yitong", "G0025", "唐艺彤", "MKT", "P7", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000015"),
+    ("fu.qiangdong", "G0026", "傅强东", "MKT", "P8", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000016"),
+    ("fang.fangfei", "G0027", "方芳菲", "MKT", "P5", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000017"),
+    ("fan.bingxin", "G0028", "范冰心", "MKT", "P6", repo.ROLE_USER, repo.STATUS_DISABLED, "13900000018"),
+    ("yuan.quanqing", "G0029", "袁泉清", "PROD", "M1", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000019"),
+    ("pan.leixin", "G0030", "潘磊鑫", "PROD", "P8", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000020"),
+    ("yu.nasha", "G0031", "于娜莎", "PROD", "P5", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000021"),
+    ("dong.qingyun", "G0032", "董卿云", "PROD", "P6", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000022"),
+    ("jiang.wenli", "G0033", "蒋雯丽", "CS", "M1", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000023"),
+    ("gu.yuanyuan", "G0034", "顾媛媛", "CS", "P8", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000024"),
+    ("hou.yongjun", "G0035", "侯勇军", "CS", "P5", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000025"),
+    ("shao.bingbing", "G0036", "邵兵兵", "CS", "P6", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000026"),
+    ("meng.feifan", "G0037", "孟非凡", "CS", "P7", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000027"),
+    ("lei.junping", "G0038", "雷军平", "SALES", "M1", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000028"),
+    ("wang.fengtao", "G0039", "汪峰涛", "SALES", "P5", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000029"),
+    ("kang.huiyu", "G0040", "康辉宇", "SALES", "P6", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000030"),
+    ("wu.leixin", "G0041", "武磊鑫", "SALES", "P7", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000031"),
+    ("wan.qianwen", "G0042", "万茜雯", "SALES", "P8", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000032"),
+    ("yin.zhengyang", "G0043", "尹正阳", "LEGAL", "M1", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000033"),
+    ("yi.yangqian", "G0044", "易烊千", "LEGAL", "P6", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000034"),
+    ("qian.fenglin", "G0045", "钱枫林", "LEGAL", "P7", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000035"),
+    ("duan.yihong", "G0046", "段奕宏", "ADMIN", "M1", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000036"),
+    ("chang.yuanhang", "G0047", "常远航", "ADMIN", "P5", repo.ROLE_USER, repo.STATUS_DISABLED, "13900000037"),
+    ("long.meiling", "G0048", "龙梅玲", "ADMIN", "P6", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000038"),
+    ("gong.junjie", "G0049", "龚俊杰", "ADMIN", "P7", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000039"),
+    ("chi.changxu", "G0050", "池昌旭", "OPS", "M1", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000040"),
+    ("jian.manqing", "G0051", "简蔓青", "OPS", "P5", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000041"),
+    ("you.hongming", "G0052", "游鸿明", "OPS", "P6", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000042"),
+    ("yan.zilan", "G0053", "燕姿兰", "TECH", "M2", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000043"),
+    ("shu.changning", "G0054", "舒畅宁", "TECH", "P8", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000044"),
+    ("yu.entai", "G0055", "喻恩泰", "TECH", "P5", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000045"),
+    ("xue.zhiqian", "G0056", "薛之谦", "RD", "M2", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000046"),
+    ("lu.gengxu", "G0057", "卢庚戌", "RD", "P7", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000047"),
+    ("he.junxiang", "G0058", "贺军翔", "RD", "P8", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000048"),
+    ("an.yixuan", "G0059", "安以轩", "RD", "P5", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000049"),
+    ("lan.yingying", "G0060", "蓝盈莹", "RD", "P6", repo.ROLE_USER, repo.STATUS_ACTIVE, "13900000050"),
 ]
 
 # 部门负责人 → 按 P2-14 的 D13，部门共享知识库的默认 writer 就是他
-LEADERS = {"HQ": "wu.jing", "OPS": "chen.jie", "TECH": "li.na"}
+LEADERS = {
+    "HQ": "wu.jing", "OPS": "chen.jie", "TECH": "li.na",
+    # —— 「再生成 50 人」批次新增部门的负责人 ——
+    "HR": "he.jingyi", "FIN": "han.xuesong", "MKT": "xie.nana",
+    "PROD": "yuan.quanqing", "CS": "jiang.wenli", "SALES": "lei.junping",
+    "LEGAL": "yin.zhengyang", "ADMIN": "duan.yihong", "RD": "xue.zhiqian",
+}
 
 
 def _hr(title: str) -> None:
@@ -200,7 +272,8 @@ def main() -> int:
     args = parser.parse_args()
 
     print("=" * 74)
-    print("模拟员工种子数据 —— 部门 3 / 职位 6 / 员工 10（含 1 名已离职）")
+    print(f"模拟员工种子数据 —— 部门 {len(DEPARTMENTS)} / 职位 {len(POSITIONS)} "
+          f"/ 员工 {len(EMPLOYEES)}（含 1 名已离职 + 2 名已停用）")
     if not args.apply:
         print("** 干跑模式 ** 什么都不会写。加 --apply 才会落库。")
     print("=" * 74)
