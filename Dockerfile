@@ -11,8 +11,17 @@
 #   alpine 用 musl libc，torch / numpy 这些包要么没有预编译 wheel（要本地编译，
 #   构建动辄十几分钟），要么运行期踩到 musl 与 glibc 的行为差异。
 #   slim 是 glibc，wheel 直接可用，构建快且行为与开发环境一致。
+#
+# ── 构建提速（2026-10-22 部署优化）──────────────────────────────────────
+#   ① 基础镜像**锁定 digest**（下方 FROM），避免上游轮换 python:3.11-slim 的
+#      底层镜像导致整条依赖层缓存失效（那次部署单依赖层就重装了 ~20min）。
+#   ② 依赖（torch + 全部第三方包）集中到 `deps` 阶段，业务代码在 `final` 阶段
+#      才 COPY —— 这就是「预烘焙基础镜像」的落地方式：deps 阶段一旦构建，
+#      buildkit 会把它缓存住，下次改业务代码只重跑 COPY . .（秒级），不再碰 torch。
+#   升级 Python 小版本时：先 `docker pull python:3.11-slim` 取新 digest，再改这一行。
 
-FROM python:3.11-slim
+# ⚠️ 锁 digest：当前 = python:3.11.17-slim 的 linux/amd64 镜像（服务器实测）。
+FROM python:3.11-slim@sha256:cce12316475d7d56d605f76e1d811d0dc4e7227f2d4afd29951521264f504ff8 AS deps
 
 # PYTHONUNBUFFERED=1：让 print / logging 直接进 docker logs。
 #   不开的话 Python 会缓冲 stdout，容器里看日志永远是「卡住了」，
@@ -25,7 +34,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# 依赖单独一层：requirements 不变时走构建缓存，改业务代码不会重装一遍 torch。
+# 依赖单独一层（deps 阶段）：requirements 不变时走构建缓存，改业务代码不会重装一遍 torch。
 # 顺序不能反（先 COPY 全部再 pip install 的话，改任何 .py 都会让这一层失效）。
 COPY requirements.lock.txt ./
 # ⚠️ torch 单独一层：装完即缓存。lock 层失败重试时不用重下 196MB（2026-10-09 服务器实测）。
@@ -51,6 +60,12 @@ RUN pip install --no-cache-dir --timeout 600 --retries 10 uv \
       --index-url https://mirrors.cloud.tencent.com/pypi/simple \
       --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
       -r requirements.lock.txt
+
+# ── deps 阶段到此为止：上面这些层只要 requirements.lock.txt 不变就永远缓存 ──
+
+# final 阶段：只把业务代码 COPY 进来，复用 deps 阶段装好的全部依赖。
+# 改业务代码 → 只有下面这一行重跑，上面的 torch/依赖层全部命中缓存。
+FROM deps AS final
 
 # 锁版文件优先于 requirements.txt：后者是「能跑」的宽松版本，
 # lock 是「验过」的精确版本。镜像构建要可复现，只能用 lock。
