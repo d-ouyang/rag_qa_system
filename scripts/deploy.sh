@@ -44,12 +44,19 @@ ensure_buildx() {
     fi
   fi
   # 2) 回退：下载到用户级 cli-plugins（无需 sudo）
-  mkdir -p ~/.docker/cli-plugins
+  # ⚠️ 两处 curl 都给**短超时**：服务器实测无外网，不加超时会白等 ~98s（2026-10-22 实测）。
+  # ⚠️ `ver=$(...) || ver=""` 是必须的：命令替换失败时返回非 0，在 `set -euo pipefail`
+  #    下会**直接把整个部署打断** —— 那就不是「装不上 buildx」，而是「部署失败」。
+  #    best-effort 的每一步都必须自己吞掉错误，不能指望调用方。
+  mkdir -p ~/.docker/cli-plugins 2>/dev/null || true
   local ver
-  ver=$(curl -fsSL --connect-timeout 20 https://api.github.com/repos/docker/buildx/releases/latest 2>/dev/null \
-        | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null)
+  ver=$(
+    curl -fsSL --connect-timeout 5 --max-time 12 \
+      https://api.github.com/repos/docker/buildx/releases/latest 2>/dev/null \
+    | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null
+  ) || ver=""
   if [ -n "$ver" ]; then
-    if curl -fsSL --connect-timeout 30 \
+    if curl -fsSL --connect-timeout 5 --max-time 25 \
          "https://github.com/docker/buildx/releases/download/${ver}/buildx-${ver}.linux-amd64" \
          -o ~/.docker/cli-plugins/docker-buildx 2>/dev/null; then
       chmod +x ~/.docker/cli-plugins/docker-buildx
@@ -57,7 +64,8 @@ ensure_buildx() {
       return 0
     fi
   fi
-  echo "  ⚠️ 无法安装 buildx，将退回旧构建器（部署仍可用，仅偏慢）"
+  echo "  ⚠️ 无法安装 buildx（服务器无外网 / 无免密 sudo），使用默认构建器 ——"
+  echo "     依赖缓存由 buildkit 的 docker driver 提供，实测已生效（本次构建大量 CACHED）。"
   return 0
 }
 ensure_buildx
@@ -78,7 +86,10 @@ echo "==> [6/9] 启动全栈应用（镜像已在 step 4 build，这里只起容
 docker compose --profile full up -d
 
 echo "==> [7/9] 清理悬虚镜像（4C4G 磁盘宝贵，但保留 24h 内镜像以保护刚构建的依赖缓存）"
-docker image prune -f --until 24h
+# ⚠️ 必须写成 --filter "until=24h"：docker image prune **没有** --until 这个 flag。
+#   2026-10-22 踩过：写成 `--until 24h` → unknown flag、exit 125，把整个部署打成失败
+#   （当时容器其实已经重建完成、健康，纯粹栽在这一行上）。
+docker image prune -f --filter "until=24h"
 
 echo "==> [8/9] 等待全部 healthy 并探活"
 docker compose --profile full up -d --wait
