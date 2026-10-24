@@ -13,6 +13,9 @@ vector_db/
 chroma_data/
 upload/
 data/*
+
+# 本地项目状态（WorkBuddy 项目记忆/自动化，本地保留、绝不入库）
+.workbuddy/
 # ⚠️ 例外：检索评测集与评测结果**必须入库**（P3-3）。
 #   golden.jsonl 是「尺子」本身 —— 尺子不进版本控制，就没法说明某个数字
 #   是哪把尺子量出来的；results/*.json 是 P3-4 A/B 的对照证据。
@@ -20,6 +23,7 @@ data/*
 #   （那样 `!data/eval/` 无效），必须写 `data/*` 把目录本身留着。
 !data/eval/
 app.log
+app.log.*
 *.log
 .langchain_checkpoints.sqlite*
 
