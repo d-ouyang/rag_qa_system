@@ -52,11 +52,11 @@ from core import quota_policy
 from collections.abc import Iterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from core.identity import Actor, current_actor
+from core.identity import Actor, current_actor, verify_gateway_proof
 from core.memory_manager import get_memory_manager
 from core.rag_chain import get_rag_chain
 from core.session_store import SessionOwnershipError
@@ -91,6 +91,13 @@ class AskRequest(BaseModel):
             "是否下发检索调试事件（P2-23，仅 /ask/stream 有效）："
             "true 下发 `retrieval` 帧（改写后查询/候选清单/阈值与 top1 分数）；"
             "不传时 admin 角色默认开启、其他角色关闭 —— 不传 debug 的调用方零可见变化"
+        ),
+    )
+    persist: bool = Field(
+        default=True,
+        description=(
+            "是否把本轮写入 RAG 会话、用量和分析轨迹。办公助手等外部调用传 false："
+            "仍走完整检索与生成，返回引用、重排分、依据和 token 用量，但不落 RAG 的会话库。"
         ),
     )
 
@@ -144,6 +151,14 @@ class AskResponse(BaseModel):
         description="本次问答 token 用量：input_tokens / output_tokens / cache_read_tokens",
     )
     cache_hit: bool = Field(default=False, description="本次回答来自相同问题缓存，未调用大模型")
+    grounded: dict[str, Any] | None = Field(
+        default=None, description="依据校验：{grounded, unsupported, note}；未校验时为空",
+    )
+    low_confidence: bool | None = Field(default=None, description="top1 是否落在低置信带")
+    qa_trace: dict[str, Any] | None = Field(
+        default=None, description="本轮流程轨迹（节点与终端状态）。外部调用可据此画流程图",
+    )
+    persisted: bool = Field(default=True, description="本轮是否写入了 RAG 会话")
 
 
 class MessageItem(BaseModel):
@@ -379,9 +394,17 @@ def _quota_precheck(actor: Actor) -> None:
     summary="同步问答",
     description="一次请求拿到完整答案。意图识别为闲聊时不做检索直接回答。",
 )
-def ask(request: AskRequest, actor: Actor = Depends(current_actor)) -> dict[str, Any]:
+def ask(
+    body: AskRequest,
+    request: Request,
+    actor: Actor = Depends(current_actor),
+) -> dict[str, Any]:
     """同步问答接口。"""
-    session_id = _resolve_session_id(request.session_id)
+    # persist=false 会绕过 RAG 自己的会话和额度，只允许持有网关证明的内部系统使用。
+    # 普通前端即使知道参数也不能拿它逃配额。
+    if not body.persist:
+        verify_gateway_proof(request.headers.get("x-internal-auth"))
+    session_id = _resolve_session_id(body.session_id)
     # ⚠️ 越权预检必须在**调链路之前**（P2-12c）。
     # 不预检的话，越权会一路走到 `rag_chain.query` 的最后一次写记忆才抛
     # `SessionOwnershipError` —— 也就是说模型已经完整答完一遍、检索也跑完了，
@@ -390,11 +413,14 @@ def ask(request: AskRequest, actor: Actor = Depends(current_actor)) -> dict[str,
     if get_memory_manager().is_foreign(session_id, owner_id=actor.id):
         raise HTTPException(status_code=403, detail="无权访问该会话")
     # P3-1 额度预检：block 档下超额 → 429（在越权之后、进 RAG 链之前）
-    _quota_precheck(actor)
+    if body.persist:
+        _quota_precheck(actor)
     logger.info("收到问答请求 | session_id=%s 用户=%s query=%.24s",
-                session_id, actor.username, request.question)
+                session_id, actor.username, body.question)
     try:
-        return get_rag_chain().query(request.question, session_id, owner_id=actor.id)
+        return get_rag_chain().query(
+            body.question, session_id, owner_id=actor.id, persist=body.persist,
+        )
     except SessionOwnershipError as e:
         # 越权写别人的会话。必须排在 ValueError 之前：
         # SessionOwnershipError 是普通 Exception，落到最后的兜底会被报成 502，

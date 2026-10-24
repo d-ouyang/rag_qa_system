@@ -1086,16 +1086,18 @@ class RAGChain:
     # 相同问题缓存
     # ------------------------------------------------------------------ #
     def _replay_cache(self, question: str, session_id: str, start: float, *,
-                       owner_id: int | None) -> dict[str, Any] | None:
-        """命中则写进当前会话并返回完整结果。未命中返回 None。"""
+                       owner_id: int | None, persist: bool = True) -> dict[str, Any] | None:
+        """命中则写进当前会话并返回完整结果。未命中返回 None。persist=False 时不写会话。"""
         hit = lookup_answer(question)
         if hit is None:
             return None
-        return self._finish_cached(question, session_id, start, hit, owner_id=owner_id)
+        return self._finish_cached(
+            question, session_id, start, hit, owner_id=owner_id, persist=persist,
+        )
 
     def _finish_cached(
         self, question: str, session_id: str, start: float, hit: dict[str, Any], *,
-        owner_id: int | None,
+        owner_id: int | None, persist: bool = True,
     ) -> dict[str, Any]:
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
         usage = _usage_zero()
@@ -1118,10 +1120,11 @@ class RAGChain:
                 question, intent, route, elapsed_ms, len(sources)
             ),
         }
-        self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
-                                 owner_id=owner_id)
-        # P4-5b：缓存命中轮同样镜像进分析表（decision=cache_hit，无检索细节）
-        _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
+        if persist:
+            self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
+                                     owner_id=owner_id)
+            # P4-5b：缓存命中轮同样镜像进分析表（decision=cache_hit，无检索细节）
+            _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
         logger.info(
             "问答缓存复用 | session_id=%s 耗时=%.0fms | query=%.24s",
             session_id, elapsed_ms, question,
@@ -1137,6 +1140,8 @@ class RAGChain:
             "elapsed_ms": elapsed_ms,
             "usage": usage,
             "cache_hit": True,
+            "qa_trace": exchange_meta["qa_trace"],
+            "persisted": persist,
         }
 
     def _stream_cached(
@@ -1192,7 +1197,7 @@ class RAGChain:
     # 对外：同步问答
     # ------------------------------------------------------------------ #
     def query(self, question: str, session_id: str, *,
-             owner_id: int | None) -> dict[str, Any]:
+             owner_id: int | None, persist: bool = True) -> dict[str, Any]:
         """
         执行一次完整问答。
 
@@ -1215,7 +1220,9 @@ class RAGChain:
 
         start = time.perf_counter()
 
-        cached = self._replay_cache(question, session_id, start, owner_id=owner_id)
+        cached = self._replay_cache(
+            question, session_id, start, owner_id=owner_id, persist=persist,
+        )
         if cached is not None:
             return cached
 
@@ -1329,16 +1336,18 @@ class RAGChain:
             # 依据校验结果同时写进轨迹（镜像表经 _TRACE_KEYS 透传到 grounded/unsupported 列）
             exchange_meta["qa_trace"]["grounded"] = grounded.get("grounded")
             exchange_meta["qa_trace"]["unsupported"] = grounded.get("unsupported") or []
-        self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
-                                 owner_id=owner_id)
-        # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
-        _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
-        self._maybe_store_cache(question, result, bool(chat_history))
-        # token 用量：本次问答（重写 + 主回答）累加进会话
-        self.memory.add_usage(
-            session_id, usage["input_tokens"], usage["output_tokens"],
-            usage["cache_read_tokens"], owner_id=owner_id,
-        )
+        if persist:
+            self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
+                                     owner_id=owner_id)
+            # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
+            _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
+            self._maybe_store_cache(question, result, bool(chat_history))
+            # token 用量：本次问答（重写 + 主回答）累加进会话。
+            # persist=False（办公侧调用）不记进 RAG 额度，由调用方按 usage 入自己的账。
+            self.memory.add_usage(
+                session_id, usage["input_tokens"], usage["output_tokens"],
+                usage["cache_read_tokens"], owner_id=owner_id,
+            )
 
         result["session_id"] = session_id
         result["elapsed_ms"] = elapsed_ms
@@ -1346,6 +1355,8 @@ class RAGChain:
         result["cache_hit"] = False
         result["low_confidence"] = low_confidence
         result["grounded"] = grounded
+        result["qa_trace"] = exchange_meta["qa_trace"]
+        result["persisted"] = persist
         logger.info(
             "问答完成 | session_id=%s 意图=%s(%s) 引用=%d条 耗时=%.0fms tokens=%d+%d | query=%.24s",
             session_id,
