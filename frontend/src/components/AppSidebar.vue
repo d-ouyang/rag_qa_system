@@ -89,7 +89,6 @@ const sessionGroups = computed(() => {
 })
 
 const serviceUp = ref<boolean | null>(null)
-let healthTimer: ReturnType<typeof setInterval> | null = null
 
 async function pingHealth() {
   try {
@@ -101,15 +100,19 @@ async function pingHealth() {
   }
 }
 
+function onVisibility() {
+  // 切回标签页时补一次探活（代替轮询：定时器会在后台标签页里空转打接口）
+  if (document.visibilityState === 'visible') void pingHealth()
+}
+
 onMounted(() => {
   void pingHealth()
   document.addEventListener('click', onDocClick)
-  // 30s 轮询一次服务状态灯；settings 接口不参与轮询（重且数据几乎不变）
-  healthTimer = setInterval(pingHealth, 30_000)
+  document.addEventListener('visibilitychange', onVisibility)
 })
 onBeforeUnmount(() => {
-  if (healthTimer) clearInterval(healthTimer)
   document.removeEventListener('click', onDocClick)
+  document.removeEventListener('visibilitychange', onVisibility)
 })
 
 function navTo(view: ActiveView) {
