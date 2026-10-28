@@ -55,7 +55,12 @@ RUN pip install --no-cache-dir --timeout 600 --retries 10 \
 # lock 用 uv 装而不是 pip：uv 并行下载 + 内置重试，国内网络下 pip 串行拉 200+ 个包的
 # 元数据动辄 40 分钟且偶发响应截断（JSONDecodeError），uv 快一个量级且抗抖动。
 # torch 已按上面装好（2.14.0+cpu 满足 lock 的 torch==2.14.0），uv 不会重装、不会补拉 CUDA。
-RUN pip install --no-cache-dir --timeout 600 --retries 10 uv \
+# uv 本体同样必须走镜像（p4.13b 部署失败根因）：不带 -i 时走官方 PyPI，
+# 云上到 files.pythonhosted.org 的链路偶发读超时（实测挂 1060s 后构建失败）。
+RUN pip install --no-cache-dir --timeout 600 --retries 10 \
+      --index-url https://mirrors.cloud.tencent.com/pypi/simple \
+      --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+      uv \
  && UV_HTTP_TIMEOUT=120 uv pip install --system \
       --index-url https://mirrors.cloud.tencent.com/pypi/simple \
       --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
