@@ -107,8 +107,27 @@ cases = [
     ("hi", Intent.CHITCHAT),
     ("谢谢", Intent.CHITCHAT),
     ("你是谁？", Intent.CHITCHAT),
+    # 能力型元问题（p4.5d：线上「我能问什么问题？」零召回拒答的修复）
+    ("我能问什么问题？", Intent.CHITCHAT),
+    ("我能问啥？", Intent.CHITCHAT),
+    ("我可以问什么问题", Intent.CHITCHAT),
+    ("请问能问什么？", Intent.CHITCHAT),
+    ("你能做什么", Intent.CHITCHAT),
+    ("你能干什么？", Intent.CHITCHAT),
+    ("你能回答什么问题？", Intent.CHITCHAT),
+    ("你有什么功能？", Intent.CHITCHAT),
+    ("你的功能是什么？", Intent.CHITCHAT),
+    ("介绍一下你自己", Intent.CHITCHAT),
+    ("你是干嘛的？", Intent.CHITCHAT),
+    ("这里能问什么问题？", Intent.CHITCHAT),
+    ("怎么使用你？", Intent.CHITCHAT),
+    ("what can I ask you", Intent.CHITCHAT),
     # 寒暄开头但带知识问题：整句不是寒暄，应落知识意图
     ("你好，请问报销流程是什么", Intent.POLICY_CONSULT),
+    # 能力前缀 + 真问题：不许被能力正则误杀，依旧走检索
+    ("你能帮我查一下报销标准吗", Intent.POLICY_CONSULT),
+    ("你能告诉我年假有多少天吗", Intent.POLICY_CONSULT),
+    ("怎么使用企业微信", Intent.OPERATION_GUIDE),
     # 六类知识意图
     ("什么是向量数据库", Intent.KNOWLEDGE_QUERY),
     ("报销流程是什么", Intent.POLICY_CONSULT),        # 报销(政策) 流程(操作) 是什么(知识) 平手 → 政策优先级胜出

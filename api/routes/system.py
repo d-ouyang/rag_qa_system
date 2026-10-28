@@ -32,6 +32,7 @@ from fastapi import APIRouter
 
 from config.settings import settings
 from core import document_repo as repo
+from core.config_flags import flag_value
 from core.db import check_connection, get_engine
 from core.identity import MODE_DEV, MODE_GATEWAY
 from core.memory_manager import get_memory_manager
@@ -114,11 +115,16 @@ def get_system_settings() -> dict[str, Any]:
             ),
         },
         "retrieval": {
-            "search_top_k": settings.SEARCH_TOP_K,
-            "use_reranker": settings.USE_RERANKER,
-            "reranker_model": settings.RERANKER_MODEL_NAME if settings.USE_RERANKER else None,
+            # 三个已注册的热开关项（FLAG_REGISTRY：search_top_k / rerank_enabled /
+            # rerank_score_threshold）读 flag_value 现值（DB > .env > 代码默认），
+            # 不再展示启动快照——历史上快照卡与运行时卡数值不一致（0.1 vs 0.5）
+            # 造成过「到底哪个生效」的困惑，见 FLAG_REGISTRY 与设置页两张卡。
+            # 未注册热开关的项（模型名/候选池倍数等）维持启动快照语义。
+            "search_top_k": int(flag_value("search_top_k")),
+            "use_reranker": bool(flag_value("rerank_enabled")),
+            "reranker_model": settings.RERANKER_MODEL_NAME if bool(flag_value("rerank_enabled")) else None,
             "rerank_candidate_multiplier": settings.RERANK_CANDIDATE_MULTIPLIER,
-            "rerank_score_threshold": settings.RERANK_SCORE_THRESHOLD,
+            "rerank_score_threshold": float(flag_value("rerank_score_threshold")),
         },
         "chunking": {
             "chunk_size": settings.CHUNK_SIZE,

@@ -22,6 +22,9 @@ data/*
 #   ⚠️ gitignore 的规则是「父目录被排除后不再往下走」，所以这里不能写 `data/`
 #   （那样 `!data/eval/` 无效），必须写 `data/*` 把目录本身留着。
 !data/eval/
+# QA 问答集（P4-11 优化日程）：离线策划的标准问答，直击检索的「尺子」素材，
+# 同样必须入库随仓走（格式与字段约定见 docs/PLAN-v4.0.0.md 优化日程一节）
+!data/qa/
 app.log
 app.log.*
 *.log
