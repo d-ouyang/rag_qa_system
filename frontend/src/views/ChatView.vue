@@ -70,7 +70,8 @@ onMounted(scrollToBottom)
         <span v-if="sessions.currentSession" class="session-id">#{{ sessions.currentSession.session_id.slice(0, 8) }}</span>
       </div>
       <div v-if="sessions.lastMeta.intent" class="header-meta">
-        <span class="tag" v-if="sessions.lastMeta.route === 'rag_qa'">已检索知识库</span>
+        <span class="tag" v-if="sessions.lastMeta.qa_trace?.decision === 'qa_hit'">QA 直击 · 未调大模型</span>
+        <span class="tag" v-else-if="sessions.lastMeta.route === 'rag_qa'">已检索知识库</span>
         <span class="tag" v-else>未检索 · 闲聊</span>
         <span class="tag">{{ INTENT_LABELS[sessions.lastMeta.intent] ?? sessions.lastMeta.intent }}</span>
       </div>

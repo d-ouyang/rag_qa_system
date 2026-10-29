@@ -536,7 +536,7 @@ def list_audit_logs(
 
 @router.get("/qa-traces", summary="问答溯源（P4-5b：qa_trace 分析镜像的只读查询）")
 def list_qa_traces(
-    decision: str | None = Query(default=None, description="终端状态：cache_hit / chitchat / zero_recall / rag_qa"),
+    decision: str | None = Query(default=None, description="终端状态：cache_hit / qa_hit / chitchat / zero_recall / rag_qa"),
     intent: str | None = Query(default=None, description="按意图精确筛（IntentType 值）"),
     session_id: str | None = Query(default=None, description="按会话 id 精确筛"),
     keyword: str | None = Query(default=None, description="在原始问题与独立问句里模糊搜"),

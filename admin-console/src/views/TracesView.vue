@@ -110,9 +110,10 @@ function onPage(n: number) {
 // --------------------------------------------------------------------------- //
 // 展示辅助
 // --------------------------------------------------------------------------- //
-/** 终端状态徽章：四色 —— 缓存命中蓝 / 闲聊灰 / 拒答橙 / 作答绿。 */
+/** 终端状态徽章：五色 —— 缓存命中蓝 / QA 直击青 / 闲聊灰 / 拒答橙 / 作答绿。 */
 const DECISION_CLASS: Record<string, string> = {
   cache_hit: 'd-cache',
+  qa_hit: 'd-qa',
   chitchat: 'd-chit',
   zero_recall: 'd-zero',
   rag_qa: 'd-rag',
@@ -207,15 +208,17 @@ const FLOW_NODES: FlowNode[] = [
   { key: 'received', x: 250, y: 40, kind: 'rect', w: 190, h: 48, color: 'blue' },
   { key: 'cache_check', x: 250, y: 142, kind: 'diamond', w: 210, h: 84, color: 'blue' },
   { key: 'cache_hit', x: 520, y: 142, kind: 'rect', w: 180, h: 48, color: 'blue', terminal: true },
-  { key: 'prepare', x: 250, y: 244, kind: 'rect', w: 190, h: 48, color: 'purple' },
-  { key: 'intent_route', x: 250, y: 346, kind: 'diamond', w: 210, h: 84, color: 'purple' },
-  { key: 'chitchat', x: 520, y: 346, kind: 'rect', w: 180, h: 48, color: 'gray', terminal: true },
-  { key: 'retrieve', x: 250, y: 448, kind: 'rect', w: 190, h: 48, color: 'teal' },
-  { key: 'rerank', x: 250, y: 532, kind: 'rect', w: 190, h: 48, color: 'amber' },
-  { key: 'threshold', x: 250, y: 634, kind: 'diamond', w: 210, h: 84, color: 'amber' },
-  { key: 'zero_recall', x: 520, y: 634, kind: 'rect', w: 180, h: 48, color: 'red', terminal: true },
-  { key: 'generate', x: 250, y: 736, kind: 'rect', w: 190, h: 48, color: 'green' },
-  { key: 'rag_qa', x: 250, y: 820, kind: 'rect', w: 190, h: 48, color: 'green', terminal: true },
+  { key: 'qa_lookup', x: 250, y: 244, kind: 'diamond', w: 210, h: 84, color: 'teal' },
+  { key: 'qa_hit', x: 520, y: 244, kind: 'rect', w: 180, h: 48, color: 'teal', terminal: true },
+  { key: 'prepare', x: 250, y: 346, kind: 'rect', w: 190, h: 48, color: 'purple' },
+  { key: 'intent_route', x: 250, y: 448, kind: 'diamond', w: 210, h: 84, color: 'purple' },
+  { key: 'chitchat', x: 520, y: 448, kind: 'rect', w: 180, h: 48, color: 'gray', terminal: true },
+  { key: 'retrieve', x: 250, y: 550, kind: 'rect', w: 190, h: 48, color: 'teal' },
+  { key: 'rerank', x: 250, y: 634, kind: 'rect', w: 190, h: 48, color: 'amber' },
+  { key: 'threshold', x: 250, y: 736, kind: 'diamond', w: 210, h: 84, color: 'amber' },
+  { key: 'zero_recall', x: 520, y: 736, kind: 'rect', w: 180, h: 48, color: 'red', terminal: true },
+  { key: 'generate', x: 250, y: 838, kind: 'rect', w: 190, h: 48, color: 'green' },
+  { key: 'rag_qa', x: 250, y: 922, kind: 'rect', w: 190, h: 48, color: 'green', terminal: true },
 ]
 
 interface FlowEdge {
@@ -227,7 +230,9 @@ interface FlowEdge {
 const FLOW_EDGES: FlowEdge[] = [
   { from: 'received', to: 'cache_check' },
   { from: 'cache_check', to: 'cache_hit', label: '命中' },
-  { from: 'cache_check', to: 'prepare', label: '未命中' },
+  { from: 'cache_check', to: 'qa_lookup', label: '未命中' },
+  { from: 'qa_lookup', to: 'qa_hit', label: '命中' },
+  { from: 'qa_lookup', to: 'prepare', label: '未命中' },
   { from: 'prepare', to: 'intent_route' },
   { from: 'intent_route', to: 'chitchat', label: '闲聊' },
   { from: 'intent_route', to: 'retrieve', label: '知识问答' },
@@ -442,7 +447,7 @@ function nodeLabel(key: string): string {
         <!-- 完整状态机：实走路径高亮 + 岔路口标注 + 执行顺序角标（flow_path 由后端派生） -->
         <h3 class="sec">实走路径</h3>
         <div class="flow-wrap">
-          <svg viewBox="0 0 680 860" class="flow-svg" role="img" aria-label="问答流程状态机（本次实走路径高亮）">
+          <svg viewBox="0 0 680 962" class="flow-svg" role="img" aria-label="问答流程状态机（本次实走路径高亮）">
             <defs>
               <marker id="fa-on" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569" />
@@ -630,6 +635,7 @@ function nodeLabel(key: string): string {
   color: #fff;
 }
 .d-cache { background: #2563eb; }
+.d-qa { background: #0d9488; }
 .d-chit { background: #64748b; }
 .d-zero { background: #d97706; }
 .d-rag { background: #059669; }

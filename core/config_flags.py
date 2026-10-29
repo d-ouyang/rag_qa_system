@@ -86,6 +86,14 @@ FLAG_REGISTRY: dict[str, FlagSpec] = {
             default=lambda: settings.QA_CACHE_ENABLED,
         ),
         FlagSpec(
+            key="qa_direct_hit",
+            value_type="bool",
+            card="问答增强",
+            label="QA 问答集直击",
+            description="问题命中离线策划的 QA 问答集（精确或高相似）时直接返回标准答案，跳过改写/检索/生成，全程不调大模型；未命中走正常链路。缺省关（data/qa/kb_qa_set.jsonl）",
+            default=lambda: settings.QA_DIRECT_HIT,
+        ),
+        FlagSpec(
             key="query_hyde",
             value_type="bool",
             card="问答增强",

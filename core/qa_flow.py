@@ -24,6 +24,9 @@
     received      收到问题（入口，每条路径都有）
     cache_check   查问答缓存（规范化原问题逐字匹配，见 core/qa_cache.py）
     cache_hit     【终端】命中缓存，直接复用答案 —— 不检索、不调模型
+    qa_lookup     QA 集直击匹配（PLAN-v4.0.0 优化 2，core/qa_direct.py）：
+                  缓存未命中后先问离线策划的标准问答，命中则整个生成链路全跳过
+    qa_hit        【终端】QA 直击命中：返回标准答案 —— 不检索、不调 LLM
     prepare       并行前段：意图识别 ∥ 投机检索 ∥ 问题改写
     intent_route  意图路由（7 类意图 → rag_qa / chitchat 两条路）
     chitchat      【终端】闲聊：不检索、无资料，走闲聊链
@@ -51,6 +54,8 @@ class QaFlowState(str, Enum):
     RECEIVED = "received"
     CACHE_CHECK = "cache_check"
     CACHE_HIT = "cache_hit"
+    QA_LOOKUP = "qa_lookup"
+    QA_HIT = "qa_hit"
     PREPARE = "prepare"
     INTENT_ROUTE = "intent_route"
     CHITCHAT = "chitchat"
@@ -65,6 +70,7 @@ class QaFlowState(str, Enum):
 #: 终端状态。一轮问答**恰好**落在其中一个上；qa_trace.decision 只取这里的值。
 TERMINAL_STATES: frozenset[str] = frozenset({
     QaFlowState.CACHE_HIT.value,
+    QaFlowState.QA_HIT.value,
     QaFlowState.CHITCHAT.value,
     QaFlowState.ZERO_RECALL.value,
     QaFlowState.RAG_QA.value,
@@ -75,6 +81,8 @@ STATE_LABELS: dict[str, str] = {
     QaFlowState.RECEIVED.value: "收到问题",
     QaFlowState.CACHE_CHECK.value: "查问答缓存",
     QaFlowState.CACHE_HIT.value: "缓存命中",
+    QaFlowState.QA_LOOKUP.value: "QA 集直击匹配",
+    QaFlowState.QA_HIT.value: "QA 直击命中",
     QaFlowState.PREPARE.value: "并行前段",
     QaFlowState.INTENT_ROUTE.value: "意图路由",
     QaFlowState.CHITCHAT.value: "闲聊应答",
@@ -100,6 +108,13 @@ _RETRIEVAL = [
 
 _PATHS: dict[str, list[str]] = {
     QaFlowState.CACHE_HIT.value: _FRONT + [QaFlowState.CACHE_HIT.value],
+    # QA 直击（PLAN-v4.0.0 优化 2）：缓存未命中后先问 QA 集，命中即终端——
+    # 不进意图路由、不检索、不调 LLM。未命中继续走 _RETRIEVAL（路径不含 qa_lookup，
+    # 与「缓存未命中」不单独成节点的既有口径一致：直击匹配是内部分支，不是必经节点）。
+    QaFlowState.QA_HIT.value: _FRONT + [
+        QaFlowState.QA_LOOKUP.value,
+        QaFlowState.QA_HIT.value,
+    ],
     QaFlowState.CHITCHAT.value: _FRONT + _RETRIEVAL[:2] + [QaFlowState.CHITCHAT.value],
     QaFlowState.ZERO_RECALL.value: _FRONT + _RETRIEVAL + [QaFlowState.ZERO_RECALL.value],
     QaFlowState.RAG_QA.value: (

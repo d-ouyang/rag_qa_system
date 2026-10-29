@@ -53,9 +53,12 @@ from core.qa_flow import (  # noqa: E402
     resolve_decision,
 )
 
-check("终端状态恰好四个",
-      set(TERMINAL_STATES) == {"cache_hit", "chitchat", "zero_recall", "rag_qa"},
+check("终端状态恰好五个",
+      set(TERMINAL_STATES) == {"cache_hit", "qa_hit", "chitchat", "zero_recall", "rag_qa"},
       f"实际 {sorted(TERMINAL_STATES)}")
+check("qa_hit：flow_path = 前缀 + 直击匹配 + 终端",
+      flow_path("qa_hit") == ["received", "cache_check", "qa_lookup", "qa_hit"],
+      f"实际 {flow_path('qa_hit')}")
 check("resolve_decision：闲聊（无 prepared）",
       resolve_decision(prepared_present=False, docs_count=0) == "chitchat")
 check("resolve_decision：零召回（0 条）",
@@ -283,7 +286,7 @@ try:
     check("返回形状：items/total/decisions/intents",
           all(k in body for k in ("items", "total", "decisions", "intents")))
     check("items 带 flow_path", bool(body["items"]) and body["items"][0]["flow_path"][-1] == "rag_qa")
-    check("decisions 下拉四项", len(body["decisions"]) == 4)
+    check("decisions 下拉五项", len(body["decisions"]) == 5)
     check("intents 下拉七项且带中文标签",
           len(body["intents"]) == 7 and all(i["label"] for i in body["intents"]))
 

@@ -368,6 +368,14 @@ class Settings(BaseSettings):
     # 池子上限。按最近使用淘汰：命中或新写入把这条放到最前，超限删最久没被用到的。
     QA_CACHE_MAX_ENTRIES : int = 100
 
+    # QA 问答集直击（PLAN-v4.0.0 优化 2，core/qa_direct.py）。
+    # 离线策划的标准问答（data/qa/kb_qa_set.jsonl），规范化精确命中或
+    # embedding 相似度 ≥ 阈值时直接返回标准答案——跳过改写/检索/生成，全程不调 LLM。
+    # fail-closed 惯例：缺省关；打开后行为差异见 module29。
+    QA_DIRECT_HIT : bool = False
+    # QA 集文件路径（相对仓库根；部署目录结构一致，绝对路径亦可覆盖）。
+    QA_SET_PATH : str = "data/qa/kb_qa_set.jsonl"
+
     REDIS_URL : str = "redis://localhost:6379/0"
     # 文档解析任务队列所在库（P0-3 启用）。与缓存分库，便于单独看积压 / 单独清理。
     REDIS_QUEUE_URL : str = "redis://localhost:6379/1"

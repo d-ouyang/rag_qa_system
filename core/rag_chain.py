@@ -69,6 +69,7 @@ from core.intent_router import Intent, IntentResult, get_intent_classifier
 from core.llm_client import LLMClient, get_llm_client
 from core.memory_manager import MemoryManager, get_memory_manager
 from core.qa_cache import is_standalone_question, looks_anaphoric, lookup_answer, store_answer
+from core.qa_direct import try_qa_direct_hit
 from core.groundedness import (
     answer_admits_no_basis,
     append_groundedness_correction,
@@ -645,6 +646,25 @@ def _build_qa_trace(
     }
     trace.update(retrieval)
     return trace
+
+
+def _qa_hit_sources(hit: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    QA 直击轮的溯源列表：标准答案来自 QA 集（策划资产），不是检索切片，
+    因此没有 chunk_id / rerank_score —— 用 qa_id + 命中方式 + 分数代替，
+    溯源页据此显示「这条答案来自 QA 集，不是模型生成的」。
+    """
+    entry = hit["entry"]
+    return [
+        {
+            "source": entry.source_doc or "QA 问答集",
+            "snippet": entry.answer[:200],
+            "qa_id": entry.id,
+            "section": entry.source_section or None,
+            "match_via": hit["via"],
+            "match_score": hit["score"],
+        }
+    ]
 
 
 def _record_qa_trace(
@@ -1228,11 +1248,39 @@ class RAGChain:
 
         # ①②③④ 并行前段：意图识别 ∥ 投机检索 ∥ 问题重写（有历史时），见 _prepare_parallel
         chat_history = self.memory.get_recent_messages(session_id, owner_id=owner_id)
-        intent_result, prepared = self._prepare_parallel(question, chat_history)
+        # 优化 2（PLAN-v4.0.0）：QA 集直击 —— 缓存未命中后、并行前段之前先问离线标准问答。
+        # 命中则跳过意图路由/检索/生成全程（0 tokens，一次 LLM 调用都没有）；
+        # 门控（热开关缺省关 / 独立问句 / 精确+语义两级匹配 / fail-open）收口在 qa_direct。
+        qa_hit = try_qa_direct_hit(question)
+        if qa_hit is None:
+            intent_result, prepared = self._prepare_parallel(question, chat_history)
+            qa_sources: list[dict[str, Any]] | None = None
+        else:
+            # 合成意图结果：直击答案语义上属于知识问答（route=rag_qa），
+            # 溯源/日志/缓存写入沿用同一套字段口径，只是 source 标记为 qa_set
+            intent_result = IntentResult(
+                intent=Intent.KNOWLEDGE_QUERY,
+                source="qa_set",
+                route="rag_qa",
+                detail=f"qa_direct:{qa_hit['entry'].id}",
+            )
+            prepared = None
+            qa_sources = _qa_hit_sources(qa_hit)
         llm = self.llm_client.get_llm()
         usage = _usage_zero()
 
-        if prepared is None:
+        if qa_hit is not None:
+            # QA 直击终端：标准答案原样返回，不进任何模型
+            answer = qa_hit["entry"].answer
+            result: dict[str, Any] = {
+                "answer": answer,
+                "intent": intent_result.intent.value,
+                "route": intent_result.route,
+                "intent_source": intent_result.source,
+                "standalone_question": question,
+                "sources": qa_sources,
+            }
+        elif prepared is None:
             # 闲聊链：无检索、无资料，answer 之后同样写记忆
             message = llm.invoke(
                 _chitchat_prompt.invoke({"input": question, "chat_history": chat_history})
@@ -1286,9 +1334,15 @@ class RAGChain:
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
         # P4-5：终端状态 —— 这一轮最终走的是哪条分支（四选一）。
         # P4-5b 起判定收口到 qa_flow.resolve_decision（唯一出处，module27 穷举守着）
-        decision = qa_flow.resolve_decision(
-            prepared_present=prepared is not None,
-            docs_count=len(prepared["docs"]) if prepared else 0,
+        # 优化 2：QA 直击轮 prepared 恒为 None，resolve_decision 会误判 chitchat，
+        # 终端态在这里直接钉死为 qa_hit（判定收口仍是唯一出处 qa_flow 的常量）。
+        decision = (
+            qa_flow.QaFlowState.QA_HIT.value
+            if qa_hit is not None
+            else qa_flow.resolve_decision(
+                prepared_present=prepared is not None,
+                docs_count=len(prepared["docs"]) if prepared else 0,
+            )
         )
         # P4-6：低置信带判定 + 依据校验（只在 rag_qa 轮；校验热开关可关）
         low_confidence = False
@@ -1332,6 +1386,11 @@ class RAGChain:
                 elapsed_ms, len(result["sources"]),
             ),
         }
+        if qa_hit is not None:
+            # 直击轮附加命中元数据（溯源页据此显示「来自 QA 集」而非检索切片）
+            exchange_meta["qa_trace"]["qa_id"] = qa_hit["entry"].id
+            exchange_meta["qa_trace"]["qa_match_via"] = qa_hit["via"]
+            exchange_meta["qa_trace"]["qa_match_score"] = qa_hit["score"]
         if grounded is not None:
             # 依据校验结果同时写进轨迹（镜像表经 _TRACE_KEYS 透传到 grounded/unsupported 列）
             exchange_meta["qa_trace"]["grounded"] = grounded.get("grounded")
@@ -1405,11 +1464,36 @@ class RAGChain:
 
         chat_history = self.memory.get_recent_messages(session_id, owner_id=owner_id)
         # 并行前段：意图识别 ∥ 投机检索 ∥ 问题重写（有历史时）
-        intent_result, prepared = self._prepare_parallel(question, chat_history)
+        # 优化 2：QA 集直击 —— 与 query() 同口径，命中则跳过意图/检索/生成全程
+        qa_hit = try_qa_direct_hit(question)
+        if qa_hit is None:
+            intent_result, prepared = self._prepare_parallel(question, chat_history)
+            qa_sources: list[dict[str, Any]] | None = None
+        else:
+            intent_result = IntentResult(
+                intent=Intent.KNOWLEDGE_QUERY,
+                source="qa_set",
+                route="rag_qa",
+                detail=f"qa_direct:{qa_hit['entry'].id}",
+            )
+            prepared = None
+            qa_sources = _qa_hit_sources(qa_hit)
         llm = self.llm_client.get_llm()
         usage = _usage_zero()
 
-        if prepared is None:
+        if qa_hit is not None:
+            # QA 直击终端：标准答案作为唯一 chunk 下发（与零召回短路的下发形态对齐）
+            yield {
+                "type": "meta",
+                "intent": intent_result.intent.value,
+                "route": intent_result.route,
+                "intent_source": intent_result.source,
+                "standalone_question": question,
+                "sources": qa_sources,
+            }
+            yield {"type": "chunk", "content": qa_hit["entry"].answer}
+            answer = qa_hit["entry"].answer
+        elif prepared is None:
             yield {
                 "type": "meta",
                 "intent": intent_result.intent.value,
@@ -1475,12 +1559,20 @@ class RAGChain:
         elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
         # 每轮详情随轮写入记忆（同 query 口径），历史接口按轮回填
         # 溯源只算一次：add_exchange / _maybe_store_cache / qa_trace 三处共用
-        sources = [] if prepared is None else self._extract_sources(prepared["docs"])
+        sources = (
+            qa_sources if qa_sources is not None
+            else ([] if prepared is None else self._extract_sources(prepared["docs"]))
+        )
         # P4-5：终端状态 —— 这一轮最终走的是哪条分支（四选一）。
         # P4-5b 起判定收口到 qa_flow.resolve_decision（与 query() 同一出处）
-        decision = qa_flow.resolve_decision(
-            prepared_present=prepared is not None,
-            docs_count=len(prepared["docs"]) if prepared else 0,
+        # 优化 2：QA 直击轮钉死 qa_hit（同 query 口径）
+        decision = (
+            qa_flow.QaFlowState.QA_HIT.value
+            if qa_hit is not None
+            else qa_flow.resolve_decision(
+                prepared_present=prepared is not None,
+                docs_count=len(prepared["docs"]) if prepared else 0,
+            )
         )
         # P4-6：低置信带判定 + 依据校验（与 query() 同口径；校验在答案流完之后）
         low_confidence = False
@@ -1515,7 +1607,10 @@ class RAGChain:
             "sources": sources,
             "intent": intent_result.intent.value,
             "route": intent_result.route,
-            "standalone_question": None if prepared is None else prepared["standalone_question"],
+            "standalone_question": (
+                question if qa_hit is not None
+                else None if prepared is None else prepared["standalone_question"]
+            ),
             "usage": dict(usage),
             "elapsed_ms": elapsed_ms,
             "ts": time.time(),
@@ -1528,6 +1623,11 @@ class RAGChain:
                 question, intent_result, prepared, decision, elapsed_ms, len(sources),
             ),
         }
+        if qa_hit is not None:
+            # 直击轮附加命中元数据（与 query() 同口径）
+            exchange_meta["qa_trace"]["qa_id"] = qa_hit["entry"].id
+            exchange_meta["qa_trace"]["qa_match_via"] = qa_hit["via"]
+            exchange_meta["qa_trace"]["qa_match_score"] = qa_hit["score"]
         if grounded is not None:
             exchange_meta["qa_trace"]["grounded"] = grounded.get("grounded")
             exchange_meta["qa_trace"]["unsupported"] = grounded.get("unsupported") or []
@@ -1541,7 +1641,10 @@ class RAGChain:
                 "answer": answer,
                 "intent": intent_result.intent.value,
                 "route": intent_result.route,
-                "standalone_question": None if prepared is None else prepared["standalone_question"],
+                "standalone_question": (
+                    question if qa_hit is not None
+                    else None if prepared is None else prepared["standalone_question"]
+                ),
                 "sources": sources,
             },
             bool(chat_history),
