@@ -657,6 +657,12 @@ def _qa_hit_sources(hit: dict[str, Any]) -> list[dict[str, Any]]:
     entry = hit["entry"]
     return [
         {
+            # ⚠️ index/chunk_id 是接口层 SourceItem 的契约字段（api/routes/qa.py）：
+            # index 必填；chunk_id=None → 前端把引用渲染成不可点击的纯文本
+            # （直击答案来自 QA 集，没有切片可反查）。
+            # qa_id 等附加键会被 response_model 静默丢弃，溯源信息以 qa_trace 为准。
+            "index": 1,
+            "chunk_id": None,
             "source": entry.source_doc or "QA 问答集",
             "snippet": entry.answer[:200],
             "qa_id": entry.id,
