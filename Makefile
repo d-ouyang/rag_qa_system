@@ -21,7 +21,7 @@ GATEWAY_PORT ?= 3000
         worker accept accept-ui reindex reindex-apply accept-p04a accept-ui-p04b \
         smoke-session accept-12b-reverse accept-12c accept-12c-ui accept-12c-reverse \
         kb-guard kb-guard-static kb-guard-count kb-restore test-sandbox dev-test-accounts \
-        dev-test-accounts-apply dev-test-accounts-reset eval-retrieval snapshot-usage deploy
+        dev-test-accounts-apply dev-test-accounts-reset eval-retrieval eval-answer-guard eval-stats verify-kb-extras snapshot-usage deploy
 
 help:
 	@echo "—— 一次性 ——"
@@ -90,6 +90,9 @@ help:
 	@echo "—— 检索评测（P3-3）——"
 	@echo "make eval-retrieval         跑一遍检索评测（默认 tag=baseline），结果落 data/eval/results/"
 	@echo "                            make eval-retrieval TAG=hybrid             换 tag 再跑"
+	@echo "make eval-answer-guard      答案级 golden 守卫（禁止把线性规则改写成区间档位，跑真实链路）"
+	@echo "make eval-stats             汇总最近 7 天耗时/依据校验/双路回退（ARGS=\"--days 1\"）"
+	@echo "make verify-kb-extras       跑扩展资料 19 题（PDF/DOCX/XLSX）端到端校验"
 	@echo "                            make eval-retrieval TAG=hybrid CMP=baseline 跑完直接出 A/B 对比"
 	@echo "                            make eval-retrieval ARGS=\"--validate-only\"  只校验标注不检索"
 	@echo "  ⚠️ 走线上真实检索（远程 embedding + 远程 rerank），要联网、要 Chroma 在跑；只读不改库"
@@ -170,7 +173,7 @@ admin-build:
 # 这里显式记录三个 PID 再 kill，而不是用 `kill 0`（后者会连当前 shell 的进程组一起打掉）。
 dev:
 	@echo "启动：后端 8000 / 网关 3000 / 前端 5173    停止：Ctrl-C"
-	@echo "浏览器打开 http://localhost:5173  （默认账号 admin / admin123）"
+	@echo "浏览器打开 http://localhost:5173  （本地管理员 wu.jing / DevAdmin2026!Aa）"
 	@echo ""
 	@$(VENV)/bin/uvicorn api.main:app --reload --port 8000 & \
 	 UV=$$!; \
@@ -214,6 +217,20 @@ eval-retrieval:
 		$(if $(TAG),--tag $(TAG),) \
 		$(if $(CMP),--compare $(CMP),) \
 		$(ARGS)
+
+# 答案级 golden 守卫（生成约束，不是检索评测）：跑真实链路，答案命中 forbidden_patterns 即失败。
+# 例：make eval-answer-guard；make eval-answer-guard ARGS="--id a001"
+eval-answer-guard:
+	@$(PY) scripts/eval_answer_guard.py $(ARGS)
+
+# 耗时/质量统计：从 chat_message.turn_meta 聚合 timings / decision / grounded / dual/fallback。
+# 例：make eval-stats；make eval-stats ARGS="--days 1"
+eval-stats:
+	@$(PY) scripts/eval_stats.py $(ARGS)
+
+# 扩展资料 19 题（PDF/DOCX/XLSX）端到端校验：sources 命中 + 答案关键词。
+verify-kb-extras:
+	@$(PY) scripts/verify_kb_extras.py $(ARGS)
 
 # 月度用量快照（P3-6）：手动跑一次当期聚合 + 与实时聚合对账。
 # 与 beat（每天 04:10）同一份逻辑；幂等，随时可重跑。

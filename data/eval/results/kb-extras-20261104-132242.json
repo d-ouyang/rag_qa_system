@@ -1,0 +1,657 @@
+{
+  "meta": {
+    "generated_at": "2026-11-04T13:22:42+08:00",
+    "cases": 19,
+    "passed": 10,
+    "failed": 9
+  },
+  "records": [
+    {
+      "id": "EXT-01",
+      "doc": "客户投诉 PDF",
+      "question": "客户投诉分为哪几级？",
+      "expected_doc_ids": [
+        831
+      ],
+      "expected_any": [
+        "一般",
+        "重要",
+        "重大",
+        "舆情"
+      ],
+      "min_hits": 2,
+      "note": "分级表",
+      "expected_files": [
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        831,
+        831,
+        831,
+        831,
+        831
+      ],
+      "source_files": [
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "hits": [
+        "一般",
+        "重要",
+        "重大",
+        "舆情"
+      ],
+      "answer": "客户投诉按影响程度分为一般投诉、重要投诉、重大投诉、舆情事件四级。\n\n- 一般投诉：由门店或客服中心按权限处理；判定标准为单一客户、单一商品、无安全风险；牵头人为门店店长/客服专员；上报时限为2小时。\n- 重要投诉：由区域负责人牵头；判定标准为同一问题重复出现、客户强烈不满、金额较大；牵头人为区域负责人；上报时限为1小时。\n- 重大投诉：由客服中心负责人牵头并报分管高管；判定标准为食品安全、人身伤害、监管转办、媒体采访；牵头人为客服中心负责人；上报时限为30分钟。\n- 舆情事件：由品牌公关负责人牵头；判定标准为社交平台扩散、群体性投诉、品牌负面；牵头人为品牌公关负责人；上报时限为立即。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-02",
+      "doc": "客户投诉 PDF",
+      "question": "一般投诉的首次响应和处理完成时限分别是多久？",
+      "expected_doc_ids": [
+        831
+      ],
+      "expected_any": [
+        "2小时",
+        "24小时",
+        "2 小时",
+        "24 小时"
+      ],
+      "min_hits": 1,
+      "note": "SLA 表",
+      "expected_files": [
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        831,
+        831,
+        831,
+        831,
+        831
+      ],
+      "source_files": [
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "hits": [
+        "2小时",
+        "24小时",
+        "2 小时",
+        "24 小时"
+      ],
+      "answer": "一般投诉的首次响应时限是2小时内，处理完成时限是24小时内。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-03",
+      "doc": "客户投诉 PDF",
+      "question": "客户投诉工单需要保存多久？",
+      "expected_doc_ids": [
+        831
+      ],
+      "expected_any": [
+        "3年",
+        "5年",
+        "3 年",
+        "5 年"
+      ],
+      "min_hits": 1,
+      "note": "归档要求",
+      "expected_files": [
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        831,
+        831,
+        831,
+        831,
+        831
+      ],
+      "source_files": [
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "hits": [
+        "3年",
+        "5年",
+        "3 年",
+        "5 年"
+      ],
+      "answer": "根据现有制度，投诉工单一般不少于 3 年保存；涉及食品安全、人身伤害、诉讼的，保存期限不少于 5 年。政策依据来自《客户投诉与售后服务管理办法》第九章 记录归档与数据分析 第50条。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-04",
+      "doc": "门店选址 PDF",
+      "question": "门店选址的商圈评分低于多少分不予立项？",
+      "expected_doc_ids": [
+        832
+      ],
+      "expected_any": [
+        "70"
+      ],
+      "min_hits": 1,
+      "note": "量化评分",
+      "expected_files": [
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        832,
+        832,
+        832,
+        832,
+        832
+      ],
+      "source_files": [
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "hits": [
+        "70"
+      ],
+      "answer": "商圈评估采用量化评分，评分低于 70 分的点位原则上不予立项。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-05",
+      "doc": "门店选址 PDF",
+      "question": "社区店和标准店的面积区间分别是多少？",
+      "expected_doc_ids": [
+        832
+      ],
+      "expected_any": [
+        "60",
+        "120",
+        "200"
+      ],
+      "min_hits": 2,
+      "note": "店型配置",
+      "expected_files": [
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        832,
+        832,
+        832,
+        832,
+        832
+      ],
+      "source_files": [
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "hits": [
+        "60",
+        "120",
+        "200"
+      ],
+      "answer": "社区店的面积区间是60至120平方米，标准店的面积区间是120至200平方米。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-06",
+      "doc": "门店选址 PDF",
+      "question": "开业验收包含哪些模块？",
+      "expected_doc_ids": [
+        832
+      ],
+      "expected_any": [
+        "证照",
+        "工程",
+        "商品",
+        "人员",
+        "安全",
+        "运营"
+      ],
+      "min_hits": 2,
+      "note": "验收清单",
+      "expected_files": [
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        832,
+        832,
+        832,
+        832,
+        832
+      ],
+      "source_files": [
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "hits": [
+        "证照",
+        "工程",
+        "商品",
+        "人员",
+        "安全"
+      ],
+      "answer": "开业验收包含以下模块：\n\n1. 证照：包括营业执照和食品经营许可证。\n2. 消防：涉及消防相关事项。\n3. 工程：包括水电、排烟、冷链、收银、监控等。\n4. 设备：涉及设备的检查。\n5. 陈列：包括商品陈列标准、价签、库存、效期等。\n6. 库存：涉及库存的检查。\n7. 人员：包括人员的编制、培训、健康证、排班等。\n8. 系统：涉及系统的检查。\n9. 支付：涉及支付相关事项。\n10. 配送：涉及配送相关事项。\n11. 卫生：包括安全卫生检查，如消防通道、虫害、保洁、垃圾等。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-07",
+      "doc": "信息安全 DOCX",
+      "question": "公司数据按敏感程度分为哪几级？",
+      "expected_doc_ids": [
+        833
+      ],
+      "expected_any": [
+        "公开",
+        "内部",
+        "敏感",
+        "核心"
+      ],
+      "min_hits": 2,
+      "note": "数据分级",
+      "expected_files": [
+        "信息安全与数据合规管理制度.docx"
+      ],
+      "passed": true,
+      "source_ids": [
+        833,
+        833,
+        833,
+        833
+      ],
+      "source_files": [
+        "信息安全与数据合规管理制度.docx",
+        "信息安全与数据合规管理制度.docx",
+        "信息安全与数据合规管理制度.docx",
+        "信息安全与数据合规管理制度.docx"
+      ],
+      "hits": [
+        "公开",
+        "内部",
+        "敏感",
+        "核心"
+      ],
+      "answer": "公司数据按敏感程度分为公开、内部、敏感、核心四级，实行差异化管理。\n\n- 公开数据：可对外发布的品牌、产品、活动信息；对外发布仍须经品牌与法务审核。\n- 内部数据：仅限员工访问的经营、管理信息，如制度、流程、会议纪要、一般报表。\n- 敏感数据：泄露后可能造成较大影响的客户信息、员工信息、价格政策、供应商报价、未公开财务数据。\n- 核心数据：泄露后可能造成重大损失或法律责任的数据，如大批量个人信息、核心配方、上市敏感信息。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-08",
+      "doc": "信息安全 DOCX",
+      "question": "信息安全事件分为哪几级？",
+      "expected_doc_ids": [
+        833
+      ],
+      "expected_any": [
+        "一般",
+        "较大",
+        "重大",
+        "特别重大"
+      ],
+      "min_hits": 2,
+      "note": "事件分级",
+      "expected_files": [
+        "信息安全与数据合规管理制度.docx"
+      ],
+      "passed": true,
+      "source_ids": [
+        833,
+        833,
+        833
+      ],
+      "source_files": [
+        "信息安全与数据合规管理制度.docx",
+        "信息安全与数据合规管理制度.docx",
+        "信息安全与数据合规管理制度.docx"
+      ],
+      "hits": [
+        "一般",
+        "较大",
+        "重大",
+        "特别重大"
+      ],
+      "answer": "信息安全事件分为一般、较大、重大、特别重大四级。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-09",
+      "doc": "信息安全 DOCX",
+      "question": "终端安全检查包含哪些检查项？",
+      "expected_doc_ids": [
+        833
+      ],
+      "expected_any": [
+        "磁盘加密",
+        "屏保",
+        "补丁",
+        "杀毒",
+        "VPN"
+      ],
+      "min_hits": 2,
+      "note": "终端清单",
+      "expected_files": [
+        "信息安全与数据合规管理制度.docx"
+      ],
+      "passed": true,
+      "source_ids": [
+        833,
+        832
+      ],
+      "source_files": [
+        "信息安全与数据合规管理制度.docx",
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "hits": [
+        "磁盘加密",
+        "屏保",
+        "补丁",
+        "杀毒",
+        "VPN"
+      ],
+      "answer": "终端安全检查包含以下检查项：\n\n- 磁盘加密：公司电脑全盘加密已开启\n- 屏保锁定：离席 5 分钟内自动锁屏\n- 系统补丁：高危补丁 7 天内安装\n- 杀毒软件：实时防护开启、病毒库更新\n- 防火墙：系统防火墙开启\n- 外设管控：USB 存储按需授权\n- 软件安装：无来源不明/破解软件\n- 账号共享：无共享账号、无共用密码\n- 密码强度：长度≥12，含大小写/数字/符号\n- 多因素认证：关键系统开启 MFA\n- VPN：外网访问内网走 VPN\n- 公共 Wi-Fi：不在公共网络直接处理敏感数据\n- 备份：重要文件存公司盘/系统\n- 日志：关键操作日志留存",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-10",
+      "doc": "供应商 DOCX",
+      "question": "供应商绩效评估的五个维度及权重是什么？",
+      "expected_doc_ids": [
+        834
+      ],
+      "expected_any": [
+        "质量",
+        "35",
+        "交付",
+        "25",
+        "价格",
+        "20"
+      ],
+      "min_hits": 3,
+      "note": "评分维度",
+      "expected_files": [
+        "供应商准入与绩效评估细则.docx"
+      ],
+      "passed": true,
+      "source_ids": [
+        834,
+        834,
+        834,
+        834
+      ],
+      "source_files": [
+        "供应商准入与绩效评估细则.docx",
+        "供应商准入与绩效评估细则.docx",
+        "供应商准入与绩效评估细则.docx",
+        "供应商准入与绩效评估细则.docx"
+      ],
+      "hits": [
+        "质量",
+        "35",
+        "交付",
+        "25",
+        "价格",
+        "20"
+      ],
+      "answer": "供应商绩效按质量、交付、价格、服务、合规五个维度量化评分，各维度权重如下：\n\n- 质量维度：35%\n- 交付维度：25%\n- 价格维度：20%\n- 服务维度：10%\n- 合规维度：10%\n\n具体核心指标如下：\n\n- 质量维度：关注来料合格率、客诉率、退货率、质量事故与整改及时性。\n- 交付维度：关注准时交付率、订单满足率、紧急订单响应与断供次数。\n- 价格维度：关注价格竞争力、成本透明度、涨价合理性与降价配合。\n- 服务维度：关注响应速度、售后支持、对账配合与协同改进。\n- 合规维度：关注资质有效性、食品安全、环保、劳动用工与廉洁记录。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-11",
+      "doc": "供应商 DOCX",
+      "question": "供应商 A/B/C/D 分级对应的分数区间是多少？",
+      "expected_doc_ids": [
+        834
+      ],
+      "expected_any": [
+        "90",
+        "75",
+        "60"
+      ],
+      "min_hits": 2,
+      "note": "分级表",
+      "expected_files": [
+        "供应商准入与绩效评估细则.docx"
+      ],
+      "passed": false,
+      "error": "HTTP Error 429: Too Many Requests"
+    },
+    {
+      "id": "EXT-12",
+      "doc": "供应商 DOCX",
+      "question": "哪些情形会直接被评为 D 级供应商？",
+      "expected_doc_ids": [
+        834
+      ],
+      "expected_any": [
+        "食品安全",
+        "商业贿赂",
+        "伪造"
+      ],
+      "min_hits": 2,
+      "note": "红线",
+      "expected_files": [
+        "供应商准入与绩效评估细则.docx"
+      ],
+      "passed": false,
+      "error": "HTTP Error 429: Too Many Requests"
+    },
+    {
+      "id": "EXT-13",
+      "doc": "培训 XLSX",
+      "question": "年度培训计划里信息安全类别包含哪些课程？",
+      "expected_doc_ids": [
+        837
+      ],
+      "expected_any": [
+        "数据分级与保护",
+        "账号与密码安全",
+        "钓鱼邮件识别",
+        "外发审批",
+        "事件上报"
+      ],
+      "min_hits": 2,
+      "note": "按类别检索（至少 2 个课名）",
+      "expected_files": [
+        "年度培训计划与课程清单.xlsx"
+      ],
+      "passed": false,
+      "error": "HTTP Error 429: Too Many Requests"
+    },
+    {
+      "id": "EXT-14",
+      "doc": "培训 XLSX",
+      "question": "年度培训计划四个季度的总学时分别是多少？",
+      "expected_doc_ids": [
+        837
+      ],
+      "expected_any": [
+        "120",
+        "126",
+        "132",
+        "138"
+      ],
+      "min_hits": 2,
+      "note": "季度计划",
+      "expected_files": [
+        "年度培训计划与课程清单.xlsx"
+      ],
+      "passed": false,
+      "error": "HTTP Error 429: Too Many Requests"
+    },
+    {
+      "id": "EXT-15",
+      "doc": "培训 XLSX",
+      "question": "讲师库中认证状态为待复训的讲师有哪些？",
+      "expected_doc_ids": [
+        837
+      ],
+      "expected_any": [
+        "讲师04",
+        "讲师08",
+        "讲师12",
+        "讲师16",
+        "讲师20",
+        "LEC-004",
+        "LEC-008",
+        "LEC-012",
+        "LEC-016",
+        "LEC-020"
+      ],
+      "min_hits": 5,
+      "note": "讲师库筛选：要求命中 5 位正确讲师（姓名或编号）；行级切分后答案已正确",
+      "expected_files": [
+        "年度培训计划与课程清单.xlsx"
+      ],
+      "passed": false,
+      "error": "HTTP Error 429: Too Many Requests"
+    },
+    {
+      "id": "EXT-16",
+      "doc": "巡检 XLSX",
+      "question": "门店巡检评分表中食品安全项有哪些检查内容？",
+      "expected_doc_ids": [
+        838
+      ],
+      "expected_any": [
+        "健康证",
+        "冷藏",
+        "生熟",
+        "效期",
+        "虫害"
+      ],
+      "min_hits": 2,
+      "note": "食安项",
+      "expected_files": [
+        "门店运营巡检评分表.xlsx"
+      ],
+      "passed": false,
+      "error": "HTTP Error 429: Too Many Requests"
+    },
+    {
+      "id": "EXT-17",
+      "doc": "巡检 XLSX",
+      "question": "巡检汇总里哪个区域的平均得分最低？",
+      "expected_doc_ids": [
+        838
+      ],
+      "expected_any": [
+        "安徽",
+        "86.4"
+      ],
+      "min_hits": 1,
+      "note": "汇总表",
+      "expected_files": [
+        "门店运营巡检评分表.xlsx"
+      ],
+      "passed": false,
+      "error": "HTTP Error 429: Too Many Requests"
+    },
+    {
+      "id": "EXT-18",
+      "doc": "巡检 XLSX",
+      "question": "门店巡检的消防项有哪些要求？",
+      "expected_doc_ids": [
+        838
+      ],
+      "expected_any": [
+        "消防通道",
+        "灭火器",
+        "疏散"
+      ],
+      "min_hits": 1,
+      "note": "消防项",
+      "expected_files": [
+        "门店运营巡检评分表.xlsx"
+      ],
+      "passed": false,
+      "error": "HTTP Error 429: Too Many Requests"
+    },
+    {
+      "id": "EXT-19",
+      "doc": "负样本",
+      "question": "公司2027年的营收目标是多少？",
+      "expected_doc_ids": [],
+      "expect_no_source": true,
+      "expected_any": [
+        "未查到",
+        "无法回答",
+        "没有相关",
+        "暂无",
+        "不包含"
+      ],
+      "min_hits": 1,
+      "note": "库内无此信息，应拒答",
+      "expected_files": [],
+      "passed": false,
+      "error": "HTTP Error 429: Too Many Requests"
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+{"id": "a001", "category": "numeric_policy", "turns": ["年假有多少天？", "那年假呢？"], "forbidden_patterns": ["5年以下", "5-10年", "10-15年"], "required_any": ["每增", "每增加", "逐年递增"], "note": "资料是线性规则「满1年5天起，每增1年加1天，上限15天」，禁止改写成区间档位（2026-11-04 实测误读）"}
+{"id": "a002", "category": "numeric_policy", "turns": ["年假5-15天是怎么算的？"], "forbidden_patterns": ["5年以下", "5-10年", "10-15年"], "required_any": [], "note": "单轮同样要守住线性规则，不能把「按司龄递增」改写成区间"}
