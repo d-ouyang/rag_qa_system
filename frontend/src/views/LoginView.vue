@@ -18,6 +18,8 @@ const auth = useAuthStore()
 
 const username = ref('')
 const password = ref('')
+/** 密码明文/密文切换（眼睛）：只在本地表单生效，不影响提交 */
+const showPassword = ref(false)
 const errorText = ref('')
 const loading = ref(false)
 
@@ -71,13 +73,41 @@ async function submit() {
 
       <label class="field">
         <span>密码</span>
-        <input
-          v-model="password"
-          type="password"
-          autocomplete="current-password"
-          placeholder="请输入密码"
-          :disabled="loading"
-        />
+        <div class="password-wrap">
+          <input
+            v-model="password"
+            :type="showPassword ? 'text' : 'password'"
+            autocomplete="current-password"
+            placeholder="请输入密码"
+            :disabled="loading"
+          />
+          <button
+            type="button"
+            class="eye"
+            :aria-label="showPassword ? '隐藏密码' : '显示密码'"
+            :title="showPassword ? '隐藏密码' : '显示密码'"
+            @click="showPassword = !showPassword"
+          >
+            <svg
+              v-if="showPassword"
+              viewBox="0 0 24 24" width="16" height="16" fill="none"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            >
+              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+              <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+              <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+              <line x1="1" y1="1" x2="23" y2="23" />
+            </svg>
+            <svg
+              v-else
+              viewBox="0 0 24 24" width="16" height="16" fill="none"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            >
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </button>
+        </div>
       </label>
 
       <p v-if="errorText" class="error">{{ errorText }}</p>
@@ -182,6 +212,37 @@ async function submit() {
 .field input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* 密码框 +「眼睛」：按钮绝对定位在右侧，输入框右侧留出 40px */
+.password-wrap {
+  position: relative;
+  display: flex;
+}
+
+.password-wrap input {
+  flex: 1;
+  padding-right: 40px;
+}
+
+.eye {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  border-radius: 6px;
+  background: transparent;
+}
+
+.eye:hover {
+  color: var(--text-1);
+  background: var(--bg-hover);
 }
 
 .error {

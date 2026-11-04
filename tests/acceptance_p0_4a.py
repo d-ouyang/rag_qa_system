@@ -161,8 +161,8 @@ else:
     try:
         _req = urllib.request.Request(
             "http://127.0.0.1:3000/api/auth/login",
-            data=json.dumps({"username": os.environ.get("GATEWAY_USER") or "admin",
-                             "password": os.environ.get("GATEWAY_PASS") or "admin123"}).encode("utf-8"),
+            data=json.dumps({"username": os.environ.get("GATEWAY_USER") or "wu.jing",
+                             "password": os.environ.get("GATEWAY_PASS") or "DevAdmin2026!Aa"}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
         )
         _token = json.loads(_opener.open(_req, timeout=5).read().decode("utf-8")).get("access_token")

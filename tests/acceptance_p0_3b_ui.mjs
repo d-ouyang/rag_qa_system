@@ -78,8 +78,8 @@ const BASE = process.env.UI_BASE ?? 'http://localhost:5173'
 const API = process.env.API_BASE ?? 'http://127.0.0.1:3000' // 网关（登录也走它）
 const SHOT_DIR = process.env.SHOT_DIR ?? '/tmp/p03b_shots'
 const HEADLESS = process.env.HEADFUL !== '1'
-const USER = process.env.ADMIN_USER ?? 'admin'
-const PASS = process.env.ADMIN_PASS ?? 'admin123'
+const USER = process.env.ADMIN_USER ?? 'wu.jing'
+const PASS = process.env.ADMIN_PASS ?? 'DevAdmin2026!Aa'
 
 /** 本轮唯一后缀：让夹具文件名不与历史残留撞车，也方便出错后善后 */
 const RUN = Math.random().toString(16).slice(2, 8)

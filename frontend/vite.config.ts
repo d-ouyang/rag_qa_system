@@ -21,6 +21,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [vue()],
+    // 预打包预览相关依赖：docx/xlsx 的 Worker 首次被请求时，Vite 若才发现新依赖
+    // 会触发 "optimized dependencies changed. reloading" —— 表现为第一次点预览整页刷新。
+    // 提前 include，dev 首次点击就不再刷新；生产构建不受影响。
+    optimizeDeps: {
+      include: ['marked', 'dompurify', 'mammoth', 'xlsx'],
+    },
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url)),

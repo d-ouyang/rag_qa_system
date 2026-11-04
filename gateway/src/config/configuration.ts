@@ -11,9 +11,9 @@ import { randomBytes } from 'node:crypto';
 
 const logger = new Logger('GatewayConfig');
 
-/** 开发环境兜底账号（密码 admin123），生产环境绝不会走到这里。 */
+/** 开发环境兜底账号（本地管理员 wu.jing；生产环境绝不会走到这里）。 */
 const DEV_DEFAULT_USERS =
-  'admin:$2a$10$V7V4pJ6xSM4eTfNMXHYO9OiRtN3kUWKGijeEMJWJadsp/Ixt9N/UC';
+  'wu.jing:$2b$10$EdKuPIS95Rh7AsPSoH7UiOpkncISUkikJ034WgidcMF6i3KeC4SyG';
 
 /** 用于「用户名不存在时也跑一次 bcrypt 比对」的哑 hash，抹平时间差。 */
 export const DUMMY_BCRYPT_HASH = '$2a$10$LBDmYKCh81Q5nfkaBKnAtuoaDzaPCdopG9fcAWsCaNJhkwohblNva';
@@ -71,7 +71,7 @@ export function parseUsers(raw: string | undefined, isProduction: boolean): Gate
       );
     }
     logger.warn(
-      '未配置 GATEWAY_USERS，使用开发默认账号 admin / admin123（仅限本地调试，生产会直接启动失败）',
+      '未配置 GATEWAY_USERS，使用开发默认账号 wu.jing（仅限本地调试，生产会直接启动失败）',
     );
     return { map: parseUserEntries(DEV_DEFAULT_USERS), source };
   }
@@ -90,7 +90,7 @@ function parseUserEntries(raw: string): Map<string, string> {
     if (!trimmed) continue;
     const idx = trimmed.indexOf(':');
     if (idx <= 0) {
-      throw new Error(`GATEWAY_USERS 条目格式错误（应形如 admin:$2b$10$...）：${trimmed.slice(0, 12)}...`);
+      throw new Error(`GATEWAY_USERS 条目格式错误（应形如 用户名:$2b$10$...）：${trimmed.slice(0, 12)}...`);
     }
     const username = trimmed.slice(0, idx).trim();
     const secret = trimmed.slice(idx + 1).trim();

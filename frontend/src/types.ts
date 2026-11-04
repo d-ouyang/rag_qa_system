@@ -19,6 +19,15 @@ export interface SourceItem {
   snippet: string
   rerank_score?: number | null
   vector_similarity?: number | null
+  /** 文档 ID：有值即可下载/查看原文件（检索轮从 chunk_id 解析，直击轮按 source_doc 映射） */
+  doc_id?: number | null
+  /** 原文条款位置（QA 直击轮，如「第九条、第十条」） */
+  section?: string | null
+  /** QA 集条目 id（直击轮） */
+  qa_id?: string | null
+  /** 直击命中方式与分数（exact=1.0 / semantic=余弦） */
+  match_via?: string | null
+  match_score?: number | null
 }
 
 /**
@@ -179,8 +188,21 @@ export interface ChatMessage {
   /** 本轮 token 用量与耗时（done 帧返回，历史接口按轮回填） */
   usage?: TurnUsage
   elapsed_ms?: number
+  /** 本轮耗时明细（done 帧返回；检索/改写、生成、依据校验、总计，单位 ms） */
+  timings?: TurnTimings | null
   /** 是否正在流式输出中 */
   streaming?: boolean
+}
+
+/** 本轮耗时明细（done 帧携带，单位 ms） */
+export interface TurnTimings {
+  prepare_ms?: number
+  generate_ms?: number
+  grounded_ms?: number
+  other_ms?: number
+  total_ms?: number
+  /** 模型单次请求超时（ms）；generate_ms 超过它通常意味着发生过超时重试 */
+  llm_timeout_ms?: number
 }
 
 /** 流式问答 NDJSON 各帧的联合类型 */
@@ -190,7 +212,7 @@ export type StreamFrame =
   | ({ type: 'retrieval' } & RetrievalDebug)
   | { type: 'chunk'; content: string }
   | { type: 'grounded'; grounded: boolean | null; unsupported: string[]; low_confidence: boolean }
-  | { type: 'done'; elapsed_ms?: number; usage?: TurnUsage; session_usage?: SessionUsage }
+  | { type: 'done'; elapsed_ms?: number; timings?: TurnTimings; usage?: TurnUsage; session_usage?: SessionUsage }
   | { type: 'error'; status?: number; detail: string }
 
 /** 单次问答的 token 用量（done 帧携带） */

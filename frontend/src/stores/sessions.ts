@@ -81,7 +81,12 @@ export const useSessionStore = defineStore('sessions', () => {
   const listLoading = ref(false)
   const historyLoading = ref(false)
   /** 最近一次问答的意图/路由结果（轻量，重的每轮详情已随消息存展示） */
-  const lastMeta = ref<{ intent?: string; route?: string }>({})
+  const lastMeta = ref<{
+    intent?: string
+    route?: string
+    /** p4.14 角标用：qa_set=直击命中（cache/llm/rule 都非直击） */
+    intent_source?: string
+  }>({})
   /** 当前这一轮流式请求；停止按钮与登出都靠它中断 */
   let currentAbort: AbortController | null = null
 
@@ -166,7 +171,7 @@ export const useSessionStore = defineStore('sessions', () => {
         session.message_count = history.message_count
         if (history.message_count > 0 && (session.title === '新会话' || session.title.startsWith('会话 '))) {
           const firstUser = history.messages.find((m) => m.role === 'user')
-          if (firstUser) session.title = firstUser.content.slice(0, 24)
+          if (firstUser) session.title = firstUser.content.slice(0, 60)
         }
       }
     } finally {
@@ -193,7 +198,7 @@ export const useSessionStore = defineStore('sessions', () => {
 
     const session = sessions.value.find((s) => s.session_id === sessionId)
     if (session) {
-      if (session.title === '新会话') session.title = text.slice(0, 24)
+      if (session.title === '新会话') session.title = text.slice(0, 60)
       session.message_count += 2
       session.last_active = Date.now() / 1000
     }
@@ -238,6 +243,7 @@ export const useSessionStore = defineStore('sessions', () => {
           assistantMsg.sources = (frame.sources ?? []) as SourceItem[]
           lastMeta.value.intent = frame.intent
           lastMeta.value.route = frame.route
+          lastMeta.value.intent_source = frame.intent_source
         } else if (frame.type === 'retrieval') {
           // P2-23 检索调试事件：admin 默认下发，存到消息上供「检索详情」面板展示。
           // 剥掉 type 再存，ChatMessage.retrieval_debug 的形状与事件体一致。
@@ -251,9 +257,12 @@ export const useSessionStore = defineStore('sessions', () => {
           assistantMsg.low_confidence = frame.low_confidence
         } else if (frame.type === 'done') {
           flushPending()
+          // done 一到就收光标：后端可能还在 summary/落库收尾，等流关闭再收会让光标空转
+          assistantMsg.streaming = false
           // 每轮详情随消息存：尾部徽章 + 明细浮层的数据源，刷新后由历史接口恢复
           assistantMsg.usage = frame.usage
           assistantMsg.elapsed_ms = frame.elapsed_ms
+          assistantMsg.timings = frame.timings
         } else if (frame.type === 'error') {
           flushPending()
           assistantMsg.content +=

@@ -6,13 +6,14 @@
  * ③ 底部功能入口：文件传输 → 知识库管理；系统设置 → 配置页
  * ④ 当前登录用户 + 退出登录
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSessionStore, type LocalSession } from '@/stores/sessions'
 import { useSettingsStore } from '@/stores/settings'
 import { useUiStore, type ActiveView } from '@/stores/ui'
 import UserProfilePanel from '@/components/UserProfilePanel.vue'
 import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
+import SessionTitle from '@/components/SessionTitle.vue'
 import { useConfirmStore } from '@/stores/confirm'
 
 const ui = useUiStore()
@@ -57,6 +58,8 @@ async function onLogout() {
 
 /** 当前展开「⋯」菜单的会话 id */
 const menuFor = ref<string | null>(null)
+/** 当前鼠标悬浮的会话 id：只有它且在溢出时才跑马灯 */
+const hoveredId = ref<string | null>(null)
 /** 行内重命名状态 */
 const renamingId = ref<string | null>(null)
 const renameText = ref('')
@@ -75,15 +78,54 @@ function onDocClick(e: MouseEvent) {
 
 const version = computed(() => settingsStore.health?.version ?? '—')
 
-/** 置顶分组 + 全部分组（置顶为空时不显示「置顶」组头） */
+/** 会话列表分页：默认 10 条，每次「查看更多」+10（与 office 侧栏一致） */
+const PAGE_SIZE = 10
+const visibleNormal = ref(PAGE_SIZE)
+const normalTotal = computed(() => sessions.normalSessions.length)
+const normalItems = computed(() => sessions.normalSessions.slice(0, visibleNormal.value))
+const normalRemaining = computed(() =>
+  Math.max(0, normalTotal.value - normalItems.value.length),
+)
+const normalExpanded = computed(() => visibleNormal.value > PAGE_SIZE)
+// 列表变短（删除/刷新）时把可见条数收回来，避免停在空气泡
+watch(normalTotal, (n) => {
+  const cap = Math.max(n, PAGE_SIZE)
+  if (visibleNormal.value > cap) visibleNormal.value = cap
+})
+function loadMoreNormal() {
+  visibleNormal.value += PAGE_SIZE
+}
+function collapseNormal() {
+  visibleNormal.value = PAGE_SIZE
+}
+
+/** 置顶分组 + 全部分组（置顶为空时不显示「置顶」组头）；只有普通组分页 */
 const sessionGroups = computed(() => {
-  const groups: { label: string; items: LocalSession[] }[] = []
+  const groups: {
+    label: string
+    items: LocalSession[]
+    total: number
+    remaining: number
+    expanded: boolean
+    kind: 'pinned' | 'normal'
+  }[] = []
   if (sessions.pinnedSessions.length) {
-    groups.push({ label: '置顶', items: sessions.pinnedSessions })
+    groups.push({
+      label: '置顶',
+      items: sessions.pinnedSessions,
+      total: sessions.pinnedSessions.length,
+      remaining: 0,
+      expanded: false,
+      kind: 'pinned',
+    })
   }
   groups.push({
     label: sessions.pinnedSessions.length ? '全部会话' : '会话',
-    items: sessions.normalSessions,
+    items: normalItems.value,
+    total: normalTotal.value,
+    remaining: normalRemaining.value,
+    expanded: normalExpanded.value,
+    kind: 'normal',
   })
   return groups
 })
@@ -215,13 +257,18 @@ function fmtTime(ts: number | null): string {
       </div>
       <template v-else>
         <template v-for="group in sessionGroups" :key="group.label">
-          <div v-if="group.items.length" class="group-label">{{ group.label }}</div>
+          <div v-if="group.total" class="group-label">
+            {{ group.label }}
+            <span class="group-count">{{ group.total }}</span>
+          </div>
           <div
             v-for="s in group.items"
             :key="s.session_id"
             class="session-item"
             :class="{ active: s.session_id === sessions.currentId && ui.activeView === 'chat' }"
             @click="onSelect(s.session_id)"
+            @mouseenter="hoveredId = s.session_id"
+            @mouseleave="hoveredId = null"
           >
             <!-- 重命名态：行内输入框 -->
             <template v-if="renamingId === s.session_id">
@@ -238,9 +285,9 @@ function fmtTime(ts: number | null): string {
             </template>
             <template v-else>
               <div class="session-main">
-                <div class="session-title">
+                <div class="session-title-row">
                   <svg v-if="s.pinned" class="pin-icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5" /><path d="M9 3h6l1 7 3 3H5l3-3z" /></svg>
-                  {{ s.title }}
+                  <SessionTitle :text="s.title" :scrolling="hoveredId === s.session_id" />
                 </div>
                 <div class="session-sub">
                   <span>{{ s.message_count }} 条消息</span>
@@ -274,6 +321,15 @@ function fmtTime(ts: number | null): string {
                 </button>
               </div>
             </template>
+          </div>
+          <div
+            v-if="group.kind === 'normal' && (group.remaining > 0 || group.expanded)"
+            class="session-more-row"
+          >
+            <button v-if="group.remaining > 0" class="load-more" @click="loadMoreNormal">
+              查看更多（剩余 {{ group.remaining }} 条）
+            </button>
+            <button v-if="group.expanded" class="load-more" @click="collapseNormal">收起</button>
           </div>
         </template>
         <div v-if="sessions.sessions.length === 0" class="list-hint">暂无会话</div>
@@ -427,6 +483,27 @@ function fmtTime(ts: number | null): string {
   background: var(--text-3);
   opacity: 0.6;
 }
+.group-count {
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.session-more-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 2px;
+}
+.load-more {
+  font-size: 12px;
+  color: var(--primary);
+  padding: 2px 0;
+  background: none;
+}
+.load-more:hover {
+  text-decoration: underline;
+}
 .session-item {
   position: relative;
   display: flex;
@@ -447,14 +524,12 @@ function fmtTime(ts: number | null): string {
   flex: 1;
   min-width: 0;
 }
-.session-title {
+.session-title-row {
   font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
 }
 .pin-icon {
   color: var(--primary);

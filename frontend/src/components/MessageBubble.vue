@@ -11,6 +11,7 @@ import type { ChatMessage, ChunkDetail, SourceItem } from '@/types'
 import { useSessionStore } from '@/stores/sessions'
 import { useUiStore } from '@/stores/ui'
 import { getChunk, isValidChunkId } from '@/api/chunks'
+import DocumentPreview from '@/components/DocumentPreview.vue'
 
 const props = defineProps<{ message: ChatMessage; index: number }>()
 const sessions = useSessionStore()
@@ -121,8 +122,8 @@ const detail = computed(() => {
   }
 })
 
-/** 弹窗实测约 260px 高，下方余量不足这个值就朝上展开（留 20px 呼吸位） */
-const POPOVER_EST_HEIGHT = 280
+/** 弹窗实测约 380px 高（含 token + 耗时明细），下方余量不足这个值就朝上展开（留 20px 呼吸位） */
+const POPOVER_EST_HEIGHT = 380
 const POPOVER_WIDTH = 264
 
 /**
@@ -134,7 +135,8 @@ const POPOVER_WIDTH = 264
 const popoverStyle = ref<Record<string, string>>({})
 
 function openDetail(e: MouseEvent) {
-  if (!detail.value) return // 只有耗时、没有 usage 的消息没有明细可弹
+  // 两个徽章共用一个浮层：只有 tokens、只有耗时、或两者都有，都能弹
+  if (!detail.value && !props.message.timings) return
   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
   detailUp.value = window.innerHeight - rect.bottom < POPOVER_EST_HEIGHT
   let left = rect.left
@@ -160,37 +162,151 @@ function displayName(s: SourceItem): string {
   return parts[parts.length - 1] || s.source
 }
 
-// ----- 引用反查（P0-4b）：点引用取切片全文 -----
+// ----- 引用详情（P0-4b / p4.14+）：点引用展开详情 -----
 /**
- * 当前展开全文的 chunk_id（null = 都收着）。一次只展开一条：
- * 引用条本身很窄，同时展开几条会把对话挤得读不下去。
+ * 当前展开哪一条：切片用 `c:<chunk_id>`，QA 直击（无切片）用 `q:<index>`。
+ * 一次只展开一条：引用条本身很窄，同时展开几条会把对话挤得读不下去。
  */
-const openChunkId = ref<string | null>(null)
+const openKey = ref<string | null>(null)
+const keyOf = (s: SourceItem): string =>
+  isValidChunkId(s.chunk_id) ? `c:${s.chunk_id}` : `q:${s.index}`
+const isOpen = (s: SourceItem): boolean => openKey.value === keyOf(s)
 
 /**
- * 每条引用的取数状态，按 chunk_id 存 —— 这是一层**缓存**，两个理由：
+ * 每条切片的取数状态，按 chunk_id 存 —— 这是一层**缓存**，两个理由：
  *   1. 同一条引用反复展开不该每次都打一次接口；
  *   2. 「取过但失败了」也要记住。否则用户关掉再点开，会看到一次假的
  *      「正在取回」然后又弹同一个错，像是网络在抽风。
  */
 const chunkStates = ref<Record<string, { loading: boolean; data?: ChunkDetail; error?: string }>>({})
 
-/** 当前展开那一条的状态（未展开时为 null），模板里只读这一个就够了 */
-const opened = computed(() =>
-  openChunkId.value ? (chunkStates.value[openChunkId.value] ?? null) : null,
-)
+/** 当前展开的切片状态（QA 条目不取数，恒为 null） */
+const opened = computed(() => {
+  const k = openKey.value
+  if (!k || !k.startsWith('c:')) return null
+  return chunkStates.value[k.slice(2)] ?? null
+})
 const openedData = computed<ChunkDetail | null>(() => opened.value?.data ?? null)
 
-function toggleChunk(s: SourceItem): void {
-  const id = s.chunk_id
-  if (!isValidChunkId(id)) return // 遗留切片没有键：按钮压根不该出现，这里是兜底
-  if (openChunkId.value === id) {
-    openChunkId.value = null
+function toggleSource(s: SourceItem): void {
+  const key = keyOf(s)
+  if (openKey.value === key) {
+    openKey.value = null
     return
   }
-  openChunkId.value = id
-  if (chunkStates.value[id]) return // 已取过（成功或失败）→ 直接复用
+  openKey.value = key
+  const id = s.chunk_id
+  if (!isValidChunkId(id) || chunkStates.value[id]) return // QA 条目 / 已取过 → 不请求
   void loadChunk(id)
+}
+
+/** 从 source 取 doc_id：优先后端字段，退化到 chunk_id 的 `<doc_id>:` 前缀 */
+function docIdOf(s: SourceItem): number | null {
+  if (typeof s.doc_id === 'number' && Number.isFinite(s.doc_id)) return s.doc_id
+  const cid = s.chunk_id
+  if (cid && cid.includes(':')) {
+    const head = cid.split(':')[0]
+    if (/^\d+$/.test(head)) return Number(head)
+  }
+  return null
+}
+
+/** 打开原文档预览（下载/预览都在浮层里；docx/xlsx 暂回退为下载） */
+const previewOpen = ref(false)
+const previewDocId = ref<number | null>(null)
+const previewName = ref<string | null>(null)
+
+function openPreview(s: SourceItem): void {
+  const id = docIdOf(s)
+  if (!id) return
+  previewDocId.value = id
+  previewName.value = displayName(s)
+  previewOpen.value = true
+}
+
+// ----- 引用资料按「源文件」聚合（纯前端展示层） -----
+/**
+ * 后端给的 `sources` 是**按切片粒度**、按相关性排好序的（一个文件命中 3 片就有 3 条）。
+ * 直接照搬会出现「同一个文件名重复 3 行、每行都挂一个查看原文档」——
+ * 用户要的是「一个文件一个入口，文件内再用切片区分」。
+ *
+ * 所以这里只做展示层聚合：
+ *   - 分组键优先 doc_id（同一份文档的切片必然同 doc_id），退化为文件名；
+ *   - 组内切片按重排分由高到低（同分保持后端原顺序）；
+ *   - 组的位置 = 组内最高分切片在后端序列里的位置 ——
+ *     即「1、3、5 同源则整组落在 1 的位置，2、4 依次跟在后面」。
+ *
+ * ⚠️ 后端 `sources` 顺序、落库内容一概不动：这是纯渲染层重排，
+ * 刷新后历史消息走同一套逻辑，结果一致（不落库 display_sources，避免两份真相）。
+ */
+type SourceGroup = {
+  key: string
+  fileName: string
+  source: string
+  docId: number | null
+  chunks: SourceItem[]
+}
+
+const scoreOf = (s: SourceItem): number =>
+  typeof s.rerank_score === 'number' ? s.rerank_score : Number.NEGATIVE_INFINITY
+
+const sourceGroups = computed<SourceGroup[]>(() => {
+  const list = props.message.sources ?? []
+  const map = new Map<string, SourceGroup>()
+
+  for (const s of list) {
+    const docId = docIdOf(s)
+    const fileName = displayName(s)
+    const key = docId != null ? `d:${docId}` : `f:${fileName || s.source}`
+    const g = map.get(key)
+    if (g) {
+      g.chunks.push(s)
+    } else {
+      map.set(key, { key, fileName, source: s.source, docId, chunks: [s] })
+    }
+  }
+
+  const groups = [...map.values()]
+  for (const g of groups) {
+    // 显式比较而不是相减：无 score 的切片是 -Infinity，相减会得到 NaN，
+    // 落进「按原序」分支，反而把有分的排到后面去
+    g.chunks.sort((a, b) => {
+      const sa = scoreOf(a)
+      const sb = scoreOf(b)
+      if (sa !== sb) return sb > sa ? 1 : -1
+      return a.index - b.index
+    })
+  }
+  // chunks[0] 已是组内最高分那条；用它在后端序列里的位置当组的锚点
+  groups.sort((a, b) => a.chunks[0].index - b.chunks[0].index)
+  return groups
+})
+
+/**
+ * 组内每一行只露「哪一片」：资料序号已在行首，文件名在组头，
+ * 这里补 section / 切片序号，让同文件的几片能被一眼区分开。
+ */
+function chunkLabel(s: SourceItem): string {
+  if (s.qa_id) return `QA 集 ${s.qa_id}`
+  const sec = (s.section || '').trim()
+  if (sec) return sec.length > 24 ? `${sec.slice(0, 24)}…` : sec
+  const cid = s.chunk_id
+  if (cid && cid.includes(':')) {
+    const n = Number(cid.split(':')[1])
+    if (Number.isFinite(n)) return `第 ${n + 1} 片`
+  }
+  return '引用片段'
+}
+
+/** 耗时展示：<1s 用毫秒（直击常在几十毫秒，按秒显示会变成 0.0s） */
+function fmtElapsed(ms?: number): string {
+  if (ms == null) return ''
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`
+}
+
+/** 耗时明细里的值：缺失显示「—」，避免空白行让人以为坏了 */
+function fmtMs(ms?: number): string {
+  return ms == null ? '—' : fmtElapsed(ms)
 }
 
 async function loadChunk(id: string): Promise<void> {
@@ -260,51 +376,82 @@ async function loadChunk(id: string): Promise<void> {
           </div>
           <div v-else class="content">{{ message.content }}<span v-if="message.streaming" class="cursor" /></div>
 
-          <!-- 溯源资料：可折叠 -->
+          <!-- 溯源资料：按**源文件**聚合展示（同文档多切片合成一组，见 sourceGroups）。
+               组头 = 文件名 + 唯一一个「查看原文档」；组内每行 = 一个切片（资料N + 重排分），
+               点行展开切片全文 / QA 标准答案，不再显示简介。 -->
           <template v-if="message.role === 'assistant' && message.sources && message.sources.length > 0">
             <button class="sources-toggle" @click="showSources = !showSources">
-              引用资料 {{ message.sources.length }} 条 {{ showSources ? '▲' : '▼' }}
+              引用资料 {{ message.sources.length }} 条<template v-if="sourceGroups.length < message.sources.length">（{{ sourceGroups.length }} 个文件）</template> {{ showSources ? '▲' : '▼' }}
             </button>
             <div v-if="showSources" class="sources">
-              <div v-for="s in message.sources" :key="s.index" class="source-item">
-                <div class="source-head">
-                  <span class="source-idx">资料{{ s.index }}</span>
-                  <!-- 有 chunk_id 才能点。没有键的（P0-3 之前入库的遗留切片）
-                       渲染成纯文本 + tooltip 说明原因，不给一个点了会失败的按钮 -->
-                  <button
-                    v-if="isValidChunkId(s.chunk_id)"
-                    class="source-name is-link"
-                    :title="s.source"
-                    @click="toggleChunk(s)"
-                  >
-                    {{ displayName(s) }}
-                    <span class="source-chev">{{ openChunkId === s.chunk_id ? '▲' : '▼' }}</span>
+              <div v-for="g in sourceGroups" :key="g.key" class="source-group">
+                <!-- 组头：一份源文件一行，只在这里给「查看原文档」入口 -->
+                <div class="source-group-head">
+                  <span class="source-file" :title="g.source">{{ g.fileName }}</span>
+                  <span v-if="g.chunks.length > 1" class="source-group-count">{{ g.chunks.length }} 片</span>
+                  <span v-else-if="g.chunks[0].qa_id" class="source-group-count">QA 集</span>
+                  <button v-if="g.docId != null" class="doc-link" @click="openPreview(g.chunks[0])">
+                    查看原文档
                   </button>
-                  <span
-                    v-else
-                    class="source-name"
-                    :title="s.source"
-                  >{{ displayName(s) }}</span>
-                  <span v-if="s.rerank_score != null" class="source-score">重排 {{ s.rerank_score.toFixed(3) }}</span>
                 </div>
-                <div class="source-snippet">{{ s.snippet }}</div>
 
-                <!-- 展开区：切片全文 + 源文档信息（来自 MySQL，不是从路径猜的） -->
-                <div v-if="isValidChunkId(s.chunk_id) && openChunkId === s.chunk_id" class="chunk-detail">
-                  <div v-if="opened?.loading" class="chunk-hint">正在取回原文…</div>
-                  <div v-else-if="opened?.error" class="chunk-hint is-error">{{ opened.error }}</div>
-                  <template v-else-if="openedData">
-                    <div class="chunk-meta">
-                      <span class="chunk-file">{{ openedData.file_name }}</span>
-                      <span v-if="openedData.page != null">第 {{ openedData.page + 1 }} 页</span>
-                      <span>第 {{ openedData.chunk_index + 1 }} 片</span>
-                      <span>{{ openedData.char_count }} 字</span>
-                      <span v-if="openedData.upload_time">{{ openedData.upload_time }}</span>
-                      <!-- 正文还在、MySQL 记录没了：如实标出来，这是「该跑重建脚本了」的信号 -->
-                      <span v-if="!openedData.document_exists" class="chunk-warn">文档记录缺失</span>
-                    </div>
-                    <pre class="chunk-content">{{ openedData.content }}</pre>
-                  </template>
+                <div
+                  v-for="s in g.chunks"
+                  :key="s.index"
+                  class="source-item"
+                  :class="{ 'is-open': isOpen(s) }"
+                >
+                  <div class="source-head">
+                    <span class="source-idx">资料{{ s.index }}</span>
+                    <!-- 所有引用都可点：切片反查全文；QA 直击没有切片，展开标准答案 + 来源条款 -->
+                    <button
+                      class="source-name is-link"
+                      :title="`${displayName(s)}${s.chunk_id ? ` · ${s.chunk_id}` : ''}`"
+                      @click="toggleSource(s)"
+                    >
+                      {{ chunkLabel(s) }}
+                      <span class="source-chev">{{ isOpen(s) ? '▲' : '▼' }}</span>
+                    </button>
+                    <span v-if="s.rerank_score != null" class="source-score">重排 {{ s.rerank_score.toFixed(3) }}</span>
+                  </div>
+
+                  <!-- 展开区：同一块区域展示详情，不再有「简介 + 全文」两处重复 -->
+                  <div v-if="isOpen(s)" class="chunk-detail">
+                    <!-- 检索切片：按 chunk_id 反查全文 -->
+                    <template v-if="isValidChunkId(s.chunk_id)">
+                      <div v-if="opened?.loading" class="chunk-hint">正在取回原文…</div>
+                      <div v-else-if="opened?.error" class="chunk-hint is-error">{{ opened.error }}</div>
+                      <template v-else-if="openedData">
+                        <div class="chunk-meta">
+                          <span class="chunk-file">{{ openedData.file_name }}</span>
+                          <span v-if="openedData.page != null">第 {{ openedData.page + 1 }} 页</span>
+                          <span>第 {{ openedData.chunk_index + 1 }} 片</span>
+                          <span>{{ openedData.char_count }} 字</span>
+                          <span v-if="openedData.upload_time">{{ openedData.upload_time }}</span>
+                          <!-- 正文还在、MySQL 记录没了：如实标出来，这是「该跑重建脚本了」的信号 -->
+                          <span v-if="!openedData.document_exists" class="chunk-warn">文档记录缺失</span>
+                        </div>
+                        <pre class="chunk-content">{{ openedData.content }}</pre>
+                      </template>
+                    </template>
+                    <!-- 无切片键：QA 直击只给来源信息（答案就是气泡正文）；遗留切片只能给摘要 -->
+                    <template v-else>
+                      <div class="chunk-meta">
+                        <span class="chunk-file">{{ displayName(s) }}</span>
+                        <span v-if="s.section">{{ s.section }}</span>
+                        <span v-if="s.qa_id">QA 集 {{ s.qa_id }}</span>
+                        <span v-if="s.match_via">
+                          命中：{{ s.match_via === 'exact' ? '精确' : '语义' }}
+                          <template v-if="s.match_score != null"> {{ s.match_score.toFixed(2) }}</template>
+                        </span>
+                        <span v-if="!s.qa_id" class="chunk-warn">无引用键</span>
+                      </div>
+                      <div v-if="s.qa_id" class="chunk-hint">
+                        该答案来自人工策划的 QA 问答集{{ g.docId != null ? '，可查看原文档核对' : '（未关联到知识库文档）' }}。
+                      </div>
+                      <pre v-else class="chunk-content">{{ s.snippet }}</pre>
+                    </template>
+                  </div>
                 </div>
               </div>
             </div>
@@ -370,9 +517,9 @@ async function loadChunk(id: string): Promise<void> {
           </template>
 
           <!-- assistant 每轮详情：tokens + 耗时徽章。
-               明细浮层只在 hover「Tokens 徽章」时出现（不是整行都触发）：
-               弹窗放在徽章内部，hover 域 = 徽章 + 弹窗（间隙有桥接伪元素），
-               鼠标从徽章滑进弹窗不会中断；「耗时」徽章只是展示，不弹明细。 -->
+               两个徽章都属于「本轮明细」，hover **任一个** 都弹同一个浮层：
+               浮层是 meta-hover 的子节点（不再塞在 Tokens 徽章里），
+               所以只有耗时的老消息也能弹；间隙有桥接伪元素，鼠标滑进浮层不中断。 -->
           <div
             v-if="message.role === 'assistant' && !message.streaming && (message.usage || message.elapsed_ms)"
             class="turn-meta"
@@ -394,60 +541,75 @@ async function loadChunk(id: string): Promise<void> {
               class="meta-badge grounded-badge g-bad"
               :title="`以下论断未在检索资料中找到依据：${(message.grounded.unsupported || []).join('；') || '（详见溯源页）'}`"
             >⚠️ 依据未确认</span>
-            <div
-              v-if="message.usage"
-              class="meta-badge token-badge"
-              @mouseenter="openDetail"
-              @mouseleave="closeDetail"
-            >
+            <div class="meta-hover" @mouseenter="openDetail" @mouseleave="closeDetail">
+              <div v-if="message.usage" class="meta-badge token-badge">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" /><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" /></svg>
               Tokens: {{ message.usage.input_tokens + message.usage.output_tokens }}
               <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+            </div>
+            <span v-if="message.elapsed_ms" class="meta-badge">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
+              耗时: {{ fmtElapsed(message.elapsed_ms) }}
+            </span>
 
               <!-- CodeBuddy 式明细浮层：默认朝下；视口下方放不下时朝上（.up） -->
               <div
-                v-if="showDetail && detail"
+                v-if="showDetail && (detail || message.timings)"
                 class="usage-popover"
                 :class="{ up: detailUp }"
                 :style="popoverStyle"
               >
-                <div class="pop-head">
-                  <span>Token 消耗明细</span>
-                  <span class="pop-total">总计 {{ detail.total.toLocaleString() }}</span>
-                </div>
-                <div class="pop-row">
-                  <span class="dot" style="background: #4c8dff" /> 输入
-                  <span class="pop-val">{{ detail.input.toLocaleString() }}</span>
-                </div>
-                <div class="pop-row sub">
-                  <span class="dot" style="background: #34c77b" /> 缓存命中
-                  <span class="pop-val">{{ detail.hit.toLocaleString() }}</span>
-                </div>
-                <div class="pop-row sub">
-                  <span class="dot" style="background: #f0655a" /> 缓存未命中
-                  <span class="pop-val">{{ detail.miss.toLocaleString() }}</span>
-                </div>
-                <div class="pop-row">
-                  <span class="dot" style="background: #9d6bf0" /> 输出
-                  <span class="pop-val">{{ detail.output.toLocaleString() }}</span>
-                </div>
-                <div class="pop-rate">
-                  <div class="rate-head">⚡ 缓存命中率 <b>{{ detail.rate.toFixed(1) }}%</b></div>
-                  <div class="rate-bar">
-                    <i class="seg hit" :style="{ width: detail.hitPct + '%' }" />
-                    <i class="seg miss" :style="{ width: 100 - detail.hitPct + '%' }" />
+                <!-- 只有 usage 的消息：Token 明细；只有耗时的老消息：直接看耗时明细 -->
+                <template v-if="detail">
+                  <div class="pop-head">
+                    <span>Token 消耗明细</span>
+                    <span class="pop-total">总计 {{ detail.total.toLocaleString() }}</span>
                   </div>
-                  <div class="rate-legend">
-                    <span><i class="dot" style="background: #34c77b" />命中</span>
-                    <span><i class="dot" style="background: #f0655a" />未命中</span>
+                  <div class="pop-row">
+                    <span class="dot" style="background: #4c8dff" /> 输入
+                    <span class="pop-val">{{ detail.input.toLocaleString() }}</span>
+                  </div>
+                  <div class="pop-row sub">
+                    <span class="dot" style="background: #34c77b" /> 缓存命中
+                    <span class="pop-val">{{ detail.hit.toLocaleString() }}</span>
+                  </div>
+                  <div class="pop-row sub">
+                    <span class="dot" style="background: #f0655a" /> 缓存未命中
+                    <span class="pop-val">{{ detail.miss.toLocaleString() }}</span>
+                  </div>
+                  <div class="pop-row">
+                    <span class="dot" style="background: #9d6bf0" /> 输出
+                    <span class="pop-val">{{ detail.output.toLocaleString() }}</span>
+                  </div>
+                  <div class="pop-rate">
+                    <div class="rate-head">⚡ 缓存命中率 <b>{{ detail.rate.toFixed(1) }}%</b></div>
+                    <div class="rate-bar">
+                      <i class="seg hit" :style="{ width: detail.hitPct + '%' }" />
+                      <i class="seg miss" :style="{ width: 100 - detail.hitPct + '%' }" />
+                    </div>
+                    <div class="rate-legend">
+                      <span><i class="dot" style="background: #34c77b" />命中</span>
+                      <span><i class="dot" style="background: #f0655a" />未命中</span>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- 耗时明细：哪个阶段慢，一眼可见（尤其是生成阶段的 60s 超时重试） -->
+                <div v-if="message.timings" class="pop-rate">
+                  <div class="rate-head">⏱ 耗时明细</div>
+                  <div class="pop-row"><span>检索/改写</span><span class="pop-val">{{ fmtMs(message.timings.prepare_ms) }}</span></div>
+                  <div class="pop-row"><span>生成</span><span class="pop-val">{{ fmtMs(message.timings.generate_ms) }}</span></div>
+                  <div class="pop-row"><span>依据校验</span><span class="pop-val">{{ fmtMs(message.timings.grounded_ms) }}</span></div>
+                  <div class="pop-row"><span>总计</span><span class="pop-val">{{ fmtMs(message.timings.total_ms) }}</span></div>
+                  <div
+                    v-if="message.timings.llm_timeout_ms && (message.timings.generate_ms ?? 0) >= message.timings.llm_timeout_ms"
+                    class="chunk-hint is-error"
+                  >
+                    生成超过 {{ Math.round((message.timings.llm_timeout_ms || 0) / 1000) }}s，通常是模型请求超时后自动重试
                   </div>
                 </div>
               </div>
             </div>
-            <span v-if="message.elapsed_ms" class="meta-badge">
-              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
-              耗时: {{ (message.elapsed_ms / 1000).toFixed(1) }}s
-            </span>
           </div>
         </template>
       </div>
@@ -467,6 +629,12 @@ async function loadChunk(id: string): Promise<void> {
         </button>
       </div>
     </div>
+    <DocumentPreview
+      :open="previewOpen"
+      :doc-id="previewDocId"
+      :file-name="previewName"
+      @close="previewOpen = false"
+    />
   </div>
 </template>
 
@@ -659,7 +827,15 @@ async function loadChunk(id: string): Promise<void> {
   padding: 1px 8px;
   cursor: default;
 }
-/* Tokens 徽章是明细浮层的定位锚点与 hover 宿主 */
+/* Tokens / 耗时两枚徽章的公共 hover 宿主：浮层挂在这里，
+   hover 域 = 两枚徽章 + 浮层（间隙由 .usage-popover::before 桥接），
+   所以只有耗时的老消息也能弹出耗时明细。 */
+.meta-hover {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Tokens 徽章曾是浮层锚点，现在浮层已上移，保留相对定位只为不下沉到旧布局 */
 .token-badge {
   position: relative;
 }
@@ -890,20 +1066,62 @@ async function loadChunk(id: string): Promise<void> {
   margin-top: 6px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
-.source-item {
+/* 一份源文件 = 一个分组卡片：组头是文件名 + 唯一的「查看原文档」，
+   组内每个切片一行。这样同一个文件命中多片时不再重复文件名。 */
+.source-group {
   background: var(--bg-content);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 12px;
 }
+.source-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+}
+.source-file {
+  color: var(--text-1);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.source-group-count {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 15px;
+}
+/* 组头里的入口往右靠；margin-top 归零，垂直居中才算齐 */
+.source-group-head .doc-link {
+  margin-top: 0;
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.source-item {
+  padding: 6px 0 0;
+  font-size: 12px;
+}
+/* 组内切片之间用细分隔线，最后一个不加，免得和卡片边框叠成双线 */
+.source-item + .source-item {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
 .source-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 4px;
 }
 .source-idx {
   color: var(--primary);
@@ -939,14 +1157,6 @@ async function loadChunk(id: string): Promise<void> {
   margin-left: auto;
   color: var(--text-3);
   flex-shrink: 0;
-}
-.source-snippet {
-  color: var(--text-3);
-  line-height: 1.6;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 /* ---------- 引用反查：展开的切片全文 ---------- */
@@ -995,5 +1205,14 @@ async function loadChunk(id: string): Promise<void> {
   background: var(--bg-hover);
   border-radius: var(--radius-sm);
   padding: 8px 10px;
+}
+.doc-link {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--primary);
+  padding: 2px 0;
+}
+.doc-link:hover {
+  text-decoration: underline;
 }
 </style>

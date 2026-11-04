@@ -71,8 +71,8 @@ const { chromium } = loadPlaywright()
 const BASE = process.env.UI_BASE ?? 'http://localhost:5173'
 const SHOT_DIR = process.env.SHOT_DIR ?? '/tmp/p04b_shots'
 const HEADLESS = process.env.HEADFUL !== '1'
-const USER = process.env.ADMIN_USER ?? 'admin'
-const PASS = process.env.ADMIN_PASS ?? 'admin123'
+const USER = process.env.ADMIN_USER ?? 'wu.jing'
+const PASS = process.env.ADMIN_PASS ?? 'DevAdmin2026!Aa'
 
 const T_UI = 20_000
 /** 一次真实问答要跑意图识别 + 检索 + 重排 + LLM，给它 90 秒 */
