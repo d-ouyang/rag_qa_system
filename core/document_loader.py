@@ -285,10 +285,17 @@ class DocumentLoader:
         logger.debug("标题模式分节完成 | 小节数=%d", len(sections))
 
         # ---- 1. 短节向相邻合并（先向后找归宿，不落单）----
-        # 合并块的 header_path 取两节标题的**最深公共祖先**：
-        # 「一、发放规则」并进「二、工资条查询」的块时，谁都吞不掉谁，
-        # 诚实标注是共同父级「工资查询指引」—— 否则 enrichment 前缀会撒谎，
-        # embedding 学到「发放规则的内容叫常见问题」这种错位语义。
+        # 合并块的 header_path 取**第一块**的路径，而不是两节的公共祖先。
+        #
+        # 这一条是 p4.15 实测改的（原来是公共祖先，注释里写「诚实标注是共同父级」）。
+        # 实际效果与意图相反：制度类 md 里 150 字以下的小节极多（第五章 加班管理 145 字 +
+        # 第四章 请假管理 432 字），公共祖先一取就退到**文档级**「考勤管理制度」——
+        # 于是这一整块的 enrichment 前缀里既没有「第四章」也没有「第五章」，
+        # 二次切出来的表格片更是只剩文档名，检索时被 fixed 的同内容片完胜
+        # （实测 recall@5 0.909 → 0.640，逐题看就是这类片挂掉）。
+        #
+        # 取第一块的路径不算撒谎：strip_headers=False 让每个 H2 标题行原样留在正文里，
+        # 「## 第五章 加班管理」在片内可见；前缀只是给 embedding 一个定位锚。
         short_threshold = int(self.chunk_size * self.SHORT_SECTION_RATIO)
         blocks: list[tuple[str, str]] = []      # (header_path, section_text)
         pending_short: tuple[str, str] | None = None
@@ -299,27 +306,22 @@ class DocumentLoader:
             header_path = self._header_path_of(sec.metadata)
             if len(text) < short_threshold:
                 if blocks:
-                    # 并入上一块：header 取两节的公共祖先（内容上是延续+新话题）
+                    # 并入上一块：保留上一块的章节路径（内容上是延续 + 新话题）
                     prev_hp, prev_text = blocks[-1]
-                    blocks[-1] = (
-                        self._common_ancestor(prev_hp, header_path),
-                        f"{prev_text}\n\n{text}",
-                    )
+                    blocks[-1] = (prev_hp, f"{prev_text}\n\n{text}")
                 elif pending_short is not None:
                     # 开头连续多个短节：**累加**而不是覆盖 ——
                     # 覆盖会把前面的短节静默丢掉（v3.1.0-p3.7a 自测抓到的真 bug）
                     php, pst = pending_short
-                    pending_short = (
-                        self._common_ancestor(php, header_path),
-                        f"{pst}\n\n{text}",
-                    )
+                    pending_short = (php, f"{pst}\n\n{text}")
                 else:
                     pending_short = (header_path, text)
                 continue
             if pending_short is not None:
                 hp, st = pending_short
                 text = f"{st}\n\n{text}"
-                header_path = self._common_ancestor(hp, header_path)
+                # 同理保留短节自己的路径（它通常正是长节的上级/同级小标题）
+                header_path = hp or header_path
                 pending_short = None
             blocks.append((header_path, text))
         if pending_short is not None:
@@ -474,7 +476,33 @@ class DocumentLoader:
                 buf.append(seg_text)
                 buf_len = len(seg_text)
         flush()
-        return [p for p in pieces if p]
+        pieces = [p for p in pieces if p]
+
+        # ---- 二次切后收拾「一句话片」----
+        # 表格段开始前会 flush，于是「## 第四章 请假管理 / **第九条** 请假类型…：」
+        # 这种引导句会被甩成独立一片（35 字），紧接着才是表格片。
+        # 单独入库的引导句几乎检不到（正文只有「xxx 如下：」），却占掉候选位；
+        # 而表格片少了引导句也不自解释。所以把过短片**并给下一片**（正是表格），
+        # 末片则并给上一片；连续多个过短片先累加再并。
+        min_len = max(1, int(self.chunk_size * self.SHORT_SECTION_RATIO))
+        if len(pieces) > 1:
+            packed: list[str] = []
+            carry = ""
+            for piece in pieces:
+                if carry:
+                    piece = f"{carry}\n\n{piece}"
+                    carry = ""
+                if len(piece) < min_len:
+                    carry = f"{carry}\n\n{piece}" if carry else piece
+                    continue
+                packed.append(piece)
+            if carry:
+                if packed:
+                    packed[-1] = f"{packed[-1]}\n\n{carry}"
+                else:
+                    packed.append(carry)
+            pieces = packed
+        return pieces
 
     # ------------------------------------------------------------------ #
     # 目录 / 子目录批量加载

@@ -203,8 +203,15 @@ def main() -> int:
         full_text = "\n".join(str(d.metadata.get("content")) for d in docs_short)
         for key in ("第一节", "第二节", "第三节", "长节"):
             check(f"title：连续短节内容不丢（{key}）", key in full_text)
-        check("title：合并块 header 为公共祖先",
-              all(str(d.metadata.get("header_path")) == "指引文档" for d in docs_short),
+        # p4.15 改判：合并块的 header 不再取「公共祖先」，改为沿用第一块的路径。
+        # 原判据（公共祖先）在真库上验证出了反效果：制度类 md 里 150 字以下小标题极多，
+        # 公共祖先一取就退到文档级（「考勤管理制度」），第四章+第五章合并后
+        # enrichment 前缀里既没有第四章也没有第五章，检索被 fixed 同内容片完胜
+        # （实测 recall@5 0.909 → 0.640）。标题行本身留在正文里（strip_headers=False），
+        # 前缀只是定位锚，沿用首块路径不构成事实错误。
+        check("title：合并块 header 沿用首块路径（不再退到公共祖先）",
+              all(str(d.metadata.get("header_path")).startswith("指引文档 > 一、第一节")
+                  for d in docs_short),
               f"实际 {[str(d.metadata.get('header_path')) for d in docs_short]}")
 
         # ---- 5. 读取侧：引用反查返回原文 ----
