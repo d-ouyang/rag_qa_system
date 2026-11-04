@@ -176,6 +176,8 @@ class CrossEncoderReranker(BaseDocumentCompressor):
     # 最近一次重排的调试轨迹（P2-23）。⚠️ 共享实例上的「最近一次」口径：
     # 并发请求会互相覆盖，低并发部署下可接受（见迭代文档 §7）。
     last_trace: dict[str, Any] | None = None
+    # 最近一次重排被阈值过滤掉的候选原文（Groundedness judge 补充依据用）
+    last_rejected_docs: Any = None
 
     # CrossEncoder 不是 pydantic 能识别的标准类型，需开放任意类型
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -260,10 +262,15 @@ class CrossEncoderReranker(BaseDocumentCompressor):
             top1_before_filter = scored_all[0][1] if scored_all else None
             if self.score_threshold is not None:
                 kept = [item for item in scored if item[1] >= self.score_threshold]
+                rejected = [item for item in scored_all if item[1] < self.score_threshold]
                 filtered_count = len(scored) - len(kept)
                 scored = kept
             else:
+                rejected = []
                 filtered_count = 0
+            # 被阈值过滤的候选原文：没进回答，但仍是知识库原文，
+            # 供 Groundedness judge 作为补充依据（按分数降序）。
+            self.last_rejected_docs = [doc for doc, _ in rejected]
 
             # 调试轨迹：基于过滤前的全量分数（scored 马上要被截断，先算）
             self.last_trace = _rerank_trace(scored_all, threshold=self.score_threshold)
@@ -333,6 +340,8 @@ class SiliconFlowReranker(BaseDocumentCompressor):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     # 最近一次重排的调试轨迹（P2-23），与 CrossEncoderReranker 同口径
     last_trace: dict[str, Any] | None = None
+    # 最近一次重排被阈值过滤掉的候选原文（Groundedness judge 补充依据用）
+    last_rejected_docs: Any = None
 
     def rerank(
         self,
@@ -386,10 +395,15 @@ class SiliconFlowReranker(BaseDocumentCompressor):
             top1_before_filter = scored_all[0][1] if scored_all else None
             if self.score_threshold is not None:
                 kept = [item for item in scored if item[1] >= self.score_threshold]
+                rejected = [item for item in scored_all if item[1] < self.score_threshold]
                 filtered_count = len(scored) - len(kept)
                 scored = kept
             else:
+                rejected = []
                 filtered_count = 0
+            # 被阈值过滤的候选原文：没进回答，但仍是知识库原文，
+            # 供 Groundedness judge 作为补充依据（按分数降序）。
+            self.last_rejected_docs = [doc for doc, _ in rejected]
             self.last_trace = _rerank_trace(scored_all, threshold=self.score_threshold)
             selected = scored[:keep]
             logger.info(
@@ -842,6 +856,12 @@ class RAGRetriever:
         # —— 收益与破坏面不成比例，作为已知边界记在迭代文档 §6。
         if trace_out is not None:
             trace_out["rerank"] = self.reranker.last_trace
+            if reranked is not None:
+                # 被阈值过滤的候选原文（供 Groundedness judge 补充核对）。
+                # 挂在 trace 的独立键上——_build_qa_trace 只读 rerank/hybrid，不会落库。
+                rejected_docs = getattr(self.reranker, "last_rejected_docs", None) or []
+                if rejected_docs:
+                    trace_out.setdefault("candidate_docs", []).extend(rejected_docs)
         if reranked is None:
             # 重排不可用（模型没加载成功或打分失败）-> 降级为纯向量结果
             logger.warning("重排不可用，已降级为纯向量检索结果")

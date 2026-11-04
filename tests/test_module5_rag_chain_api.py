@@ -160,7 +160,7 @@ check("空输入按闲聊处理", empty_result.intent is Intent.CHITCHAT)
 # 第 3 组：RAG 链构建（不触发 LLM 调用）
 # --------------------------------------------------------------------------- #
 print("\n== 第 3 组：RAG 链构建 ==")
-from core.rag_chain import RAGChain, format_docs
+from core.rag_chain import RAGChain, _QA_SYSTEM_PROMPT, format_docs
 from langchain_core.documents import Document
 
 # format_docs 纯函数：不依赖任何模型
@@ -172,6 +172,11 @@ formatted = format_docs(docs)
 check("format_docs 带编号", "【资料1】" in formatted and "【资料2】" in formatted)
 check("format_docs 带来源", "/data/a.txt" in formatted)
 check("format_docs 缺来源兜底", "未知来源" in formatted)
+check("QA prompt 含数字/档位原样引用规则", "禁止改写成区间" in _QA_SYSTEM_PROMPT)
+# p4.15：防幻觉不能变成「全有或全无」——资料只到类别/部门粒度时，
+# 要求先按原粒度给出已有数据再说明缺哪一维，避免一句话「未查到」把已有数据藏起来
+check("QA prompt 含部分匹配规则", "不等于「资料里什么都没有」" in _QA_SYSTEM_PROMPT
+      and "资料缺少的是哪一维" in _QA_SYSTEM_PROMPT)
 
 # 链构建：需要向量库连接，但不联网、不调 LLM
 chain = RAGChain()

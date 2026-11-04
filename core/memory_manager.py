@@ -329,6 +329,7 @@ class MemoryManager:
         meta: dict[str, Any] | None = None,
         *,
         owner_id: int | None,
+        summarize: bool = True,
     ) -> None:
         """
         一轮问答结束后写入记忆（用户问 + AI 答，两条一起，原子语义）。
@@ -359,6 +360,14 @@ class MemoryManager:
             # 放在 append 之前，补齐的对象就是「历史遗留的稀疏数组」，
             # 补完再 append 本轮，长度恰好等于新轮数 —— 索引语义才成立。
             self._normalize_meta(snapshot)
+            # 首次提问自动生成会话标题（取首问，压平换行后截 60 字）。
+            # 只在「该会话还没有任何消息」时生效 —— 老会话已有历史，不追改；
+            # 已经设过标题（自定义或前一次）的永不覆盖。
+            if not snapshot.messages:
+                smeta = dict(snapshot.session_meta or {})
+                if not str(smeta.get("title") or "").strip():
+                    smeta["title"] = " ".join(question.split())[:60]
+                    snapshot.session_meta = smeta
             snapshot.messages.append({"role": "user", "content": question})
             snapshot.messages.append({"role": "assistant", "content": answer})
             # 元数据**必须与轮对齐**：没传 meta 的轮也占一个空位。
@@ -372,12 +381,23 @@ class MemoryManager:
             ok = self._save(session_id, snapshot, owner_id=owner_id)
         if ok:
             logger.info("记忆已更新 | session_id=%s 历史条数=%d", session_id, len(snapshot.messages))
-            # P4-10：把溢出窗口的部分增量压成摘要（锁外做——LLM 调用不该占着会话锁）
-            if self._summarizer is not None:
-                try:
-                    self._summarizer(session_id, owner_id)
-                except Exception:   # 摘要失败不能影响本轮问答（fail-open 最外层保险）
-                    logger.warning("摘要钩子异常已吞掉（不影响本轮问答）", exc_info=True)
+            # P4-10：把溢出窗口的部分增量压成摘要（锁外做——LLM 调用不该占着会话锁）。
+            # 流式路径会传 summarize=False，把这一步挪到 done 帧之后异步执行，
+            # 否则摘要的 LLM 调用会卡在「最后一个 chunk → done」之间，前端光标一直闪。
+            if summarize:
+                self.trigger_summary(session_id, owner_id=owner_id)
+
+    def trigger_summary(self, session_id: str, *, owner_id: int | None) -> None:
+        """跑一次摘要钩子（无钩子直接返回）。流式路径在 done 之后异步调用。"""
+        if self._summarizer is None:
+            return
+        try:
+            self._summarizer(session_id, owner_id)
+        except Exception:   # 摘要失败不能影响本轮问答（fail-open 最外层保险）
+            logger.warning("摘要钩子异常已吞掉（不影响本轮问答）", exc_info=True)
+
+    def has_summarizer(self) -> bool:
+        return self._summarizer is not None
 
     def clear_session(self, session_id: str, *, owner_id: int | None) -> bool:
         """

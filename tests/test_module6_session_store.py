@@ -267,6 +267,23 @@ meta = mm.update_session_meta("s1", title="报销流程", pinned=True, owner_id=
 check("更新元数据返回最新值", meta is not None and meta["pinned"] is True and meta["title"] == "报销流程")
 check("元数据持久化能读回", mm.get_session_meta("s1", owner_id=None)["title"] == "报销流程")
 
+# 首问自动标题（2026-11-03）：独立 MemoryManager，避免影响上面的会话计数断言
+mm_title = MemoryManager(
+    max_turns=3, ttl_seconds=3600,
+    store=RedisSessionStore(client=make_fake_redis(), ttl_seconds=3600),
+)
+mm_title.add_exchange("t1", "迟到早退怎么处理？", "回答", owner_id=None)
+check("首问自动成为会话标题",
+      mm_title.get_session_meta("t1", owner_id=None).get("title") == "迟到早退怎么处理？")
+mm_title.add_exchange("t1", "第二个问题", "回答2", owner_id=None)
+check("后续轮不覆盖首问标题",
+      mm_title.get_session_meta("t1", owner_id=None).get("title") == "迟到早退怎么处理？")
+mm_title.add_exchange("t2", "初始问题", "回答", owner_id=None)
+mm_title.update_session_meta("t2", title="自定义标题", owner_id=None)
+mm_title.add_exchange("t2", "第三问", "回答3", owner_id=None)
+check("自定义标题不被自动标题覆盖",
+      mm_title.get_session_meta("t2", owner_id=None).get("title") == "自定义标题")
+
 mm.truncate_session("s1", 2, owner_id=None)
 check("截断到 2 条消息", len(mm.get_messages("s1", owner_id=None)) == 2, f"实际 {len(mm.get_messages('s1', owner_id=None))}")
 check("截断同步裁元数据", len(mm.get_exchange_meta("s1", owner_id=None)) == 1)

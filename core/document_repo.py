@@ -351,6 +351,28 @@ def find_by_name(file_name: str, project_id: str = "default") -> DocumentRecord 
     return _row_to_record(row) if row else None
 
 
+def find_by_name_like(name: str, project_id: str = "default") -> DocumentRecord | None:
+    """按「项目 + 文件名包含」查最近一条。用于 QA 直击溯源按 source_doc 名称回源文档。
+
+    source_doc 是策划时写的短名（「考勤管理制度」），document.file_name 是上传时的
+    路径式名（「内部管理制度/02-考勤假期/05_考勤管理制度.md」），精确相等匹配不上，
+    所以用 LIKE 包含匹配；仍是「取最近一条」。
+    """
+    keyword = (name or "").strip()[:_MAX_FILE_NAME_LEN]
+    if not keyword:
+        return None
+    stmt = (
+        select(document_table)
+        .where(document_table.c.project_id == (project_id or "default"))
+        .where(document_table.c.file_name.like(f"%{keyword}%"))
+        .order_by(document_table.c.upload_time.desc(), document_table.c.id.desc())
+        .limit(1)
+    )
+    with session_scope() as session:
+        row = session.execute(stmt).first()
+    return _row_to_record(row) if row else None
+
+
 def list_documents(
     *,
     status: str | None = None,

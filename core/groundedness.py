@@ -44,6 +44,12 @@ _GROUNDED_SYSTEM_PROMPT = (
     '{"grounded": true 或 false, "unsupported": ["未被资料支持的论断", ...]}\n'
     "判定规则：\n"
     "- grounded=true 当且仅当答案的所有实质性论断都有资料依据；\n"
+    "- 数字、档位、期限、比例、金额必须与资料原文逐字/逐档一致："
+    "资料写「每增 1 年增 1 天」，答案写成「5-10 年 10 天」即 unsupported；\n"
+    "- 【补充候选资料】是被阈值过滤、未进入回答的检索结果，但同样是知识库原文；\n"
+    "  论断能在其中找到原文依据也算有依据；\n"
+    "- 「资料只按类别汇总 / 没有按人拆分的明细」这类**说明资料边界**的表述属于如实告知，"
+    "不是实质论断，不要计入 unsupported；只有答案给出了资料中没有的数字、档位、期限或结论才算未支撑；\n"
     "- 答案末尾的「依据：…」引用行不算论断，忽略它；\n"
     "- 拿不准的论断按 unsupported 处理（宁可误报不可漏报）；\n"
     "- unsupported 为空列表时 grounded 必须为 true，反之亦然。"
@@ -85,7 +91,7 @@ def append_groundedness_correction(answer: str, grounded: dict[str, Any] | None)
     unsupported = [str(x) for x in (grounded.get("unsupported") or []) if str(x).strip()]
     lines = [
         "---",
-        "⚠️ **依据校验：以上回答未能在检索资料中找到依据，请勿采信。**",
+        "⚠️ **依据校验：以下论断未能在检索资料中找到依据，请勿采信。**",
     ]
     if unsupported:
         lines.append("未能找到依据的论断：" + "；".join(unsupported) + "。")
@@ -96,10 +102,18 @@ def append_groundedness_correction(answer: str, grounded: dict[str, Any] | None)
 
 
 def check_groundedness(
-    *, question: str, context: str, answer: str
+    *,
+    question: str,
+    context: str,
+    answer: str,
+    candidate_context: str | None = None,
 ) -> dict[str, Any]:
     """
     依据比对。返回 `{"grounded": bool | None, "unsupported": list[str], "note": str}`。
+
+    :param candidate_context: 被阈值过滤、未进入回答的候选原文（top-N）。
+        它们同样是知识库原文，作为补充依据交给 judge —— 避免「本轮只召回一条
+        表头切片、细节在另一条被过滤的切片里」时把正确答案误判成无依据。
 
     grounded=None 表示**未判定**（调用失败 / 输出无法解析）——fail-open，
     调用方照常落库与展示，只是没有通过/未通过的标记。
@@ -107,13 +121,22 @@ def check_groundedness(
     from core.rag_chain import get_llm_client  # 局部导入避免环（rag_chain 导入本模块）
 
     result: dict[str, Any] = {"grounded": None, "unsupported": [], "note": ""}
+    # 可观测：judge 到底看到了多少段「被阈值过滤的候选原文」。
+    # 这是「阈值 0.1 以下的答案细节有没有进 judge」的唯一实证，排查误报时先看这条。
+    result["candidate_count"] = candidate_context.count("【候选") if candidate_context else 0
+    logger.info(
+        "依据校验输入 | 候选资料=%d 段 | 检索上下文=%d 字 | 答案=%d 字",
+        result["candidate_count"], len(context or ""), len(answer or ""),
+    )
     try:
         llm = get_llm_client().get_llm()
         prompt = (
             f"【用户问题】\n{question}\n\n"
             f"【检索资料】\n{context}\n\n"
-            f"【候选答案】\n{answer}"
         )
+        if candidate_context:
+            prompt += f"【补充候选资料（未进入回答，仅供核对依据）】\n{candidate_context}\n\n"
+        prompt += f"【候选答案】\n{answer}"
         message = llm.invoke(_GROUNDED_SYSTEM_PROMPT + "\n\n" + prompt)
         text = str(message.content).strip()
         # 剥掉模型偶尔裹的 ```json 围栏

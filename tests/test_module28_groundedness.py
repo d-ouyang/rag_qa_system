@@ -63,9 +63,11 @@ class _ScriptedJudgeLLM:
         self.outputs = list(outputs)
         self.exc = exc
         self.calls = 0
+        self.prompts: list[str] = []
 
     def invoke(self, _pv):
         self.calls += 1
+        self.prompts.append(str(_pv))
         if self.exc is not None:
             raise self.exc
         return SimpleNamespace(content=self.outputs.pop(0), usage_metadata=None)
@@ -99,11 +101,29 @@ try:
     r = rcmod.check_groundedness(**_KW)
     check("裸 JSON 解析：grounded=False", r["grounded"] is False)
     check("unsupported 提取", r["unsupported"] == ["病假1天内不扣工资"])
+    check("judge prompt 含数字/档位逐字规则", "逐字/逐档" in llm.prompts[0])
+    # p4.15：答案按原粒度给出数据后，会附一句「资料只到类别粒度 / 没有按人拆分」。
+    # 这类「说明资料边界」的表述必须排除在 unsupported 之外，否则新规则产出的
+    # 正确答案会被判成「依据未确认」——白改
+    check("judge prompt 排除「说明资料边界」的表述",
+          "说明资料边界" in llm.prompts[0] and "不要计入 unsupported" in llm.prompts[0])
 
     # 1b. 代码块围栏
     llm.outputs = ['```json\n{"grounded": true, "unsupported": []}\n```']
     r = rcmod.check_groundedness(**_KW)
     check("代码块围栏剥掉后解析成功", r["grounded"] is True and r["unsupported"] == [])
+
+    # 1b-2. 候选上下文（被阈值过滤的原文）必须进入 judge prompt
+    llm.outputs = ['{"grounded": true, "unsupported": []}']
+    r = rcmod.check_groundedness(
+        **_KW,
+        candidate_context="【候选1】（来源：员工手册摘要）\n入职满1年5天起，司龄每增1年增1天",
+    )
+    last_prompt = llm.prompts[-1]
+    section = "【补充候选资料（未进入回答，仅供核对依据）】"
+    check("候选上下文进入 judge prompt",
+          section in last_prompt and "入职满1年5天起" in last_prompt)
+    check("无候选时 prompt 不出现该分区", section not in llm.prompts[0])
 
     # 1c. 口径矛盾（grounded=true 却有 unsupported）→ 保守按 false
     llm.outputs = ['{"grounded": true, "unsupported": ["某论断"]}']

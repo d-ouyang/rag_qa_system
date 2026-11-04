@@ -147,6 +147,20 @@ def _sanitize_rewrite(rewritten: str, original: str) -> str:
     if has_declarative and not ends_question:
         logger.warning("重写输出为陈述句（疑似作答），回退原问题 | 原问题=%.24s 输出=%.32s", original, text)
         return original
+    # 作答形态（补强）：含冒号但不像问句（「具体如下：」「5年以下：5天」），
+    # 或出现列举词 —— 都是答案，不是问题。实测 Qwen2.5-7B 会把编号查询
+    # 改写成「年假的天数根据司龄确定，具体如下：」这种答案体。
+    if ("：" in text or ":" in text) and not ends_question:
+        logger.warning("重写输出含冒号陈述/枚举，回退原问题 | 原问题=%.24s 输出=%.32s", original, text)
+        return original
+    if any(m in text for m in ("如下", "包括", "分别为")):
+        logger.warning("重写输出含列举词（疑似作答），回退原问题 | 原问题=%.24s 输出=%.32s", original, text)
+        return original
+    # 精确实体保留：原问题里的编号 / 长数字 / 引号名，改写结果里必须还在。
+    ids = _IDENTIFIER_RE.findall(original)
+    if ids and not all(i in text for i in ids):
+        logger.warning("重写丢失精确实体，回退原问题 | 原问题=%.24s 输出=%.32s", original, text)
+        return original
     return text
 
 
@@ -175,6 +189,20 @@ _QUESTION_MARKS: tuple[str, ...] = (
 _PARALLEL_MARKS: tuple[str, ...] = (
     "以及", "另外", "还有", "同时", "并且", "而且", ";", "；", "且",
 )
+
+
+#: 精确标识：文件编号（GQ-HR-2026-006）、长数字、引号内的精确名称。
+#: 这类查询靠 BM25 字面命中最好，改写只会把它扩写成一段话、毁掉命中。
+_IDENTIFIER_RE = re.compile(
+    r"[A-Z]{2,}[A-Z0-9]*(?:-[A-Z0-9]+){2,}"
+    r"|\b\d{4,}\b"
+    r"|「[^」]{2,}」"
+    r"|\"[^\"]{2,}\""
+)
+
+
+def _looks_identifier(question: str) -> bool:
+    return bool(_IDENTIFIER_RE.search(question or ""))
 
 
 def _looks_compound(question: str) -> bool:
@@ -276,6 +304,34 @@ def rewrite_query(
     return " ".join(rewrite_to_sub_queries(question, chat_history, llm=llm))
 
 
+#: 零召回兜底用的「严格改写」提示词：强调沿用上一问的意图、保留实体。
+_STRICT_REWRITE_SYSTEM_PROMPT = (
+    "你是问题改写专家。给定对话历史和用户的最新问题。最新问题可能省略了主题或意图。\n"
+    "请结合历史里**上一问的意图**（在问天数、流程、材料、条件、金额还是时间），"
+    "把最新问题改写成 1~3 个独立、可直接检索的子问题。\n"
+    "硬性要求：\n"
+    "- 保留所有主题词、数字、编号、专名；\n"
+    "- 只输出问题本身，每行一个，不要回答、不要解释、不要列举答案；\n"
+    "- 如果最新问题已经独立完整，原样返回。"
+)
+
+
+def _rewrite_strict(
+    question: str, chat_history: list[Any] | None = None, llm: Any = None
+) -> list[str]:
+    """零召回时的二次改写（只用上一问的意图，避免完整回答把模型带偏）。"""
+    llm = llm or get_llm_client().get_llm()
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", _STRICT_REWRITE_SYSTEM_PROMPT),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ])
+    message = (prompt | llm).invoke(
+        {"input": question, "chat_history": list(chat_history or [])}
+    )
+    return _sub_queries_from(str(message.content), question)
+
+
 def generate_hypo_answer(question: str) -> str:
     """
     为 HyDE 生成「假设答案」文本，用其 embedding 去做向量召回。
@@ -305,15 +361,23 @@ _QA_SYSTEM_PROMPT = (
     "——即使你觉得答案显而易见；\n"
     "2. 制度 / 规则 / 流程类问题，如果资料中没有明确规定，必须回答"
     "「根据现有制度未查到相关规定，请补充对应制度文档或联系人力资源部门确认」，禁止推测；\n"
-    "3. {intent_instruction}\n"
-    "4. 如果资料与问题无关，忽略资料并如实告知。\n"
-    "5. 不要输出任何乱码、特殊符号或者不连贯的句子。\n"
-    "6. 回答引用了资料中的具体条款时，在答案末尾另起一行列出依据，"
-    "格式：「依据：文件名 第X条」（多个依据用顿号分隔）；"
-    "「未查到」类回答不加此行。\n"
-    "7. 用户的问题包含多个子问题时，分子问题组织回答（每个子问题一小节）；"
+    "3. 但「资料里没有明确规定」不等于「资料里什么都没有」——资料中有同类但不完全对应的数据时"
+    "（例如问「某个对象 / 某个人的明细」而资料只到类别粒度，问「按人」而资料只到「按部门 / 按季度」），"
+    "不要直接回答「未查到」：先用资料的原粒度把已有数据完整列出来（数字照抄），"
+    "再另起一句如实说明资料缺少的是哪一维（例如「资料只按费用类别汇总，没有按讲师拆分的明细」）。"
+    "只有资料与问题完全无关时才用第 2 条的话术；\n"
+    "4. {intent_instruction}\n"
+    "5. 如果资料与问题无关，忽略资料并如实告知。\n"
+    "6. 不要输出任何乱码、特殊符号或者不连贯的句子。\n"
+    "7. 不要在答案正文里写「依据：…」这类引用行；引用资料由界面在答案下方单独展示。\n"
+    "8. 用户的问题包含多个子问题时，分子问题组织回答（每个子问题一小节）；"
     "任一子问题在资料中找不到依据的，在该子问题下明确说明「根据现有制度未查到相关规定」，"
-    "不要把多个子问题混在一起含糊作答。\n\n"
+    "不要把多个子问题混在一起含糊作答。\n"
+    "9. 涉及数字、档位、期限、比例、金额时，必须原样引用资料中的表述，"
+    "禁止改写成区间、档位或近似值（资料写「按司龄每增 1 年增 1 天」就照写，"
+    "不要写成「5 年以下 5 天 / 5-10 年 10 天」）；资料没有的数字不许补充。\n"
+    "10. 资料按级别、情形或对象分别规定时，按类别完整列出，"
+    "不要因为不是单一数值就说「未查到」或「没有统一规定」。\n\n"
     "检索到的资料：\n{context}"
 )
 
@@ -431,18 +495,191 @@ def _resolve_chunk_id(metadata: dict[str, Any]) -> str | None:
     return build_chunk_id(doc_id, chunk_index)
 
 
+def _doc_id_from_chunk_id(chunk_id: str | None) -> int | None:
+    """从 `<doc_id>:<chunk_index>` 里取 doc_id（P4.14+ 溯源回源文档用）。"""
+    if not chunk_id or ":" not in chunk_id:
+        return None
+    head = chunk_id.split(":", 1)[0]
+    return int(head) if head.isdigit() else None
+
+
+def _summarize_async(memory: MemoryManager, session_id: str, owner_id: int | None) -> None:
+    """把 P4-10 摘要钩子放到守护线程：LLM 调用不阻塞「用户看到结果」。
+
+    流式路径在 done 之后调用（响应立即关闭）；同步/缓存路径在返回前启动，
+    不等待摘要完成。失败只记日志（fail-open）。
+    """
+    if not memory.has_summarizer():
+        return
+    threading.Thread(
+        target=memory.trigger_summary,
+        args=(session_id,),
+        kwargs={"owner_id": owner_id},
+        daemon=True,
+    ).start()
+
+
 def format_docs(docs: list[Document]) -> str:
     """
     把检索到的文档片段格式化成注入 prompt 的 context 文本。
 
     带编号和来源：模型可以据此组织回答，人也方便在日志里对照
     「模型看到的资料」和「接口返回的 sources」是不是同一份。
+
+    P4.14+：标签里补「文件：<原始文件名>」与正文中的「文件编号：…」。
+    之前只给落盘路径（uuid），模型看不到文件名，依据行只能写「资料1」；
+    补上这两个标签后，「依据：文件名 第X条」才有可写的东西。
     """
     blocks: list[str] = []
     for index, doc in enumerate(docs, start=1):
-        source = doc.metadata.get("source", "未知来源")
-        blocks.append(f"【资料{index}】（来源：{source}）\n{doc.page_content}")
+        md = doc.metadata or {}
+        source = md.get("source", "未知来源")
+        file_name = md.get("file_name")
+        label = f"文件：{file_name}；" if file_name else ""
+        m = re.search(r"文件编号[:：]\s*([A-Za-z0-9\-]+)", doc.page_content)
+        if m:
+            label += f"编号：{m.group(1)}；"
+        blocks.append(f"【资料{index}】（{label}来源：{source}）\n{doc.page_content}")
     return "\n\n".join(blocks)
+
+
+def _dedupe_candidate_docs(docs: list[Any], limit: int = 10) -> list[Document]:
+    """被阈值过滤的候选原文：去重后取前 N 条（调用方已按重排分降序）。
+
+    去重键优先 chunk_id；老切片没有 chunk_id 时退化为 source + chunk_index + 内容哈希。
+    """
+    seen: set[str] = set()
+    out: list[Document] = []
+    for doc in docs:
+        md = doc.metadata or {}
+        key = str(
+            md.get("chunk_id")
+            or f"{md.get('source', '')}#{md.get('chunk_index', '')}#{hash(doc.page_content)}"
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(doc)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _format_candidate_docs(docs: list[Document]) -> str:
+    """把「被阈值过滤的候选」格式成 judge 用的补充资料（与正式资料分区标注）。"""
+    blocks: list[str] = []
+    for i, doc in enumerate(docs, start=1):
+        md = doc.metadata or {}
+        src = md.get("file_name") or md.get("source") or "未知来源"
+        blocks.append(f"【候选{i}】（来源：{src}，未进入回答）\n{doc.page_content}")
+    return "\n\n".join(blocks)
+
+
+# --------------------------------------------------------------------------- #
+# 双路检索（改写路 + 原问题路）的合并 / 回退
+# --------------------------------------------------------------------------- #
+def _doc_key(doc: Document) -> str:
+    md = doc.metadata or {}
+    return str(
+        md.get("chunk_id")
+        or f"{md.get('source', '')}#{md.get('chunk_index', '')}#{hash(doc.page_content)}"
+    )
+
+
+def _doc_score(doc: Document) -> float:
+    v = (doc.metadata or {}).get("rerank_score")
+    return float(v) if isinstance(v, (int, float)) else 0.0
+
+
+def _merge_rerank(
+    primary: dict[str, Any] | None, extra: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """合并两路的重排轨迹：候选按 chunk_id 去重、保留更高分、top1 取两者最大。"""
+    if not primary:
+        return extra
+    if not extra:
+        return primary
+    merged: dict[str, dict[str, Any]] = {}
+    for c in list(primary.get("candidates") or []) + list(extra.get("candidates") or []):
+        key = str(c.get("chunk_id") or f"{c.get('file_name')}#{c.get('rerank_score')}")
+        prev = merged.get(key)
+        if prev is None or (c.get("rerank_score") or 0) > (prev.get("rerank_score") or 0):
+            merged[key] = dict(c)
+    candidates = sorted(
+        merged.values(), key=lambda c: c.get("rerank_score") or 0, reverse=True
+    )[:20]
+    top1s = [
+        x for x in (primary.get("top1_before_filter"), extra.get("top1_before_filter"))
+        if isinstance(x, (int, float))
+    ]
+    threshold = primary.get("threshold")
+    if threshold is None:
+        threshold = extra.get("threshold")
+    return {
+        "candidates": candidates,
+        "threshold": threshold,
+        "top1_before_filter": max(top1s) if top1s else None,
+        "filtered_count": sum(1 for c in candidates if not c.get("passed_threshold")),
+        "dual": True,
+    }
+
+
+def _merge_retrieval(
+    primary_docs: list[Document],
+    primary_trace: dict[str, Any] | None,
+    extra_docs: list[Document],
+    extra_trace: dict[str, Any] | None,
+    limit: int = 5,
+) -> tuple[list[Document], dict[str, Any]]:
+    """双路检索合并：按 chunk_id 去重、保留更高重排分、按分数取前 limit 条。"""
+    merged: dict[str, Document] = {}
+    for doc in list(primary_docs) + list(extra_docs):
+        key = _doc_key(doc)
+        prev = merged.get(key)
+        if prev is None or _doc_score(doc) > _doc_score(prev):
+            merged[key] = doc
+    docs = sorted(merged.values(), key=_doc_score, reverse=True)[:limit]
+    trace: dict[str, Any] = dict(primary_trace or {})
+    trace["rerank"] = _merge_rerank(
+        (primary_trace or {}).get("rerank"), (extra_trace or {}).get("rerank")
+    )
+    if not trace.get("hybrid"):
+        trace["hybrid"] = (extra_trace or {}).get("hybrid")
+    cand = _dedupe_candidate_docs(
+        list((primary_trace or {}).get("candidate_docs") or [])
+        + list((extra_trace or {}).get("candidate_docs") or [])
+    )
+    if cand:
+        trace["candidate_docs"] = cand
+    return docs, trace
+
+
+def _reconcile_dual(
+    primary_docs: list[Document],
+    primary_trace: dict[str, Any] | None,
+    fallback_docs: list[Document],
+    fallback_trace: dict[str, Any] | None,
+    question: str,
+    primary_queries: list[str],
+    primary_standalone: str,
+) -> tuple[list[Document], dict[str, Any] | None, str, list[str], bool, bool]:
+    """双路检索的裁决：合并 / 回退原问题 / 保持原样。
+
+    返回 (docs, trace, standalone, sub_queries, dual_used, fallback_used)。
+    """
+    if not primary_docs and not fallback_docs:
+        return primary_docs, primary_trace, primary_standalone, primary_queries, False, False
+    if not primary_docs:
+        logger.info("改写查询零召回，回退原问题检索 | q=%.32s", question)
+        return fallback_docs, fallback_trace, question, [question], False, True
+    if not fallback_docs:
+        return primary_docs, primary_trace, primary_standalone, primary_queries, False, False
+    docs, trace = _merge_retrieval(primary_docs, primary_trace, fallback_docs, fallback_trace)
+    logger.info(
+        "双路检索合并 | 改写=%d 原文=%d 合并=%d",
+        len(primary_docs), len(fallback_docs), len(docs),
+    )
+    return docs, trace, primary_standalone, primary_queries, True, False
 
 
 def _has_chat_history(inputs: dict[str, Any]) -> bool:
@@ -648,22 +885,50 @@ def _build_qa_trace(
     return trace
 
 
+_QA_DOC_ID_CACHE: dict[str, int | None] = {}
+
+
+def _resolve_doc_id_by_name(name: str) -> int | None:
+    """按 QA 条目的 source_doc 名称映射 document 表（LIKE file_name），进程内缓存。
+
+    映射不到返回 None（前端据此不显示「查看原文档」），绝不挡回答。
+    """
+    key = (name or "").strip()
+    if not key:
+        return None
+    if key in _QA_DOC_ID_CACHE:
+        return _QA_DOC_ID_CACHE[key]
+    doc_id: int | None = None
+    try:
+        from core import document_repo
+
+        rec = document_repo.find_by_name_like(key)
+        doc_id = rec.doc_id if rec else None
+    except Exception:
+        logger.warning("QA 直击按名解析 doc_id 失败（不影响回答）| name=%s", key, exc_info=True)
+    _QA_DOC_ID_CACHE[key] = doc_id
+    return doc_id
+
+
 def _qa_hit_sources(hit: dict[str, Any]) -> list[dict[str, Any]]:
     """
     QA 直击轮的溯源列表：标准答案来自 QA 集（策划资产），不是检索切片，
     因此没有 chunk_id / rerank_score —— 用 qa_id + 命中方式 + 分数代替，
     溯源页据此显示「这条答案来自 QA 集，不是模型生成的」。
+
+    doc_id：QA 条目只记录 source_doc 名称（如「考勤管理制度」），按名映射
+    document 表后带出，前端据此提供「查看原文档」。
     """
     entry = hit["entry"]
     return [
         {
             # ⚠️ index/chunk_id 是接口层 SourceItem 的契约字段（api/routes/qa.py）：
-            # index 必填；chunk_id=None → 前端把引用渲染成不可点击的纯文本
-            # （直击答案来自 QA 集，没有切片可反查）。
-            # qa_id 等附加键会被 response_model 静默丢弃，溯源信息以 qa_trace 为准。
+            # index 必填；chunk_id=None → 直击答案没有切片可反查。
             "index": 1,
             "chunk_id": None,
+            "doc_id": _resolve_doc_id_by_name(entry.source_doc or ""),
             "source": entry.source_doc or "QA 问答集",
+            "file_name": entry.source_doc or None,
             "snippet": entry.answer[:200],
             "qa_id": entry.id,
             "section": entry.source_section or None,
@@ -896,14 +1161,25 @@ class RAGChain:
         # P4-9：复合问题在**首轮**就会出现（无历史），不能依赖「有历史才改写」。
         # 零成本预检 → 触发改写/分解（真正的分解由改写模型按行输出，不是按符号切）。
         looks_compound = _looks_compound(question)
-        should_rewrite = bool(chat_history) or enhance_on or looks_compound
+        # 精确标识查询（文件编号 / 长数字 / 引号内名称）跳过改写：
+        # 改写模型很容易把它扩写成一段话，反而毁掉 BM25 的字面命中。
+        # 含指代的问句（「那 GQ-... 呢」）仍走改写。
+        skip_rewrite = _looks_identifier(question) and not looks_anaphoric(question)
+        should_rewrite = (
+            (not skip_rewrite)
+            and (bool(chat_history) or enhance_on or looks_compound)
+        )
+        if skip_rewrite:
+            logger.info("识别为精确标识查询，跳过改写 | q=%.32s", question)
 
-        # P4-5：本次调用的检索轨迹（按请求一份），随轮落库做流程回溯
-        trace: dict[str, Any] = {}
+        # P4-5：本次调用的检索轨迹（按请求一份），随轮落库做流程回溯。
+        # spec_trace 专属于「原问题」的投机检索；改写变化时另开 trace，
+        # 原问题那条路仍保留 —— 它就是双路检索的第二条路。
+        spec_trace: dict[str, Any] = {}
         intent_future = _PIPELINE_EXECUTOR.submit(classifier.classify, question)
         # 投机检索用原问题（与改写并行；改写无变化时复用其结果，与原行为一致）
         retrieve_future = _PIPELINE_EXECUTOR.submit(
-            retriever.retrieve, question, trace_out=trace
+            retriever.retrieve, question, trace_out=spec_trace
         )
         rewrite_future = (
             _PIPELINE_EXECUTOR.submit(self._rewrite_question, question, chat_history)
@@ -918,6 +1194,8 @@ class RAGChain:
 
         rewrite_usage = _usage_zero()
         vector_query: str | None = None
+        used_dual = False
+        used_fallback = False
         if rewrite_future is not None:
             sub_queries, rewrite_usage = rewrite_future.result()
             standalone = " / ".join(sub_queries)   # 展示口径：多个子查询一并可见
@@ -926,22 +1204,56 @@ class RAGChain:
                 vector_query = generate_hypo_answer(sub_queries[0])
             if sub_queries == [question] and not hyde_on:
                 # 改写无变化 → 复用投机结果（省 ~1s 检索+重排）
-                docs: list[Document] = retrieve_future.result()
+                docs = retrieve_future.result()
+                trace = spec_trace
             elif len(sub_queries) == 1:
-                # 单子查询：与旧行为一致，重新检索并换新轨迹
+                # 单子查询：重新检索；再与原问题路做双路合并/回退
                 trace = {}
                 docs = retriever.retrieve(
                     sub_queries[0], vector_query=vector_query, trace_out=trace
+                )
+                docs, trace, standalone, sub_queries, used_dual, used_fallback = _reconcile_dual(
+                    docs, trace, retrieve_future.result(), spec_trace,
+                    question, sub_queries, standalone,
                 )
             else:
                 # P4-9 复合问题：每个子查询各检索一路，候选池去重合并
                 trace = {}
                 docs = self._multi_retrieve(sub_queries, trace)
+                docs, trace, standalone, sub_queries, used_dual, used_fallback = _reconcile_dual(
+                    docs, trace, retrieve_future.result(), spec_trace,
+                    question, sub_queries, standalone,
+                )
         else:
             sub_queries = [question]
             standalone = question
             docs = retrieve_future.result()
+            trace = spec_trace
 
+        # 零召回兜底：改写路与原问题路都没召回时，用「严格改写」再试一次。
+        # 只对含指代的追问做（独立问句严格改写会原样返回，没必要多花一次 LLM）。
+        if not docs and rewrite_future is not None and looks_anaphoric(question):
+            retry_queries = _rewrite_strict(question, chat_history, llm=self.llm_client.get_llm())
+            if retry_queries and retry_queries != [question]:
+                logger.info(
+                    "双路检索均零召回，严格改写重试 | q=%.32s -> %.48s",
+                    question, " / ".join(retry_queries),
+                )
+                trace = {}
+                if len(retry_queries) == 1:
+                    docs = retriever.retrieve(retry_queries[0], trace_out=trace)
+                else:
+                    docs = self._multi_retrieve(retry_queries, trace)
+                if docs:
+                    sub_queries = retry_queries
+                    standalone = " / ".join(retry_queries)
+                    used_fallback = True
+
+        # 被阈值过滤的候选原文：给 Groundedness judge 补充依据。
+        # pop 出来而不是留在 trace 里 —— 它含 Document 对象，不该随轨迹落库。
+        judge_docs = _dedupe_candidate_docs(
+            trace.pop("candidate_docs", []) if isinstance(trace, dict) else []
+        )
         return intent_result, {
             "standalone_question": standalone,
             "sub_queries": sub_queries,    # P4-9：本轮实际检索的子查询（1~3 个）
@@ -950,6 +1262,9 @@ class RAGChain:
             "rewrite_usage": rewrite_usage,
             "vector_query": vector_query,  # HyDE 假设答案；None = 未启用
             "retrieval_trace": trace,      # P4-5：本次检索轨迹（rerank / hybrid 两段）
+            "judge_docs": judge_docs,      # 被拒候选原文（仅 judge 用，不落库/不下发）
+            "dual_used": used_dual,        # 改写路 + 原问题路都召回并合并
+            "fallback_used": used_fallback,  # 改写/双路零召回后回退（原问题或严格改写）
         }
 
     def _multi_retrieve(
@@ -1097,9 +1412,14 @@ class RAGChain:
             # 摘要优先取 metadata["content"] 原文，别让路径前缀占掉 200 字配额。
             stored_meta = metadata if isinstance(metadata, dict) else {}
             snippet_source = stored_meta.get("content") or doc.page_content
+            chunk_id = _resolve_chunk_id(metadata)
+            doc_id = _doc_id_from_chunk_id(chunk_id)
+            if doc_id is None and str(metadata.get("doc_id") or "").isdigit():
+                doc_id = int(metadata["doc_id"])
             sources.append({
                 "index": index,
-                "chunk_id": _resolve_chunk_id(metadata),
+                "chunk_id": chunk_id,
+                "doc_id": doc_id,
                 "source": source,
                 "file_name": file_name,
                 "snippet": snippet_source[:200],
@@ -1148,9 +1468,10 @@ class RAGChain:
         }
         if persist:
             self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
-                                     owner_id=owner_id)
+                                     owner_id=owner_id, summarize=False)
             # P4-5b：缓存命中轮同样镜像进分析表（decision=cache_hit，无检索细节）
             _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
+            _summarize_async(self.memory, session_id, owner_id)
         logger.info(
             "问答缓存复用 | session_id=%s 耗时=%.0fms | query=%.24s",
             session_id, elapsed_ms, question,
@@ -1362,6 +1683,9 @@ class RAGChain:
                     question=question,
                     context=prepared["context"],
                     answer=answer,
+                    candidate_context=_format_candidate_docs(
+                        prepared.get("judge_docs") or []
+                    ) or None,
                 )
         # P4-6b：依据校验未通过 / 模型自认未查到 → 据实更正。
         # 追加更正块而不是静默替换：答案已流式流出，撤回做不到；
@@ -1397,13 +1721,17 @@ class RAGChain:
             exchange_meta["qa_trace"]["qa_id"] = qa_hit["entry"].id
             exchange_meta["qa_trace"]["qa_match_via"] = qa_hit["via"]
             exchange_meta["qa_trace"]["qa_match_score"] = qa_hit["score"]
+        if prepared is not None:
+            # 双路检索/零召回回退的可观测标记（溯源页/日志可据此区分）
+            exchange_meta["qa_trace"]["dual_used"] = bool(prepared.get("dual_used"))
+            exchange_meta["qa_trace"]["fallback_used"] = bool(prepared.get("fallback_used"))
         if grounded is not None:
             # 依据校验结果同时写进轨迹（镜像表经 _TRACE_KEYS 透传到 grounded/unsupported 列）
             exchange_meta["qa_trace"]["grounded"] = grounded.get("grounded")
             exchange_meta["qa_trace"]["unsupported"] = grounded.get("unsupported") or []
         if persist:
             self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
-                                     owner_id=owner_id)
+                                     owner_id=owner_id, summarize=False)
             # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
             _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
             self._maybe_store_cache(question, result, bool(chat_history))
@@ -1413,6 +1741,7 @@ class RAGChain:
                 session_id, usage["input_tokens"], usage["output_tokens"],
                 usage["cache_read_tokens"], owner_id=owner_id,
             )
+            _summarize_async(self.memory, session_id, owner_id)
 
         result["session_id"] = session_id
         result["elapsed_ms"] = elapsed_ms
@@ -1484,6 +1813,7 @@ class RAGChain:
             )
             prepared = None
             qa_sources = _qa_hit_sources(qa_hit)
+        t_prepared = time.perf_counter()
         llm = self.llm_client.get_llm()
         usage = _usage_zero()
 
@@ -1562,7 +1892,7 @@ class RAGChain:
                     yield {"type": "chunk", "content": text}
                 answer = "".join(answer_parts)
 
-        elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+        t_generated = time.perf_counter()
         # 每轮详情随轮写入记忆（同 query 口径），历史接口按轮回填
         # 溯源只算一次：add_exchange / _maybe_store_cache / qa_trace 三处共用
         sources = (
@@ -1592,6 +1922,9 @@ class RAGChain:
                     question=question,
                     context=prepared["context"],
                     answer=answer,
+                    candidate_context=_format_candidate_docs(
+                        prepared.get("judge_docs") or []
+                    ) or None,
                 )
                 # 校验结果作为独立帧下发（答案已流出，不撤回，只挂标记）
                 yield {
@@ -1609,6 +1942,19 @@ class RAGChain:
             correction = append_groundedness_correction("", grounded).strip()
             answer = (answer.rstrip() + "\n\n" + correction) if answer else correction
             yield {"type": "chunk", "content": "\n\n" + correction}
+        t_grounded = time.perf_counter()
+        total_ms = round((time.perf_counter() - start) * 1000, 1)
+        # 耗时明细（前端可展示「检索/改写 / 生成 / 依据校验 / 其他」）：
+        # 特别是生成阶段，provider 60s 超时重试会在这里显形，而不是只看到一个总数。
+        timings = {
+            "prepare_ms": round((t_prepared - start) * 1000, 1),
+            "generate_ms": round((t_generated - t_prepared) * 1000, 1),
+            "grounded_ms": round((t_grounded - t_generated) * 1000, 1),
+            "other_ms": max(0.0, round(total_ms - (t_grounded - start) * 1000, 1)),
+            "total_ms": total_ms,
+            # 生成阶段超过这个值，基本就是 provider 超时后自动重试（前端据此提示）
+            "llm_timeout_ms": int(settings.LLM_TIMEOUT * 1000),
+        }
         exchange_meta = {
             "sources": sources,
             "intent": intent_result.intent.value,
@@ -1618,7 +1964,7 @@ class RAGChain:
                 else None if prepared is None else prepared["standalone_question"]
             ),
             "usage": dict(usage),
-            "elapsed_ms": elapsed_ms,
+            "elapsed_ms": total_ms,
             "ts": time.time(),
             "cache_hit": False,
             # P4-6：依据校验与低置信徽标（前端据此后挂警示标记）
@@ -1626,19 +1972,26 @@ class RAGChain:
             "grounded": grounded,
             # 流程回溯轨迹（P4-5）：随 turn_meta 落库，刷新后仍可回看整条链路
             "qa_trace": _build_qa_trace(
-                question, intent_result, prepared, decision, elapsed_ms, len(sources),
+                question, intent_result, prepared, decision, total_ms, len(sources),
             ),
+            "timings": timings,
         }
         if qa_hit is not None:
             # 直击轮附加命中元数据（与 query() 同口径）
             exchange_meta["qa_trace"]["qa_id"] = qa_hit["entry"].id
             exchange_meta["qa_trace"]["qa_match_via"] = qa_hit["via"]
             exchange_meta["qa_trace"]["qa_match_score"] = qa_hit["score"]
+        if prepared is not None:
+            # 双路检索/零召回回退的可观测标记（溯源页/日志可据此区分）
+            exchange_meta["qa_trace"]["dual_used"] = bool(prepared.get("dual_used"))
+            exchange_meta["qa_trace"]["fallback_used"] = bool(prepared.get("fallback_used"))
         if grounded is not None:
             exchange_meta["qa_trace"]["grounded"] = grounded.get("grounded")
             exchange_meta["qa_trace"]["unsupported"] = grounded.get("unsupported") or []
+        # summarize=False：摘要钩子是 LLM 调用，不能卡在 done 之前（否则前端光标
+        # 在最后一个字之后还要空转数秒）。done 帧发出后再用守护线程补跑。
         self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
-                                 owner_id=owner_id)
+                                 owner_id=owner_id, summarize=False)
         # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
         _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
         self._maybe_store_cache(
@@ -1664,18 +2017,21 @@ class RAGChain:
             "流式问答完成 | session_id=%s 意图=%s 耗时=%.0fms tokens=%d+%d | query=%.24s",
             session_id,
             intent_result.intent.value,
-            elapsed_ms,
+            total_ms,
             usage["input_tokens"],
             usage["output_tokens"],
             question,
         )
-        # done 帧：本次用量 + 会话累计，前端据此展示 token 统计
+        # done 帧：本次用量 + 会话累计，前端据此展示 token 统计与耗时明细
         yield {
             "type": "done",
-            "elapsed_ms": elapsed_ms,
+            "elapsed_ms": total_ms,
+            "timings": timings,
             "usage": usage,
             "session_usage": session_usage,
         }
+        # P4-10：摘要为「下一轮」服务，放在 done 之后异步跑，响应立即关闭。
+        _summarize_async(self.memory, session_id, owner_id)
 
     # ------------------------------------------------------------------ #
     # 状态信息

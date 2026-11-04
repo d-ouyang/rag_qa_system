@@ -256,13 +256,13 @@ def try_qa_direct_hit(question: str) -> dict[str, Any] | None:
 
     门控顺序（先便宜后贵、先安全后激进）：
         ① 热开关 qa_direct_hit（缺省关，fail-closed）；
-        ② 独立问句门控 is_standalone_question（「那婚假呢」这类指代句不直击，
-           必须过改写层拿到完整问句——与 qa_cache 写入侧同一道闸）；
-        ③ 精确层 → ④ 语义层。
+        ② 精确层 —— 逐字命中人工策划的完整问句，置信最高，先放行
+           （不受 qa_cache 的「<6 字」公共缓存启发式误伤，「婚假多少天」可直击）；
+        ③ 独立问句门控 is_standalone_question —— 只约束语义层，
+           避免「那婚假呢」这类短指代句被向量相似度误命中；
+        ④ 语义层。
     """
     if not flag_value("qa_direct_hit"):
-        return None
-    if not is_standalone_question(question):
         return None
     index = get_qa_index()
     if index is None:
@@ -272,6 +272,8 @@ def try_qa_direct_hit(question: str) -> dict[str, Any] | None:
         entry, matched = hit
         logger.info("QA 直击命中 | 层=exact 条目=%s 问句=%.24s", entry.id, matched)
         return {"entry": entry, "via": "exact", "score": 1.0}
+    if not is_standalone_question(question):
+        return None
     hit = index.lookup_semantic(question)
     if hit is not None:
         entry, score = hit

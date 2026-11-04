@@ -60,7 +60,7 @@ class DocumentLoader:
 
     # 需要自定义解析逻辑的后缀：编码回退 / 结构化 schema / 绕开 unstructured 的分块依赖
     CUSTOM_EXTENSIONS: frozenset[str] = frozenset({
-        ".txt", ".md", ".csv", ".json", ".html", ".htm", ".pptx",
+        ".txt", ".md", ".csv", ".json", ".html", ".htm", ".pptx", ".xlsx",
     })
 
     # 旧版二进制 Office 格式：解析库支持有限，命中时给出明确告警，便于排查
@@ -95,6 +95,16 @@ class DocumentLoader:
             self.chunk_overlap,
             "/".join(sorted(ext.lstrip(".") for ext in self.SUPPORTED_EXTENSIONS)),
         )
+        if settings.MINERU_ENABLED and settings.MINERU_API_KEY:
+            logger.info(
+                "MinerU PDF 结构化解析已启用 | 最大文件=%dMB 模型=%s",
+                settings.MINERU_MAX_BYTES // 1024 // 1024,
+                settings.MINERU_MODEL_VERSION,
+            )
+        else:
+            logger.warning(
+                "MinerU 未启用/无 key：PDF 扫描件与复杂版面将回退 PyMuPDF，可能无文本层"
+            )
 
     # ------------------------------------------------------------------ #
     # 公共能力
@@ -222,6 +232,10 @@ class DocumentLoader:
     # 0.3 是「一段话 vs 一个 chunk」的经验分界 —— 150 字的「3.2 电压要求」
     # 单独成片，embedding 里全是标题、正文信息量不足，不如并给邻居。
     SHORT_SECTION_RATIO: float = 0.3
+    # XLSX 行级切分阈值：数据行超过它就一记录一片（表头随行），否则按行组切。
+    # 讲师库/课程清单/巡检表这类「按条件筛行」的宽表，行级精度明显更高；
+    # 季度计划/汇总这类小表保持行组，避免把 4 行拆散后丢失整体口径。
+    XLSX_ROW_THRESHOLD: int = 10
 
     def _load_md_title_mode(self, path: Path, base_metadata: dict[str, object]) -> list[Document]:
         """
@@ -606,7 +620,15 @@ class DocumentLoader:
                 )
         loader_class = self.LOADER_MAP[".pdf"]
         logger.debug("使用 %s 解析 PDF：%s", loader_class.__name__, path)
-        return loader_class(str(path)).load()
+        docs = loader_class(str(path)).load()
+        total_chars = sum(len((d.page_content or "").strip()) for d in docs)
+        if total_chars < 20:
+            logger.warning(
+                "PDF 文本层为空（疑似扫描件/纯图层）| %s | MinerU可用=%s 文件大小=%d；"
+                "已回退 PyMuPDF，切片可能为空，请启用 MinerU/OCR",
+                path, mineru_available(), path.stat().st_size,
+            )
+        return docs
 
     def _documents_from_markdown(self, md_text: str, path: Path) -> list[Document]:
         """MinerU 产出的 markdown 文本 → title 模式切分（复用 A 阶段唯一实现）。"""
@@ -667,6 +689,10 @@ class DocumentLoader:
         if ext == ".pptx":
             return self._load_pptx(path)
 
+        # xlsx：openpyxl 读表 → markdown 表 → 行组切分（表头重复、行不截断）
+        if ext == ".xlsx":
+            return self._load_xlsx(path)
+
         raise ValueError(f"未处理的扩展名: {ext}")
 
     def _load_pptx(self, path: Path) -> list[Document]:
@@ -701,6 +727,91 @@ class DocumentLoader:
             if parts:
                 documents.append(Document(page_content="\n".join(parts), metadata={"page": page_no}))
         logger.debug("PPTX 解析完成：%s | 有效页数=%d", path, len(documents))
+        return documents
+
+    def _load_xlsx(self, path: Path) -> list[Document]:
+        """
+        xlsx → 每个工作表转 markdown 表，再走表格行组切分。
+
+        为什么不再用 UnstructuredExcelLoader：它把整张表压成**空格分隔的纯文本**，
+        没有行边界；后续 RecursiveCharacterTextSplitter 按字符硬切，会把一行切成
+        「信息安全 全员 6 讲师15…」和「…课程名」两半，表头也不重复 —— 实证导致
+        「培训课程按类别检索」拿错行。这里转成 markdown 管线表：
+            · 行不截断（_split_block_protect_tables 的表格分支）；
+            · 大数据表（> XLSX_ROW_THRESHOLD）**一条记录一片 + 表头随行**，
+              按条件筛行（如「待复训」「信息安全类别」）时不会把多行混在一起；
+            · 小数据表按行组切，每个分片重复表头；
+            · 单元格内的 | 换成全角，避免破坏表结构。
+        """
+        from openpyxl import load_workbook
+
+        wb = load_workbook(path, read_only=True, data_only=True)
+        documents: list[Document] = []
+        try:
+            for ws in wb.worksheets:
+                rows: list[list[str]] = []
+                for row in ws.iter_rows(values_only=True):
+                    cells = [
+                        "" if cell is None
+                        else str(cell).replace("\n", " ").replace("|", "｜").strip()
+                        for cell in row
+                    ]
+                    if any(cells):
+                        rows.append(cells)
+                if not rows:
+                    continue
+
+                ncols = max(len(r) for r in rows)
+                rows = [r + [""] * (ncols - len(r)) for r in rows]
+                # 去掉整列为空的尾列，避免 markdown 表出现一长串空 |
+                while ncols > 1 and all(not r[ncols - 1] for r in rows):
+                    ncols -= 1
+                rows = [r[:ncols] for r in rows]
+
+                header = rows[0]
+                header_line = "| " + " | ".join(header) + " |"
+                sep_line = "| " + " | ".join(["---"] * ncols) + " |"
+
+                if len(rows) - 1 > self.XLSX_ROW_THRESHOLD:
+                    # 大数据表：一条记录一片，表头随行；按条件筛行时不会串行。
+                    for row_no, r in enumerate(rows[1:], start=1):
+                        content = (
+                            f"工作表：{ws.title}\n{header_line}\n{sep_line}\n| "
+                            + " | ".join(r) + " |"
+                        )
+                        documents.append(
+                            Document(
+                                page_content=content,
+                                metadata={"sheet": ws.title, "row": row_no},
+                            )
+                        )
+                    logger.info(
+                        "XLSX 行级切分 | 工作表=%s 数据行=%d 片段=%d",
+                        ws.title, len(rows) - 1, len(rows) - 1,
+                    )
+                    continue
+
+                table_lines = [header_line, sep_line]
+                table_lines += ["| " + " | ".join(r) + " |" for r in rows[1:]]
+                table_md = "\n".join(table_lines)
+                pieces = self._split_block_protect_tables(table_md)
+
+                prefix = f"工作表：{ws.title}\n"
+                for piece in pieces:
+                    content = (
+                        prefix + piece
+                        if len(prefix) + len(piece) <= self.chunk_size
+                        else piece
+                    )
+                    documents.append(
+                        Document(page_content=content, metadata={"sheet": ws.title})
+                    )
+                logger.info(
+                    "XLSX 表结构解析 | 工作表=%s 行=%d 片段=%d",
+                    ws.title, len(rows), len(pieces),
+                )
+        finally:
+            wb.close()
         return documents
 
     def _load_json(self, path: Path) -> list[Document]:

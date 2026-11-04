@@ -157,6 +157,13 @@ check("开关关闭 → 不直击（fail-closed）", try_qa_direct_hit("事假�
 qd.flag_value = lambda key: True
 check("指代问句不直击（须过改写层）", try_qa_direct_hit("那婚假呢") is None)
 check("过短问句不直击（standalone 门控）", try_qa_direct_hit("你好呀") is None)
+# 精确层先于「<6 字」门控：人工策划的完整问句逐字命中时，短问句也要直击
+hit = try_qa_direct_hit("婚假多少天")
+check("短问句精确命中不被长度门控误伤（qa007）",
+      hit is not None and hit["entry"].id == "qa007" and hit["via"] == "exact")
+hit = try_qa_direct_hit("调休怎么算？")
+check("5 字问句精确命中（qa010）",
+      hit is not None and hit["entry"].id == "qa010")
 hit = try_qa_direct_hit("事假最多能请多少天？")
 check("开关开 + 独立完整问句 → 精确命中",
       hit is not None and hit["via"] == "exact" and hit["score"] == 1.0

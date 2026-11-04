@@ -124,6 +124,13 @@ class SourceItem(BaseModel):
     snippet: str = Field(description="片段摘要（前 200 字）")
     rerank_score: float | None = Field(default=None, description="重排分数 0~1，越大越相关")
     vector_similarity: float | None = Field(default=None, description="向量余弦相似度 -1~1")
+    # p4.14+：溯源可回到「源文档」。检索轮从 chunk_id 解析；直击轮按 source_doc 映射。
+    # 这些字段必须显式声明，pydantic 才会在 response_model 里保留（extra 默认忽略）。
+    doc_id: int | None = Field(default=None, description="文档 ID（前端据此下载/查看原文件）")
+    section: str | None = Field(default=None, description="原文条款位置（QA 直击轮）")
+    qa_id: str | None = Field(default=None, description="QA 集条目 id（直击轮）")
+    match_via: str | None = Field(default=None, description="直击命中方式：exact / semantic")
+    match_score: float | None = Field(default=None, description="直击命中分数（exact=1.0）")
 
 
 class AskResponse(BaseModel):
@@ -190,6 +197,10 @@ class MessageItem(BaseModel):
     )
     low_confidence: bool | None = Field(
         default=None, description="本轮 top1 是否落在低置信带（P4-6 扫档：0.25~0.35 犬牙交错区）",
+    )
+    timings: dict[str, float] | None = Field(
+        default=None,
+        description="本轮耗时明细（prepare/generate/grounded/other/total，单位 ms；老轮次为 None）",
     )
 
 
@@ -569,6 +580,15 @@ def _fill_source_file_names(sources: list[Any]) -> list[Any]:
             filled.append(item)
             continue
         row = dict(item)
+        # 兼容历史数据：早期 QA 直击轮（p4.14 修复前落库）的 sources 缺 index，
+        # 而 SourceItem.index 必填 —— 直接回吐会 ResponseValidationError 500。
+        # 补契约默认值，让老会话至少能正常打开（不追改库内数据）。
+        row.setdefault("index", len(filled) + 1)
+        row.setdefault("chunk_id", None)
+        if row.get("snippet") is None:
+            row["snippet"] = ""
+        if row.get("source") is None:
+            row["source"] = ""
         if not row.get("file_name"):
             doc_part = str(row.get("chunk_id") or "").split(":", 1)[0]
             if doc_part.isdigit():
@@ -630,6 +650,8 @@ def get_session_history(
                 # P4-6：依据校验与低置信徽标（未校验轮为 None/False）
                 "grounded": meta.get("grounded"),
                 "low_confidence": meta.get("low_confidence"),
+                # 耗时明细（P4.14+；老轮次没有该键 → None，前端不展示）
+                "timings": meta.get("timings"),
             })
         items.append(item)
     return {
