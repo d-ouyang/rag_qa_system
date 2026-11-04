@@ -24,7 +24,6 @@ from langchain_community.document_loaders import (
     PyMuPDFLoader,
     TextLoader,
     UnstructuredExcelLoader,
-    UnstructuredMarkdownLoader,
 )
 from langchain_community.document_loaders.base import BaseLoader
 from pptx import Presentation
@@ -680,15 +679,21 @@ class DocumentLoader:
 
     def _load_custom(self, path: Path, ext: str) -> list[Document]:
         """处理需要编码回退或结构化解析的后缀。"""
-        # markdown：优先结构化解析，失败时回退为纯文本读取，避免整篇丢失
+        # markdown：**直接按文本读**，不再先走 UnstructuredMarkdownLoader。
+        #
+        # 2026-11-04 生产事故：unstructured 的 markdown 解析依赖 NLTK 的 `punkt_tab`，
+        # 缺资源时会**联网下载**（raw.githubusercontent.com）。服务器到该域名不通且
+        # 没有超时，于是整库 reindex 卡在 read() 上一个多小时；上传 md 也会把 worker
+        # 挂死。本地则因为代理的安全拦截"失败得很快"，问题被掩盖了。
+        #
+        # 而且那层结构化解析对我们没有价值：切分完全由本模块自己做（fixed 走
+        # RecursiveCharacterTextSplitter，title 走标题树），标题层级靠原始 `#` 标记，
+        # unstructured 产出的 element 结构根本没用上。所以直接读原文，
+        # 既去掉一个联网依赖，也让本地/生产/测试三处行为完全一致。
         if ext == ".md":
-            try:
-                return UnstructuredMarkdownLoader(str(path)).load()
-            except Exception as e:
-                logger.warning("Markdown 结构化解析失败（%s），回退为纯文本读取：%s", e, path)
-                return self._load_with_encoding_fallback(
-                    path, lambda enc: TextLoader(file_path=str(path), encoding=enc)
-                )
+            return self._load_with_encoding_fallback(
+                path, lambda enc: TextLoader(file_path=str(path), encoding=enc)
+            )
 
         # txt：纯文本，逐个编码尝试
         if ext == ".txt":
