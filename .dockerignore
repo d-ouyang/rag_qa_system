@@ -33,7 +33,13 @@ __pycache__
 models
 upload
 vector_db
-data
+# data/ 下绝大部分是本地评测产物与运行数据，走挂载不进镜像；
+# 但 data/qa/kb_qa_set.jsonl 是**离线策划的运营资产**（48 条标准问答），
+# 必须随镜像发到生产，否则 QA 直击在线上永远拿不到数据。
+# .dockerignore 的规则是「父目录被排除后，子目录无法再用 ! 拉回来」，
+# 所以这里排除写成 data/* 而不是 data。
+data/*
+!data/qa
 app.log
 *.log
 
