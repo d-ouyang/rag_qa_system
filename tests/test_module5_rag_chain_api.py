@@ -177,6 +177,10 @@ check("QA prompt 含数字/档位原样引用规则", "禁止改写成区间" in
 # 要求先按原粒度给出已有数据再说明缺哪一维，避免一句话「未查到」把已有数据藏起来
 check("QA prompt 含部分匹配规则", "不等于「资料里什么都没有」" in _QA_SYSTEM_PROMPT
       and "资料缺少的是哪一维" in _QA_SYSTEM_PROMPT)
+# 2026-11-05 生产实测：规则 2 的拒答话术与规则 3 的数据列表会同时出现，
+# 用户看到「查不到 → 这里是数据 → 请勿采信 → 查不到」四段自相矛盾
+check("QA prompt 声明规则 2/3 互斥", "第 2 条与第 3 条**互斥**" in _QA_SYSTEM_PROMPT
+      and "不得再出现" in _QA_SYSTEM_PROMPT)
 
 # 链构建：需要向量库连接，但不联网、不调 LLM
 chain = RAGChain()

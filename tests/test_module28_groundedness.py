@@ -105,8 +105,14 @@ try:
     # p4.15：答案按原粒度给出数据后，会附一句「资料只到类别粒度 / 没有按人拆分」。
     # 这类「说明资料边界」的表述必须排除在 unsupported 之外，否则新规则产出的
     # 正确答案会被判成「依据未确认」——白改
+    # 2026-11-05 生产实测：judge 把「用户问题本身」当成未支撑论断列出来
+    # （unsupported = ["公司2027年的营收目标是多少。"]），于是正确答案被挂更正块
+    check("judge prompt 禁止把问题本身列为未支撑",
+          "不是论断，不得列入" in llm.prompts[0])
     check("judge prompt 排除「说明资料边界」的表述",
-          "说明资料边界" in llm.prompts[0] and "不要计入 unsupported" in llm.prompts[0])
+          "关于资料范围或不确定性的说明" in llm.prompts[0]
+          and "不要计入 unsupported" in llm.prompts[0]
+          and "资料只到城市级别" in llm.prompts[0])
 
     # 1b. 代码块围栏
     llm.outputs = ['```json\n{"grounded": true, "unsupported": []}\n```']
@@ -320,7 +326,8 @@ _g = {"grounded": False, "unsupported": ["病假1天内不扣工资"]}
 corrected = append_groundedness_correction("编造的回答。", _g)
 check("更正块含勿采信警示", "请勿采信" in corrected)
 check("更正块含未支撑论断清单", "病假1天内不扣工资" in corrected)
-check("更正块含补充资料建议", "请补充对应制度文档" in corrected)
+check("更正块含行动指引（且不再重复「未查到」话术）",
+      "请以原始文件为准" in corrected and "未查到相关规定" not in corrected)
 check("grounded=True 不加更正", append_groundedness_correction("好的回答。", {"grounded": True}) == "好的回答。")
 check("grounded=None 不加更正", append_groundedness_correction("回答。", None) == "回答。")
 
@@ -335,7 +342,7 @@ res5 = chain5.query("那病假呢？", "p46-corr", owner_id=None)
 check("judge 被骗但模型自认未查到 → 强制未通过",
       res5["grounded"] is not None and res5["grounded"]["grounded"] is False,
       f"实际 {res5.get('grounded')!r}")
-check("最终答案含更正块", "请勿采信" in res5["answer"] and "请补充对应制度文档" in res5["answer"])
+check("最终答案含更正块", "请勿采信" in res5["answer"] and "请以原始文件为准" in res5["answer"])
 _last = chain5.memory.get_messages("p46-corr", owner_id=None)[-1]
 check("落库的 assistant 消息与返回一致（含更正块）", "请勿采信" in str(_last.content))
 

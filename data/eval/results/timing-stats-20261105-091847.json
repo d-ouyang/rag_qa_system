@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-11-05T09:18:47+08:00",
+  "days": 1,
+  "rows": 127,
+  "prepare": {
+    "p50": 954.5,
+    "p95": 2069.3,
+    "max": 5382.3,
+    "n": 116
+  },
+  "generate": {
+    "p50": 2080.05,
+    "p95": 6287.375,
+    "max": 19847.9,
+    "n": 116
+  },
+  "grounded": {
+    "p50": 678.8,
+    "p95": 3011.55,
+    "max": 62959.0,
+    "n": 116
+  },
+  "total": {
+    "p50": 4224.9,
+    "p95": 12023.699999999992,
+    "max": 69116.5,
+    "n": 127
+  },
+  "decisions": {
+    "qa_hit": 3,
+    "rag_qa": 122,
+    "cache_hit": 2
+  },
+  "grounded_counts": {
+    "none": 5,
+    "True": 119,
+    "False": 3
+  },
+  "dual_used": 0,
+  "fallback_used": 0,
+  "slow_generate_60s": 0
+}
