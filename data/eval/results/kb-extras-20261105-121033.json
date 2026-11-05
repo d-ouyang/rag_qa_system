@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "generated_at": "2026-11-05T12:10:33+08:00",
+    "cases": 1,
+    "passed": 1,
+    "failed": 0
+  },
+  "records": [
+    {
+      "id": "EXT-19",
+      "doc": "负样本",
+      "question": "公司2027年的营收目标是多少？",
+      "expected_doc_ids": [],
+      "expect_no_source": true,
+      "expected_any": [
+        "未查到",
+        "无法回答",
+        "没有相关",
+        "暂无",
+        "不包含",
+        "没有关于",
+        "未提供",
+        "未提及",
+        "未给出"
+      ],
+      "min_hits": 1,
+      "note": "库内无此信息，应拒答",
+      "expected_files": [],
+      "passed": true,
+      "source_ids": [
+        799
+      ],
+      "source_files": [
+        "公司知识库/04-上市信息.md"
+      ],
+      "hits": [
+        "<语义:未提及类>"
+      ],
+      "answer": "资料中提到的历史财务摘要只到2023年前4个月的营收情况，没有提及2027年的营收目标。\n\n---\n⚠️ **依据校验：以下论断未能在检索资料中找到依据，请勿采信。**\n未能找到依据的论断：2027年的营收目标。\n以上论断请以原始文件为准；如需确认，请联系资料归口部门。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": false,
+        "unsupported": [
+          "2027年的营收目标"
+        ],
+        "low_confidence": false
+      }
+    }
+  ]
+}

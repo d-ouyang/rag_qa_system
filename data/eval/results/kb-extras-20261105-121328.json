@@ -1,0 +1,840 @@
+{
+  "meta": {
+    "generated_at": "2026-11-05T12:13:28+08:00",
+    "cases": 19,
+    "passed": 19,
+    "failed": 0
+  },
+  "records": [
+    {
+      "id": "EXT-01",
+      "doc": "客户投诉 PDF",
+      "question": "客户投诉分为哪几级？",
+      "expected_doc_ids": [
+        831
+      ],
+      "expected_any": [
+        "一般",
+        "重要",
+        "重大",
+        "舆情"
+      ],
+      "min_hits": 2,
+      "note": "分级表",
+      "expected_files": [
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        831,
+        831,
+        831,
+        831,
+        831
+      ],
+      "source_files": [
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "hits": [
+        "一般",
+        "重要",
+        "重大",
+        "舆情"
+      ],
+      "answer": "客户投诉按影响程度分为一般投诉、重要投诉、重大投诉、舆情事件四级。\n\n- 一般投诉：单一客户、单一商品、无安全风险，由门店店长/客服专员处理，上报时限为2小时。\n- 重要投诉：同一问题重复出现、客户强烈不满、金额较大，由区域负责人处理，上报时限为1小时。\n- 重大投诉：涉及食品安全、人身伤害、监管转办、媒体采访，由客服中心负责人牵头并报分管高管，上报时限为30分钟。\n- 舆情事件：社交平台扩散、群体性投诉、品牌负面，由品牌公关负责人处理，上报时限为立即。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-02",
+      "doc": "客户投诉 PDF",
+      "question": "一般投诉的首次响应和处理完成时限分别是多久？",
+      "expected_doc_ids": [
+        831
+      ],
+      "expected_any": [
+        "2小时",
+        "24小时",
+        "2 小时",
+        "24 小时"
+      ],
+      "min_hits": 1,
+      "note": "SLA 表",
+      "expected_files": [
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        831,
+        831,
+        831,
+        831,
+        831
+      ],
+      "source_files": [
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "hits": [
+        "2小时",
+        "24小时",
+        "2 小时",
+        "24 小时"
+      ],
+      "answer": "一般投诉的首次响应时限为2小时，处理完成时限为24小时内。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-03",
+      "doc": "客户投诉 PDF",
+      "question": "客户投诉工单需要保存多久？",
+      "expected_doc_ids": [
+        831
+      ],
+      "expected_any": [
+        "3年",
+        "5年",
+        "3 年",
+        "5 年"
+      ],
+      "min_hits": 1,
+      "note": "归档要求",
+      "expected_files": [
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        831,
+        831,
+        831,
+        831,
+        831
+      ],
+      "source_files": [
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf",
+        "客户投诉与售后服务管理办法.pdf"
+      ],
+      "hits": [
+        "3年",
+        "5年",
+        "3 年",
+        "5 年"
+      ],
+      "answer": "投诉工单一般需要保存不少于 3 年；涉及食品安全、人身伤害、诉讼的，保存期限不少于 5 年。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-04",
+      "doc": "门店选址 PDF",
+      "question": "门店选址的商圈评分低于多少分不予立项？",
+      "expected_doc_ids": [
+        832
+      ],
+      "expected_any": [
+        "70"
+      ],
+      "min_hits": 1,
+      "note": "量化评分",
+      "expected_files": [
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        832,
+        832,
+        832,
+        832,
+        832
+      ],
+      "source_files": [
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "hits": [
+        "70"
+      ],
+      "answer": "商圈评估采用量化评分，评分低于 70 分的点位原则上不予立项。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-05",
+      "doc": "门店选址 PDF",
+      "question": "社区店和标准店的面积区间分别是多少？",
+      "expected_doc_ids": [
+        832
+      ],
+      "expected_any": [
+        "60",
+        "120",
+        "200"
+      ],
+      "min_hits": 2,
+      "note": "店型配置",
+      "expected_files": [
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        832,
+        832,
+        832,
+        832,
+        832
+      ],
+      "source_files": [
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "hits": [
+        "60",
+        "120",
+        "200"
+      ],
+      "answer": "社区店的面积区间是60至120平方米，标准店的面积区间是120至200平方米。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-06",
+      "doc": "门店选址 PDF",
+      "question": "开业验收包含哪些模块？",
+      "expected_doc_ids": [
+        832
+      ],
+      "expected_any": [
+        "证照",
+        "工程",
+        "商品",
+        "人员",
+        "安全",
+        "运营"
+      ],
+      "min_hits": 2,
+      "note": "验收清单",
+      "expected_files": [
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "passed": true,
+      "source_ids": [
+        832,
+        832,
+        832,
+        832,
+        832
+      ],
+      "source_files": [
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf",
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "hits": [
+        "证照",
+        "工程",
+        "人员"
+      ],
+      "answer": "开业验收包含以下模块：\n1. 证照\n2. 消防\n3. 工程\n4. 设备\n5. 陈列\n6. 库存\n7. 人员\n8. 系统\n9. 支付\n10. 配送\n11. 卫生\n\n资料中详细列出了这些模块的具体内容。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-07",
+      "doc": "信息安全 DOCX",
+      "question": "公司数据按敏感程度分为哪几级？",
+      "expected_doc_ids": [
+        833
+      ],
+      "expected_any": [
+        "公开",
+        "内部",
+        "敏感",
+        "核心"
+      ],
+      "min_hits": 2,
+      "note": "数据分级",
+      "expected_files": [
+        "信息安全与数据合规管理制度.docx"
+      ],
+      "passed": true,
+      "source_ids": [
+        833,
+        833,
+        833,
+        833
+      ],
+      "source_files": [
+        "信息安全与数据合规管理制度.docx",
+        "信息安全与数据合规管理制度.docx",
+        "信息安全与数据合规管理制度.docx",
+        "信息安全与数据合规管理制度.docx"
+      ],
+      "hits": [
+        "公开",
+        "内部",
+        "敏感",
+        "核心"
+      ],
+      "answer": "公司数据按敏感程度分为公开、内部、敏感、核心四级，实行差异化管理。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-08",
+      "doc": "信息安全 DOCX",
+      "question": "信息安全事件分为哪几级？",
+      "expected_doc_ids": [
+        833
+      ],
+      "expected_any": [
+        "一般",
+        "较大",
+        "重大",
+        "特别重大"
+      ],
+      "min_hits": 2,
+      "note": "事件分级",
+      "expected_files": [
+        "信息安全与数据合规管理制度.docx"
+      ],
+      "passed": true,
+      "source_ids": [
+        833,
+        833,
+        833
+      ],
+      "source_files": [
+        "信息安全与数据合规管理制度.docx",
+        "信息安全与数据合规管理制度.docx",
+        "信息安全与数据合规管理制度.docx"
+      ],
+      "hits": [
+        "一般",
+        "较大",
+        "重大",
+        "特别重大"
+      ],
+      "answer": "信息安全事件分为一般、较大、重大、特别重大四级。\n\n- 一般事件：单终端病毒、弱口令，上报时限为2小时，由IT安全牵头。\n- 较大事件：部门范围账号泄露、少量数据外泄，上报时限为1小时，由IT负责人牵头。\n- 重大事件：大批量数据泄露、系统入侵、勒索，上报时限为30分钟，由分管高管牵头。\n- 特别重大事件：影响经营、监管介入、媒体关注，上报时限为立即，由总经理牵头。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-09",
+      "doc": "信息安全 DOCX",
+      "question": "终端安全检查包含哪些检查项？",
+      "expected_doc_ids": [
+        833
+      ],
+      "expected_any": [
+        "磁盘加密",
+        "屏保",
+        "补丁",
+        "杀毒",
+        "VPN"
+      ],
+      "min_hits": 2,
+      "note": "终端清单",
+      "expected_files": [
+        "信息安全与数据合规管理制度.docx"
+      ],
+      "passed": true,
+      "source_ids": [
+        833,
+        832
+      ],
+      "source_files": [
+        "信息安全与数据合规管理制度.docx",
+        "门店选址与开业筹备手册.pdf"
+      ],
+      "hits": [
+        "磁盘加密",
+        "屏保",
+        "补丁",
+        "杀毒",
+        "VPN"
+      ],
+      "answer": "终端安全检查包含以下检查项：\n\n- 磁盘加密\n- 屏保锁定\n- 系统补丁\n- 杀毒软件\n- 防火墙\n- 外设管控\n- 软件安装\n- 账号共享\n- 密码强度\n- 多因素认证\n- VPN\n- 公共 Wi-Fi\n- 备份\n- 日志\n\n资料中未涉及具体的检查项详细要求，以上为终端安全检查的完整检查项列表。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-10",
+      "doc": "供应商 DOCX",
+      "question": "供应商绩效评估的五个维度及权重是什么？",
+      "expected_doc_ids": [
+        834
+      ],
+      "expected_any": [
+        "质量",
+        "35",
+        "交付",
+        "25",
+        "价格",
+        "20"
+      ],
+      "min_hits": 3,
+      "note": "评分维度",
+      "expected_files": [
+        "供应商准入与绩效评估细则.docx"
+      ],
+      "passed": true,
+      "source_ids": [
+        834,
+        834,
+        834,
+        834
+      ],
+      "source_files": [
+        "供应商准入与绩效评估细则.docx",
+        "供应商准入与绩效评估细则.docx",
+        "供应商准入与绩效评估细则.docx",
+        "供应商准入与绩效评估细则.docx"
+      ],
+      "hits": [
+        "质量",
+        "35",
+        "交付",
+        "25",
+        "价格",
+        "20"
+      ],
+      "answer": "供应商绩效按质量、交付、价格、服务、合规五个维度量化评分。\n\n各维度权重如下：\n\n- 质量：35%\n- 交付：25%\n- 价格：20%\n- 服务：10%\n- 合规：10%\n\n资料中未涉及绩效评估的具体计算方法或评分标准。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-11",
+      "doc": "供应商 DOCX",
+      "question": "供应商 A/B/C/D 分级对应的分数区间是多少？",
+      "expected_doc_ids": [
+        834
+      ],
+      "expected_any": [
+        "90",
+        "75",
+        "60"
+      ],
+      "min_hits": 2,
+      "note": "分级表",
+      "expected_files": [
+        "供应商准入与绩效评估细则.docx"
+      ],
+      "passed": true,
+      "source_ids": [
+        834,
+        834
+      ],
+      "source_files": [
+        "供应商准入与绩效评估细则.docx",
+        "供应商准入与绩效评估细则.docx"
+      ],
+      "hits": [
+        "90",
+        "75",
+        "60"
+      ],
+      "answer": "供应商的分级对应的分数区间如下：\n\n- A级：≥90分\n- B级：75-89分\n- C级：60-74分\n- D级：<60分",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-12",
+      "doc": "供应商 DOCX",
+      "question": "哪些情形会直接被评为 D 级供应商？",
+      "expected_doc_ids": [
+        834
+      ],
+      "expected_any": [
+        "食品安全",
+        "商业贿赂",
+        "伪造"
+      ],
+      "min_hits": 2,
+      "note": "红线",
+      "expected_files": [
+        "供应商准入与绩效评估细则.docx"
+      ],
+      "passed": true,
+      "source_ids": [
+        834
+      ],
+      "source_files": [
+        "供应商准入与绩效评估细则.docx"
+      ],
+      "hits": [
+        "食品安全",
+        "商业贿赂",
+        "伪造"
+      ],
+      "answer": "资料中提到直接评为 D 级的情形包括发生重大食品安全事故、商业贿赂、伪造资质。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-13",
+      "doc": "培训 XLSX",
+      "question": "年度培训计划里信息安全类别包含哪些课程？",
+      "expected_doc_ids": [
+        837
+      ],
+      "expected_any": [
+        "数据分级与保护",
+        "账号与密码安全",
+        "钓鱼邮件识别",
+        "外发审批",
+        "事件上报"
+      ],
+      "min_hits": 2,
+      "note": "按类别检索（至少 2 个课名）",
+      "expected_files": [
+        "年度培训计划与课程清单.xlsx"
+      ],
+      "passed": true,
+      "source_ids": [
+        839,
+        839,
+        839,
+        839,
+        839
+      ],
+      "source_files": [
+        "年度培训计划与课程清单.xlsx",
+        "年度培训计划与课程清单.xlsx",
+        "年度培训计划与课程清单.xlsx",
+        "年度培训计划与课程清单.xlsx",
+        "年度培训计划与课程清单.xlsx"
+      ],
+      "hits": [
+        "账号与密码安全",
+        "钓鱼邮件识别"
+      ],
+      "answer": "1. 信息安全类别包含以下课程：\n   - 账号与密码安全（入门），课程编号TR-0015，学时6，计划在Q3季度，考核方式为作业，适用对象为全员，为选修课程。\n   - 账号与密码安全（进阶），课程编号TR-0065，学时2，计划在Q1季度，考核方式为考试，适用对象为全员，为必修课程。\n   - 账号与密码安全（实战），课程编号TR-0115，学时6，计划在Q3季度，考核方式为作业，适用对象为全员，为必修课程。\n   - 钓鱼邮件识别（入门），课程编号TR-0025，学时2，计划在Q1季度，考核方式为考试，适用对象为全员，为必修课程。\n   - 钓鱼邮件识别（进阶），课程编号TR-0075，学时6，计划在Q3季度，考核方式为作业，适用对象为全员，为选修课程。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-14",
+      "doc": "培训 XLSX",
+      "question": "年度培训计划四个季度的总学时分别是多少？",
+      "expected_doc_ids": [
+        837
+      ],
+      "expected_any": [
+        "120",
+        "126",
+        "132",
+        "138"
+      ],
+      "min_hits": 2,
+      "note": "季度计划",
+      "expected_files": [
+        "年度培训计划与课程清单.xlsx"
+      ],
+      "passed": true,
+      "source_ids": [
+        839
+      ],
+      "source_files": [
+        "年度培训计划与课程清单.xlsx"
+      ],
+      "hits": [
+        "120",
+        "126",
+        "132",
+        "138"
+      ],
+      "answer": "Q1季度的总学时是120。\nQ2季度的总学时是126。\nQ3季度的总学时是132。\nQ4季度的总学时是138。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-15",
+      "doc": "培训 XLSX",
+      "question": "讲师库中认证状态为待复训的讲师有哪些？",
+      "expected_doc_ids": [
+        837
+      ],
+      "expected_any": [
+        "讲师04",
+        "讲师08",
+        "讲师12",
+        "讲师16",
+        "讲师20",
+        "LEC-004",
+        "LEC-008",
+        "LEC-012",
+        "LEC-016",
+        "LEC-020"
+      ],
+      "min_hits": 5,
+      "note": "讲师库筛选：要求命中 5 位正确讲师（姓名或编号）；行级切分后答案已正确",
+      "expected_files": [
+        "年度培训计划与课程清单.xlsx"
+      ],
+      "passed": true,
+      "source_ids": [
+        839,
+        839,
+        839,
+        839,
+        839
+      ],
+      "source_files": [
+        "年度培训计划与课程清单.xlsx",
+        "年度培训计划与课程清单.xlsx",
+        "年度培训计划与课程清单.xlsx",
+        "年度培训计划与课程清单.xlsx",
+        "年度培训计划与课程清单.xlsx"
+      ],
+      "hits": [
+        "讲师04",
+        "讲师08",
+        "讲师12",
+        "讲师16",
+        "讲师20"
+      ],
+      "answer": "讲师库中认证状态为待复训的讲师包括：\n\n- 讲师16，所属部门：运营部，擅长领域：门店运营，可授课时数/年：56\n- 讲师08，所属部门：IT部，擅长领域：信息安全，可授课时数/年：48\n- 讲师04，所属部门：财务部，擅长领域：供应链，可授课时数/年：44\n- 讲师12，所属部门：品质部，擅长领域：客户服务，可授课时数/年：52\n- 讲师20，所属部门：培训中心，擅长领域：食品安全，可授课时数/年：60",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-16",
+      "doc": "巡检 XLSX",
+      "question": "门店巡检评分表中食品安全项有哪些检查内容？",
+      "expected_doc_ids": [
+        838
+      ],
+      "expected_any": [
+        "健康证",
+        "冷藏",
+        "生熟",
+        "效期",
+        "虫害"
+      ],
+      "min_hits": 2,
+      "note": "食安项",
+      "expected_files": [
+        "门店运营巡检评分表.xlsx"
+      ],
+      "passed": true,
+      "source_ids": [
+        840,
+        840,
+        840,
+        840,
+        840
+      ],
+      "source_files": [
+        "门店运营巡检评分表.xlsx",
+        "门店运营巡检评分表.xlsx",
+        "门店运营巡检评分表.xlsx",
+        "门店运营巡检评分表.xlsx",
+        "门店运营巡检评分表.xlsx"
+      ],
+      "hits": [
+        "健康证",
+        "生熟",
+        "效期"
+      ],
+      "answer": "门店巡检评分表中食品安全项的检查内容包括：\n- 从业人员健康证齐全且在有效期内（分值10分，缺1人扣5分）\n- 生熟分开、荤素分开，无交叉污染（分值10分，发现1处扣5分）\n\n资料中详细列出了这两项检查内容及其评分标准。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-17",
+      "doc": "巡检 XLSX",
+      "question": "巡检汇总里哪个区域的平均得分最低？",
+      "expected_doc_ids": [
+        838
+      ],
+      "expected_any": [
+        "安徽",
+        "86.4"
+      ],
+      "min_hits": 1,
+      "note": "汇总表",
+      "expected_files": [
+        "门店运营巡检评分表.xlsx"
+      ],
+      "passed": true,
+      "source_ids": [
+        840
+      ],
+      "source_files": [
+        "门店运营巡检评分表.xlsx"
+      ],
+      "hits": [
+        "安徽",
+        "86.4"
+      ],
+      "answer": "安徽区域的平均得分为86.4，是所有区域中最低的。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": false
+      }
+    },
+    {
+      "id": "EXT-18",
+      "doc": "巡检 XLSX",
+      "question": "门店巡检的消防项有哪些要求？",
+      "expected_doc_ids": [
+        838
+      ],
+      "expected_any": [
+        "消防通道",
+        "灭火器",
+        "疏散"
+      ],
+      "min_hits": 1,
+      "note": "消防项",
+      "expected_files": [
+        "门店运营巡检评分表.xlsx"
+      ],
+      "passed": true,
+      "source_ids": [
+        832,
+        840
+      ],
+      "source_files": [
+        "门店选址与开业筹备手册.pdf",
+        "门店运营巡检评分表.xlsx"
+      ],
+      "hits": [
+        "灭火器",
+        "疏散"
+      ],
+      "answer": "1. 员工会使用灭火器、熟知疏散路线。\n2. 检查时抽查员工，如果员工不会使用灭火器或不熟知疏散路线将扣5分。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": true,
+        "unsupported": [],
+        "low_confidence": true
+      }
+    },
+    {
+      "id": "EXT-19",
+      "doc": "负样本",
+      "question": "公司2027年的营收目标是多少？",
+      "expected_doc_ids": [],
+      "expect_no_source": true,
+      "expected_any": [
+        "未查到",
+        "无法回答",
+        "没有相关",
+        "暂无",
+        "不包含",
+        "没有关于",
+        "未提供",
+        "未提及",
+        "未给出"
+      ],
+      "min_hits": 1,
+      "note": "库内无此信息，应拒答",
+      "expected_files": [],
+      "passed": true,
+      "source_ids": [
+        799
+      ],
+      "source_files": [
+        "公司知识库/04-上市信息.md"
+      ],
+      "hits": [
+        "<语义:未提及类>"
+      ],
+      "answer": "资料中提到2020年至2023年前4个月的营业收入，但未涉及2027年的营收目标。\n\n---\n⚠️ **依据校验：以下论断未能在检索资料中找到依据，请勿采信。**\n未能找到依据的论断：公司2027年的营收目标是多少。\n以上论断请以原始文件为准；如需确认，请联系资料归口部门。",
+      "grounded": {
+        "type": "grounded",
+        "grounded": false,
+        "unsupported": [
+          "公司2027年的营收目标是多少"
+        ],
+        "low_confidence": false
+      }
+    }
+  ]
+}

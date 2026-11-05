@@ -16,4 +16,4 @@
 {"id": "EXT-16", "doc": "巡检 XLSX", "question": "门店巡检评分表中食品安全项有哪些检查内容？", "expected_doc_ids": [838], "expected_any": ["健康证", "冷藏", "生熟", "效期", "虫害"], "min_hits": 2, "note": "食安项", "expected_files": ["门店运营巡检评分表.xlsx"]}
 {"id": "EXT-17", "doc": "巡检 XLSX", "question": "巡检汇总里哪个区域的平均得分最低？", "expected_doc_ids": [838], "expected_any": ["安徽", "86.4"], "min_hits": 1, "note": "汇总表", "expected_files": ["门店运营巡检评分表.xlsx"]}
 {"id": "EXT-18", "doc": "巡检 XLSX", "question": "门店巡检的消防项有哪些要求？", "expected_doc_ids": [838], "expected_any": ["消防通道", "灭火器", "疏散"], "min_hits": 1, "note": "消防项", "expected_files": ["门店运营巡检评分表.xlsx"]}
-{"id": "EXT-19", "doc": "负样本", "question": "公司2027年的营收目标是多少？", "expected_doc_ids": [], "expect_no_source": true, "expected_any": ["未查到", "无法回答", "没有相关", "暂无", "不包含"], "min_hits": 1, "note": "库内无此信息，应拒答", "expected_files": []}
+{"id": "EXT-19", "doc": "负样本", "question": "公司2027年的营收目标是多少？", "expected_doc_ids": [], "expect_no_source": true, "expected_any": ["未查到", "无法回答", "没有相关", "暂无", "不包含", "没有关于", "未提供", "未提及", "未给出"], "min_hits": 1, "note": "库内无此信息，应拒答", "expected_files": []}

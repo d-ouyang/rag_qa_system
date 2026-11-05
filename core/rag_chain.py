@@ -374,6 +374,10 @@ _QA_SYSTEM_PROMPT = (
     "——既说没查到又列出数据，看答案的人无法判断到底有没有规定。\n"
     "   正例（问「出差住宿一天能报多少」而资料只给限额）：「资料按城市级别规定住宿限额："
     "一线城市 ≤500 元/晚，其他城市 ≤350 元/晚。资料没有按天另列计算方式。」\n"
+    "   正例（问「各个讲师的预算是多少」而资料只有按费用类别的预算表）：「资料按费用类别列出预算："
+    "讲师课酬 180000 元、场地与设备 60000 元、教材与认证 45000 元、差旅 80000 元、线上平台 50000 元。"
+    "资料没有按讲师拆分的明细。」\n"
+    "   ⚠️ 这种情况下**必须把已有数字写出来**；只回一句「资料没有按讲师拆分的明细」等于把已有数据藏起来了。\n"
     "4. {intent_instruction}\n"
     "5. 如果资料与问题无关，忽略资料并如实告知。\n"
     "6. 不要输出任何乱码、特殊符号或者不连贯的句子。\n"
@@ -385,7 +389,14 @@ _QA_SYSTEM_PROMPT = (
     "禁止改写成区间、档位或近似值（资料写「按司龄每增 1 年增 1 天」就照写，"
     "不要写成「5 年以下 5 天 / 5-10 年 10 天」）；资料没有的数字不许补充。\n"
     "10. 资料按级别、情形或对象分别规定时，按类别完整列出，"
-    "不要因为不是单一数值就说「未查到」或「没有统一规定」。\n\n"
+    "不要因为不是单一数值就说「未查到」或「没有统一规定」。\n"
+    "11. 问题问的是「扣不扣 / 能不能报 / 要不要 / 有没有」这类**是非**时，"
+    "只依据资料里的直接表述回答，**禁止给反向结论**——资料没写「不扣」不等于「不扣」。\n"
+    "12. 多个资料片段重复同一内容时，合并成一条即可，不要逐片罗列。\n"
+    "13. 多份资料对同一件事**详略不同**时，以**更具体**的那条为准，"
+    "不得因为另一份没写就判定「资料未规定」。例如《员工手册摘要》写「事假：全年累计不超过20天，**无薪**」，"
+    "而《考勤管理制度》的请假表只列了天数和审批权限、没提工资——此时「事假无薪」是**有依据的**，"
+    "不能回答「资料未规定事假工资」。只有当**所有**资料都没有相关表述时，才允许说「资料未规定」。\n\n"
     "检索到的资料：\n{context}"
 )
 
@@ -660,6 +671,159 @@ def _merge_retrieval(
     if cand:
         trace["candidate_docs"] = cand
     return docs, trace
+
+
+#: 极性问句（扣不扣 / 能不能报 / 发不发工资…）的口语化改写规则（p4.16）。
+#:
+#: 为什么需要这一路：2026-11-05 生产实测「怎么请事假？事假扣不扣钱？」，
+#: 检索只召回「考勤制度」的请假表（只写了天数和审批权限，**没有工资口径**），
+#: 而写「事假 无薪」的「员工手册摘要」在候选里只有 0.0055 分、被阈值挡掉。
+#: 模型在缺口处补了个反向结论「事假不扣发工资」——与原文相反。
+#: 实测同一知识库：「事假扣不扣钱」召回不到，「事假 工资」直接把员工手册排到 top1(0.329)。
+#: 所以极性问句额外走一路「剥掉口语极性词 + 补被问及的名词」，两路结果合并。
+#: 这不是同义改写，是**把被省略的宾语补回来**——口语里「扣不扣钱」的宾语就是「工资」。
+_POLAR_RULES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"扣不扣(钱|工资)?|扣钱吗|会不会扣|是否扣款|要不要扣"), "工资 规定"),
+    (re.compile(r"能不能报|能报吗|可以报吗|可不可以报|报不报|报销吗|给报吗"), "报销 标准"),
+    (re.compile(r"发不发(工资)?|有没有工资|有工资吗|给工资吗"), "工资 规定"),
+    (re.compile(r"需不需要|要不要|用不用|必须吗"), "规定 要求"),
+    (re.compile(r"算不算(违纪|旷工)?|会不会被(开除|辞退)"), "违纪 处理"),
+]
+
+
+#: 「整条资料无关」的专用拒答句（与 _QA_SYSTEM_PROMPT 规则 2 同一句）。
+#: 它只能**整条答案**出现；只要答案别处还有实质内容，这句就是错误声明。
+_REFUSAL_ONLY_RE = re.compile(
+    r"^[\s*#\-—]*根据现有制度未查到相关规定[，,。.]?"
+    r"(?:\s*请补充对应制度文档[，,]?\s*或?\s*联系人力资源部门确认[。.]?)?\s*$"
+)
+#: 句末切分：中文句号/问号/叹号/换行
+_SENT_END_RE = re.compile(r"[。！？\n]")
+#: 句中也可能带连接词（「因此，根据现有制度未查到相关规定，…」），一并识别
+_REFUSAL_ANY_RE = re.compile(
+    r"(?:因此[，,]?|所以[，,]?|故[，,]?)?\s*根据现有制度未查到相关规定[，,。.]?"
+    r"(?:\s*请补充对应制度文档[，,]?\s*或?\s*联系人力资源部门确认[。.]?)?"
+)
+
+
+def _declutter_refusal(sentence: str) -> str:
+    """删掉句中那句声明并清掉残留标点（「。，」→「。」、「，，」→「，」）。"""
+    out = _REFUSAL_ANY_RE.sub("", sentence)
+    out = re.sub(r"[，,]\s*([。！？])", r"\1", out)
+    out = re.sub(r"^[，,、；;\s]+", "", out)
+    out = re.sub(r"([。！？])\1+", r"\1", out)
+    return out
+
+
+class _RefusalSentenceFilter:
+    """逐句过滤「未查到相关规定」这句错误声明（p4.16）。
+
+    为什么是句级而不是只处理开头：生产实测模型会把它写在**中间**——
+    「资料只规定了天数和审批权限，并未提及工资。因此，根据现有制度未查到相关规定，资料中明确指出事假无薪。」
+    这种句子既否掉了已回答的内容，又与后半句自相矛盾。
+
+    规则：该句**孤立出现**（整句就是这句话）且答案别处还有实质内容 → 丢弃；
+    整条答案只有这句（真·无关问题）→ 原样保留。
+    流式下按句缓冲：先扣住这句，等看到后续实质内容再决定发不发，
+    所以用户看到的文本与落库文本始终一致（不会"发出去再撤回"）。
+    """
+
+    LOW_LATENCY_SENTENCES = 40   # 缓冲超过这个长度仍无句末标点，就先放出去，避免卡顿
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._held = ""          # 被扣住的拒答句
+        self._emitted = ""       # 已确认发出的实质内容（用于判断是否有存货）
+        self._done = False
+
+    # -- 内部：判定并按需输出 --
+    def _push(self, sentence: str, final: bool) -> str:
+        text = sentence
+        out_parts: list[str] = []
+        while True:
+            m = _SENT_END_RE.search(text)
+            if not m:
+                break
+            head, rest = text[: m.end()], text[m.end():]
+            out_parts.append(self._decide_sentence(head, final=False))
+            text = rest
+        if text:
+            out_parts.append(self._decide_sentence(text, final=final))
+        return "".join(p for p in out_parts if p)
+
+    def _decide_sentence(self, sentence: str, final: bool) -> str:
+        if not sentence:
+            return ""
+        if _REFUSAL_ONLY_RE.match(sentence.strip()):
+            if self._emitted.strip():        # 已有实质内容 → 这句是错的，丢掉
+                logger.info("丢弃错误的拒答声明 | %.40s", sentence.strip())
+                return ""
+            self._held = (self._held + sentence) if self._held else sentence
+            return ""
+        if _REFUSAL_ANY_RE.search(sentence):
+            # 句中含有该声明：删掉它本身，保留同句的其它内容
+            cleaned = _declutter_refusal(sentence)
+            if cleaned.strip():
+                logger.info("清理句中的拒答声明 | 原=%.44s", sentence.strip())
+                self._held = ""
+                self._emitted += cleaned
+                return cleaned
+            if self._emitted.strip():
+                return ""
+            self._held = (self._held + sentence) if self._held else sentence
+            return ""
+        if not sentence.strip():
+            return sentence
+        # 实质内容出现：之前扣住的拒答句作废（除非它本来就是唯一内容）
+        self._held = ""
+        self._emitted += sentence
+        return sentence
+
+    def feed(self, text: str) -> str:
+        if self._done:
+            return text
+        self._buf += text
+        if not _SENT_END_RE.search(self._buf) and len(self._buf) < self.LOW_LATENCY_SENTENCES:
+            return ""
+        buf, self._buf = self._buf, ""
+        return self._push(buf, final=False)
+
+    def flush(self) -> str:
+        if self._done:
+            return ""
+        self._done = True
+        rest = self._buf
+        self._buf = ""
+        out = self._push(rest, final=True) if rest else ""
+        if not self._emitted.strip() and self._held:
+            out = self._held + out      # 整条就是拒答 → 原样给出
+            self._held = ""
+        return out
+
+
+def _strip_refusal_prefix(answer: str) -> str:
+    """同步链路：一次性跑同一条句级规则。"""
+    f = _RefusalSentenceFilter()
+    return f.feed(answer) + f.flush()
+
+
+def _polar_secondary_query(question: str) -> str | None:
+    """极性问句 → 补充检索语句；非极性问句返回 None。
+
+    例：「事假扣不扣钱」→「事假 工资 规定」；「停车费能报吗」→「停车费 报销 标准」。
+    """
+    text = (question or "").strip()
+    if not text:
+        return None
+    for pattern, noun in _POLAR_RULES:
+        if pattern.search(text):
+            core = pattern.sub(" ", text)
+            core = re.sub(r"[？?！!。，,、；;：:]+", " ", core).strip()
+            core = re.sub(r"\s+", " ", core)
+            if not core:
+                return None
+            return f"{core} {noun}".strip()
+    return None
 
 
 def _reconcile_dual(
@@ -1238,6 +1402,27 @@ class RAGChain:
             docs = retrieve_future.result()
             trace = spec_trace
 
+        # 极性问句补充路（p4.16）：口语化的「扣不扣 / 能不能报」把宾语省掉了，
+        # 检索引擎拿它去匹配「工资 / 报销」这类正文会掉分（实测 top1 只 0.17，
+        # 写着「事假无薪」的那片甚至被阈值挡在门外）。补一路「剥极性词 + 补宾语」
+        # 的检索并与主路合并 —— 只加召回，不改阈值，避免把噪声放进上下文。
+        polar_used = False
+        polar_query = _polar_secondary_query(question)
+        if polar_query:
+            polar_trace: dict[str, Any] = {}
+            try:
+                polar_docs = retriever.retrieve(polar_query, trace_out=polar_trace)
+            except Exception as e:  # noqa: BLE001 - 补充路失败不能影响主链路
+                logger.warning("极性问句补充检索失败，忽略 | q=%.32s | %s", polar_query, e)
+                polar_docs = []
+            if polar_docs:
+                docs, trace = _merge_retrieval(docs, trace, polar_docs, polar_trace)
+                polar_used = True
+                logger.info(
+                    "极性问句补充检索 | 原问=%.24s → 补问=%.32s | 合并后=%d 条",
+                    question, polar_query, len(docs),
+                )
+
         # 零召回兜底：改写路与原问题路都没召回时，用「严格改写」再试一次。
         # 只对含指代的追问做（独立问句严格改写会原样返回，没必要多花一次 LLM）。
         if not docs and rewrite_future is not None and looks_anaphoric(question):
@@ -1271,6 +1456,7 @@ class RAGChain:
             "vector_query": vector_query,  # HyDE 假设答案；None = 未启用
             "retrieval_trace": trace,      # P4-5：本次检索轨迹（rerank / hybrid 两段）
             "judge_docs": judge_docs,      # 被拒候选原文（仅 judge 用，不落库/不下发）
+            "polar_used": polar_used,      # p4.16：极性问句补了一路「剥极性词 + 补宾语」
             "dual_used": used_dual,        # 改写路 + 原问题路都召回并合并
             "fallback_used": used_fallback,  # 改写/双路零召回后回退（原问题或严格改写）
         }
@@ -1653,7 +1839,8 @@ class RAGChain:
                         ),
                     })
                 )
-                answer = _strip_leading_blank(str(message.content))
+                # 与流式同一规则：去掉「未查到相关规定」这种错误前缀声明
+                answer = _strip_refusal_prefix(_strip_leading_blank(str(message.content)))
                 _merge_usage(usage, _extract_usage(message))
             result = {
                 "answer": answer,
@@ -1883,6 +2070,7 @@ class RAGChain:
                 answer = _NO_CONTEXT_ANSWER
             else:
                 answer_parts = []
+                prefix_filter = _RefusalSentenceFilter()
                 for text in self._stream_answer(
                     _qa_prompt,
                     {
@@ -1896,8 +2084,14 @@ class RAGChain:
                     llm,
                     usage,
                 ):
-                    answer_parts.append(text)
-                    yield {"type": "chunk", "content": text}
+                    out = prefix_filter.feed(text)
+                    if out:
+                        answer_parts.append(out)
+                        yield {"type": "chunk", "content": out}
+                tail = prefix_filter.flush()
+                if tail:
+                    answer_parts.append(tail)
+                    yield {"type": "chunk", "content": tail}
                 answer = "".join(answer_parts)
 
         t_generated = time.perf_counter()

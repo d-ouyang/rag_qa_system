@@ -28,6 +28,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 DEFAULT_QUESTIONS = ROOT / "data" / "eval" / "kb_extras_questions.jsonl"
+#: 拒答语义：否词（未/没有/暂无/不包含）+ 短距离内的告知类动词。
+#: 例：「但未提及2027年的营收目标」「资料没有涉及该指标」「暂无相关数据」。
+_REFUSAL_LIKE_RE = re.compile(
+    r"(?:未|没有|暂无|查不到|不包含|未包含)[^。；;\n]{0,10}"
+    r"(?:提及|涉及|提供|给出|包含|查到|规定|说明|列明|相关|数据|信息)"
+)
 
 
 def _norm(text: str) -> str:
@@ -147,7 +153,13 @@ def main() -> int:
         hits = [kw for kw in expected_any if _norm(kw) in _norm(answer)]
         no_source = len(res["sources"]) == 0
         if case.get("expect_no_source"):
-            passed = no_source or len(hits) >= min_hits
+            # 负样本判定**看语义不看词表**：模型每次的措辞都不同
+            # （未查到/未提及/未涉及/没有关于…），追同义词追不完。
+            # 这里认「否词 + 告知类动词」的结构，同时保留 expected_any 作为兜底。
+            refusal_like = bool(_REFUSAL_LIKE_RE.search(answer or ""))
+            if refusal_like:
+                hits = hits + ["<语义:未提及类>"]
+            passed = no_source or refusal_like or len(hits) >= min_hits
         else:
             passed = doc_hit and len(hits) >= min_hits
         if not passed:
