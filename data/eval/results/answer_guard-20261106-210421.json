@@ -1,0 +1,63 @@
+{
+  "meta": {
+    "generated_at": "2026-11-06T21:04:21+08:00",
+    "guard_file": "/Users/ouyangding/Desktop/AIAgent/rag-qa-system/data/eval/answer_guard.jsonl",
+    "cases": 2,
+    "passed": 0,
+    "failed": 2
+  },
+  "records": [
+    {
+      "id": "a001",
+      "turns": [
+        "年假有多少天？",
+        "那年假呢？"
+      ],
+      "answers": [
+        {
+          "question": "年假有多少天？",
+          "answer": "年假按司龄 5-15 天：入职满 1 年 5 天起，司龄每增加 1 年增加 1 天，上限 15 天。年假由直属上级审批并报 HR 备案。",
+          "elapsed_ms": 279.1,
+          "timings": null,
+          "qa_trace": {
+            "question": "年假有多少天？",
+            "decision": "qa_hit",
+            "intent": "knowledge_query",
+            "route": "rag_qa",
+            "intent_source": "qa_set",
+            "hyde_used": false,
+            "elapsed_ms": 279.1,
+            "sources_count": 1,
+            "rejected": false,
+            "rewritten_query": null,
+            "vector_query": null,
+            "candidates": [],
+            "threshold": null,
+            "top1_before_filter": null,
+            "filtered_count": 0,
+            "docs_returned": 0,
+            "bm25_hits": null,
+            "bm25_only": null,
+            "rrf_top": null,
+            "qa_id": "qa006",
+            "qa_match_via": "exact",
+            "qa_match_score": 1.0
+          }
+        }
+      ],
+      "passed": false,
+      "error": "InvalidDimensionException: Embedding dimension 512 does not match collection dimensionality 1024",
+      "note": "资料是线性规则「满1年5天起，每增1年加1天，上限15天」，禁止改写成区间档位（2026-11-04 实测误读）"
+    },
+    {
+      "id": "a002",
+      "turns": [
+        "年假5-15天是怎么算的？"
+      ],
+      "answers": [],
+      "passed": false,
+      "error": "InvalidDimensionException: Embedding dimension 512 does not match collection dimensionality 1024",
+      "note": "单轮同样要守住线性规则，不能把「按司龄递增」改写成区间"
+    }
+  ]
+}
