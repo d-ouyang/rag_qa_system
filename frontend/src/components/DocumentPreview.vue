@@ -31,6 +31,16 @@ const html = ref('')
 const pdfUrl = ref('')
 const imageUrl = ref('')
 const resolvedName = ref('')
+/**
+ * 判断「按哪种方式预览」时用的名字 —— 必须与**展示名分开**。
+ *
+ * 2026-11-06 线上实测：QA 直击的来源里 `file_name` 是文档标题（「考勤管理制度」，没有扩展名），
+ * 而下载接口的 Content-Disposition 里是真实文件名「05_考勤管理制度.md」。
+ * 之前 ext 只从展示名推 → 拿不到 `.md` → 落到「该格式暂不支持在线预览」，
+ * 用户点开一份 markdown 只看到一句"去下载吧"。
+ * 所以：展示用展示名，判类型优先用下载响应里的真实文件名，再退到 MIME。
+ */
+const typeName = ref('')
 const blob = ref<Blob | null>(null)
 const xlsxSheets = ref<XlsxSheet[]>([])
 const activeSheet = ref(0)
@@ -39,9 +49,17 @@ let objectUrl = ''
 let listening = false
 
 const ext = computed(() => {
-  const name = (resolvedName.value || props.fileName || '').toLowerCase()
+  const name = (typeName.value || '').toLowerCase()
   const dot = name.lastIndexOf('.')
-  return dot >= 0 ? name.slice(dot) : ''
+  if (dot >= 0) return name.slice(dot)
+  // 名字里没有扩展名时按 MIME 兜底（后端下载固定 octet-stream，
+  // 但将来若改成带类型，这里能直接受益）
+  const mime = (blob.value?.type || '').toLowerCase()
+  if (mime === 'application/pdf') return '.pdf'
+  if (mime.startsWith('image/')) return mime === 'image/svg+xml' ? '.svg' : '.png'
+  if (mime.includes('markdown')) return '.md'
+  if (mime.startsWith('text/')) return '.txt'
+  return ''
 })
 const isPdf = computed(() => ext.value === '.pdf')
 const isImage = computed(() =>
@@ -88,6 +106,7 @@ function reset() {
   pdfUrl.value = ''
   imageUrl.value = ''
   resolvedName.value = ''
+  typeName.value = ''
   blob.value = null
   xlsxSheets.value = []
   activeSheet.value = 0
@@ -123,6 +142,8 @@ async function load() {
     const file = await downloadDocument(props.docId)
     blob.value = file.blob
     resolvedName.value = props.fileName || file.filename || `文档 ${props.docId}`
+    // 判类型优先用真实文件名：展示名可能只有标题（QA 直击来源就是这种）
+    typeName.value = file.filename || props.fileName || ''
     if (isPdf.value || isImage.value) {
       // 下载接口返回的是 application/octet-stream：直接拿它做 object URL，
       // 浏览器会当成「文件」触发下载，iframe 预览就是空白。这里按扩展名
