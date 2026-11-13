@@ -416,6 +416,23 @@ class IntentClassifier:
             return IntentResult(intent=Intent.CHITCHAT, source="rule", detail="空输入")
 
         start = time.perf_counter()
+        # p4.16 hotfix：能力型元问题**整句正则优先于小模型**。
+        # 线上实锤（2026-11）：「你能做什么？」被小模型判成 knowledge_query →
+        # 走检索 → 零召回 → 固定拒答；同义的「我能问你什么？」碰巧判成 chitchat
+        # 才有回答。这类问句是封闭集合（问助手自身能力），整句正则 $ 锚定不会误伤
+        # 真问题（「你能帮我查报销标准吗」不匹配），且省掉一次 200~600ms 的模型往返。
+        for pattern in _CHITCHAT_PATTERNS:
+            if pattern.search(question):
+                elapsed = (time.perf_counter() - start) * 1000
+                logger.info(
+                    "意图识别完成 | 来源=rule 意图=chitchat 路由=chitchat 耗时=%.0fms 规则=能力元问题优先 | query=%.24s",
+                    elapsed, question,
+                )
+                return IntentResult(
+                    intent=Intent.CHITCHAT, source="rule",
+                    elapsed_ms=round(elapsed, 1), detail="能力元问题整句正则命中（优先于小模型）",
+                )
+
         intent = self._classify_by_llm(question)
         if intent is not None:
             elapsed = (time.perf_counter() - start) * 1000

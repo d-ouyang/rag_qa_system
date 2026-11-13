@@ -52,9 +52,10 @@ watch(
     void nextTick(scrollToBottom)
   },
 )
-// 流式增量：只有用户还停在底部时才滚
+// 流式增量：只有用户还停在底部时才滚（p4.16 起展示层逐帧走 displayContent）
 watch(
-  () => sessions.messages[sessions.messages.length - 1]?.content,
+  () => sessions.messages[sessions.messages.length - 1]?.displayContent
+    ?? sessions.messages[sessions.messages.length - 1]?.content,
   () => {
     if (stickToBottom) void nextTick(scrollToBottom)
   },

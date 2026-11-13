@@ -1870,8 +1870,13 @@ class RAGChain:
         low_confidence = False
         grounded: dict[str, Any] | None = None
         if decision == "rag_qa":
+            # p4.16 hotfix：retrieval_trace["rerank"] 在无候选/未重排时是 **None**
+            # （_rank 早期返回写 None），`.get("rerank", {})` 拿到的是 None，
+            # 直接 .get() 会 AttributeError 打断整条链路 —— 改成安全取值。
             low_confidence = is_low_confidence(
-                (prepared.get("retrieval_trace") or {}).get("rerank", {}).get("top1_before_filter")
+                ((prepared.get("retrieval_trace") or {}).get("rerank") or {}).get(
+                    "top1_before_filter"
+                )
             )
             if flag_value("groundedness_check"):
                 grounded = check_groundedness(
@@ -2116,8 +2121,13 @@ class RAGChain:
         low_confidence = False
         grounded: dict[str, Any] | None = None
         if decision == "rag_qa":
+            # p4.16 hotfix：retrieval_trace["rerank"] 在无候选/未重排时是 **None**
+            # （_rank 早期返回写 None），`.get("rerank", {})` 拿到的是 None，
+            # 直接 .get() 会 AttributeError 打断整条链路 —— 改成安全取值。
             low_confidence = is_low_confidence(
-                (prepared.get("retrieval_trace") or {}).get("rerank", {}).get("top1_before_filter")
+                ((prepared.get("retrieval_trace") or {}).get("rerank") or {}).get(
+                    "top1_before_filter"
+                )
             )
             if flag_value("groundedness_check"):
                 grounded = check_groundedness(

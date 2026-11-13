@@ -491,9 +491,12 @@ def ask_stream(request: AskRequest, actor: Actor = Depends(current_actor)) -> St
 
     # P2-23：debug 解析。语义是「显式 > 默认」：
     #   · 显式传 true/false —— 照传（调用方明确知道自己要什么）；
-    #   · 不传（None）—— admin 默认开，其余角色关。
-    # 这样不传 debug 的存量调用方拿到的事件序列与 P2-23 之前逐字节一致。
-    stream_debug = request.debug if request.debug is not None else (actor.role == "admin")
+    #   · 不传（None）—— 默认开。
+    # p4.16 hotfix：默认值从「admin 才开」改为「一律开」。检索明细与落库的
+    # qa_trace 是同一份数据（P4-5），历史接口对会话属主无条件回放，但流式却
+    # 只给 admin —— 造成"流式中看不到检索详情、刷新后反而有"的割裂体验
+    # （线上实测 2026-11）。检索明细只含本用户自己这轮的切片分数，无越权面。
+    stream_debug = request.debug if request.debug is not None else True
     if stream_debug:
         logger.info("检索调试事件已开启 | session_id=%s 用户=%s debug=%s",
                     session_id, actor.username, request.debug)

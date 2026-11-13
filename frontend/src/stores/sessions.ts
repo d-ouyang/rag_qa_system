@@ -214,24 +214,42 @@ export const useSessionStore = defineStore('sessions', () => {
     currentAbort = controller
     streaming.value = true
 
-    // 高频小帧先攒着，一帧动画里合并写一次，避免每个 token 都触发重渲染和滚动
-    let pending = ''
+    // 打字机平滑（p4.16 hotfix）：后端 chunk 是「整句 / 40 字块」粒度
+    // （拒答句过滤的句级缓冲），前端原来整块追加，视觉上就是一段一段蹦。
+    // 改成双层缓冲：
+    //   · content        —— 数据层，收到就立刻累计（done 时数据永远完整）；
+    //   · displayContent —— 展示层，rAF 逐帧向 content 追赶（自适应步长：
+    //     积压越多走得越快，既平滑又不会越落越远）。
+    // 每帧只写一次字符串，Vue 每帧只触发一次响应式更新，回流开销与帧率绑定，
+    // 与 chunk 到达节奏解耦 —— 这是"流畅打字机 + 不频繁回流"的关键。
     let rafId = 0
-    const flushPending = () => {
+    const stepTypewriter = () => {
+      rafId = 0
+      if (controller.signal.aborted) return
+      const target = assistantMsg.content
+      const shown = assistantMsg.displayContent ?? ''
+      const remain = target.length - shown.length
+      if (remain > 0) {
+        // 基础步长 2 字/帧；积压超过 60 字（一整句块到达）时按 remain/12 加速追赶
+        const step = remain > 60 ? Math.max(2, Math.ceil(remain / 12)) : 2
+        assistantMsg.displayContent = target.slice(0, shown.length + Math.min(step, remain))
+      }
+      if (target.length > (assistantMsg.displayContent ?? '').length) {
+        rafId = requestAnimationFrame(stepTypewriter)
+      }
+    }
+    const enqueueChunk = (piece: string) => {
+      if (controller.signal.aborted) return
+      assistantMsg.content += piece
+      if (!rafId) rafId = requestAnimationFrame(stepTypewriter)
+    }
+    /** 收尾快进：把展示层直接推到数据层，光标停走、不再逐字动画 */
+    const flushTypewriter = () => {
       if (rafId) {
         cancelAnimationFrame(rafId)
         rafId = 0
       }
-      if (!pending) return
-      assistantMsg.content += pending
-      pending = ''
-    }
-    const enqueueChunk = (piece: string) => {
-      if (controller.signal.aborted) return
-      pending += piece
-      if (!rafId) {
-        rafId = requestAnimationFrame(flushPending)
-      }
+      assistantMsg.displayContent = assistantMsg.content
     }
 
     try {
@@ -256,7 +274,7 @@ export const useSessionStore = defineStore('sessions', () => {
           assistantMsg.grounded = { grounded: frame.grounded, unsupported: frame.unsupported }
           assistantMsg.low_confidence = frame.low_confidence
         } else if (frame.type === 'done') {
-          flushPending()
+          flushTypewriter()
           // done 一到就收光标：后端可能还在 summary/落库收尾，等流关闭再收会让光标空转
           assistantMsg.streaming = false
           // 每轮详情随消息存：尾部徽章 + 明细浮层的数据源，刷新后由历史接口恢复
@@ -264,13 +282,13 @@ export const useSessionStore = defineStore('sessions', () => {
           assistantMsg.elapsed_ms = frame.elapsed_ms
           assistantMsg.timings = frame.timings
         } else if (frame.type === 'error') {
-          flushPending()
+          flushTypewriter()
           assistantMsg.content +=
             (assistantMsg.content ? '\n\n' : '') + `⚠️ ${frame.detail}`
         }
       }, controller.signal)
     } catch (e) {
-      flushPending()
+      flushTypewriter()
       if (isAbortError(e) || controller.signal.aborted) {
         // 主动停止：留下已生成的文本，不当成请求失败
         if (!assistantMsg.usage) {
@@ -291,7 +309,7 @@ export const useSessionStore = defineStore('sessions', () => {
         }
       }
     } finally {
-      flushPending()
+      flushTypewriter()
       assistantMsg.streaming = false
       streaming.value = false
       if (currentAbort === controller) currentAbort = null

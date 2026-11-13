@@ -192,6 +192,11 @@ export interface ChatMessage {
   timings?: TurnTimings | null
   /** 是否正在流式输出中 */
   streaming?: boolean
+  /**
+   * p4.16 打字机展示层：流式期间界面实际渲染的文本，逐帧向 content 追赶。
+   * 仅当轮流式消息携带；历史消息（刷新后）不设置，直接渲染 content。
+   */
+  displayContent?: string
 }
 
 /** 本轮耗时明细（done 帧携带，单位 ms） */

@@ -700,6 +700,16 @@ class RAGRetriever:
         # ② 精排 / 或直接截断
         scored = self._rank(query, pairs, target_k, trace_out=trace_out)
 
+        # ②b 零召回抢救（p4.16 hotfix）：线上实测「公司管理制度是什么？」top1=0.059
+        # 被阈值 0.1 全拦 → 固定拒答；名词形态「公司的管理制度」分数过线就有回答。
+        # 问句形态（带「是什么/有哪些」）会把重排分整体拉低 0.02~0.05，是系统性偏差
+        # 而不是"库真没有"——此时把阈值放宽一档（×0.5，下限 0.02）重排一次，
+        # 交给 LLM 在真实资料上裁决；放宽后仍为空才允许零召回拒答。
+        # 误答风险由既有的兜底链消化：prompt 只许依据资料作答 + 拒答句过滤 +
+        # Groundedness 依据校验。仅重排开启且阈值生效时触发，一次检索至多抢救一次。
+        if not scored and self._rerank_active():
+            scored = self._rescue_below_threshold(query, pairs, target_k, trace_out)
+
         logger.info(
             "检索完成 | 候选=%d 返回=%d 重排=%s 混合=%s 耗时=%.2fs | query=%.24s",
             len(pairs),
@@ -710,6 +720,77 @@ class RAGRetriever:
             query,
         )
         return scored if return_score else [doc for doc, _ in scored]
+
+    # ------------------------------------------------------------------ #
+    # 零召回抢救（p4.16 hotfix）
+    # ------------------------------------------------------------------ #
+    #: 抢救阈值系数：放宽阈值 = 原阈值 × 0.5（0.1 → 0.05），下限 0.02
+    _RESCUE_FACTOR = 0.5
+    _RESCUE_FLOOR = 0.02
+
+    def _rescue_below_threshold(
+        self,
+        query: str,
+        pairs: Sequence[tuple[Document, float]],
+        target_k: int,
+        trace_out: dict[str, Any] | None = None,
+    ) -> list[tuple[Document, float]]:
+        """
+        阈值过滤导致全空时的放宽重试。命中条件（缺一不可）：
+
+            · 精排后 0 条、且确实是阈值拦的（top1_before_filter 存在）；
+            · 放宽阈值（原阈值 × 0.5，下限 0.02）之下 top1 仍然过线
+              —— 说明有"擦线"候选可救；top1 连放宽线都不到就维持拒答。
+
+        成功时 trace_out["rerank"] 会被**放宽轮的轨迹覆盖**（threshold /
+        candidates / passed_threshold 反映真实生效的阈值），检索详情面板
+        与 qa_trace 看到的就是抢救后的真相；并追加 rescued 键供溯源。
+
+        :return: 抢救成功返回 [(Document, 分数), ...]；仍为空返回 []（维持拒答）
+        """
+        threshold = self._effective_threshold()
+        if threshold is None:
+            return []
+        previous = (trace_out or {}).get("rerank") or {}
+        top1 = previous.get("top1_before_filter")
+        relaxed = max(round(threshold * self._RESCUE_FACTOR, 4), self._RESCUE_FLOOR)
+        if top1 is None or top1 < relaxed:
+            return []
+
+        start = time.perf_counter()
+        vector_similarities: dict[int, float] = {id(doc): float(score) for doc, score in pairs}
+        # 与 _rank 相同的"阈值写回重排器"约定（P4-2）：抢救轮写放宽值，用完即还原
+        self.reranker.score_threshold = relaxed
+        try:
+            reranked = self.reranker.rerank(query, [doc for doc, _ in pairs], top_k=target_k)
+        finally:
+            self.reranker.score_threshold = self._effective_threshold()
+        if not reranked:
+            return []
+
+        results: list[tuple[Document, float]] = []
+        for doc, rerank_score in reranked:
+            vector_similarity = vector_similarities.get(id(doc))
+            metadata = dict(doc.metadata)
+            metadata["vector_similarity"] = (
+                round(vector_similarity, 6) if vector_similarity is not None else None
+            )
+            metadata["rerank_score"] = round(rerank_score, 6)
+            results.append((Document(page_content=doc.page_content, metadata=metadata), rerank_score))
+
+        if trace_out is not None:
+            rescued_trace = dict(self.reranker.last_trace or {})
+            rescued_trace["rescued"] = True
+            rescued_trace["original_threshold"] = threshold
+            trace_out["rerank"] = rescued_trace
+            rejected_docs = getattr(self.reranker, "last_rejected_docs", None) or []
+            if rejected_docs:
+                trace_out.setdefault("candidate_docs", []).extend(rejected_docs)
+        logger.info(
+            "零召回抢救命中 | 阈值=%.4f 放宽=%.4f top1=%.4f 返回=%d 耗时=%.2fs | query=%.24s",
+            threshold, relaxed, top1, len(results), time.perf_counter() - start, query,
+        )
+        return results
 
     # ------------------------------------------------------------------ #
     # 混合召回：向量 + BM25 → RRF 融合（P3-4）

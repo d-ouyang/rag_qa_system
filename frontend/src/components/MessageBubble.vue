@@ -11,11 +11,26 @@ import type { ChatMessage, ChunkDetail, SourceItem } from '@/types'
 import { useSessionStore } from '@/stores/sessions'
 import { useUiStore } from '@/stores/ui'
 import { getChunk, isValidChunkId } from '@/api/chunks'
+import { renderMarkdown } from '@/lib/md'
 import DocumentPreview from '@/components/DocumentPreview.vue'
 
 const props = defineProps<{ message: ChatMessage; index: number }>()
 const sessions = useSessionStore()
 const ui = useUiStore()
+
+/** p4.16：流式期间渲染展示层（displayContent 逐字追赶），历史消息直接用 content */
+const shownContent = computed(() => props.message.displayContent ?? props.message.content)
+
+/**
+ * p4.16：assistant 气泡渲染**编译后的 markdown**（marked + DOMPurify 消毒），
+ * 流式与刷新同一渲染口径，不再直显 `**` 等源码符号。
+ * 增量编译成本可控：typewriter 每帧至多推进几个字符，marked 对 3KB 级文本
+ * 的同步解析在毫秒量级，与既有每帧一次的响应式更新合并，不额外增加回流次数。
+ */
+const renderedContent = computed(() =>
+  props.message.role === 'assistant' ? renderMarkdown(shownContent.value) : '',
+)
+
 const showSources = ref(false)
 /** 检索详情面板展开态（P2-23；消息带 retrieval_debug 才有得展） */
 const showDebug = ref(false)
@@ -374,6 +389,14 @@ async function loadChunk(id: string): Promise<void> {
           <div v-else-if="message.streaming && !message.content" class="thinking">
             正在思考<span class="dots"><i /><i /><i /></span>
           </div>
+          <!-- p4.16：assistant 渲染编译后的 markdown（流式与刷新同口径）；
+               user 消息保持纯文本插值 -->
+          <div
+            v-else-if="message.role === 'assistant'"
+            class="content content--md"
+            :class="{ 'is-streaming': message.streaming }"
+            v-html="renderedContent"
+          />
           <div v-else class="content">{{ message.content }}<span v-if="message.streaming" class="cursor" /></div>
 
           <!-- 溯源资料：按**源文件**聚合展示（同文档多切片合成一组，见 sourceGroups）。
@@ -720,6 +743,60 @@ async function loadChunk(id: string): Promise<void> {
 .content {
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* ----- assistant markdown 渲染（p4.16）：md 已含段落结构，关掉 pre-wrap ----- */
+.content--md {
+  word-break: break-word;
+  line-height: 1.75;
+}
+.content--md :deep(p) { margin: 0 0 8px; }
+.content--md :deep(p:last-child) { margin-bottom: 0; }
+.content--md :deep(h1),
+.content--md :deep(h2),
+.content--md :deep(h3),
+.content--md :deep(h4) { margin: 12px 0 6px; font-weight: 600; line-height: 1.4; }
+.content--md :deep(h1) { font-size: 1.25em; }
+.content--md :deep(h2) { font-size: 1.15em; }
+.content--md :deep(h3),
+.content--md :deep(h4) { font-size: 1.05em; }
+.content--md :deep(ul),
+.content--md :deep(ol) { margin: 4px 0 8px; padding-left: 22px; }
+.content--md :deep(li) { margin: 2px 0; }
+.content--md :deep(code) {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.92em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.content--md :deep(pre) {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.content--md :deep(pre code) { background: none; padding: 0; }
+.content--md :deep(table) { border-collapse: collapse; margin: 8px 0; }
+.content--md :deep(th),
+.content--md :deep(td) { border: 1px solid rgba(0, 0, 0, 0.15); padding: 4px 10px; }
+.content--md :deep(blockquote) {
+  margin: 8px 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--primary);
+  color: var(--text-2);
+}
+.content--md :deep(a) { color: var(--primary); }
+/* 流式光标：v-html 里塞不了 span，用 ::after 画（样式与 .cursor 一致） */
+.content--md.is-streaming::after {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-left: 2px;
+  vertical-align: -2px;
+  background: var(--primary);
+  animation: blink 0.9s step-end infinite;
 }
 /* ----- 用户编辑态 ----- */
 .edit-area {
