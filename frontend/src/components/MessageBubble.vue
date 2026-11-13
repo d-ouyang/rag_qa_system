@@ -744,24 +744,29 @@ async function loadChunk(id: string): Promise<void> {
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* ----- assistant markdown 渲染（p4.16）：md 已含段落结构，关掉 pre-wrap ----- */
+/* ----- assistant markdown 渲染（p4.16）：md 已含段落结构，必须关掉基类的
+   pre-wrap —— 否则 v-html 输出里块级元素之间的源码换行符会被当作空白渲染，
+   段间距翻倍（p4.16b 线上实测）。整体间距按紧凑口径收一档。 ----- */
 .content--md {
+  white-space: normal;
   word-break: break-word;
-  line-height: 1.75;
+  line-height: 1.7;
 }
-.content--md :deep(p) { margin: 0 0 8px; }
+.content--md :deep(p) { margin: 0 0 6px; }
 .content--md :deep(p:last-child) { margin-bottom: 0; }
 .content--md :deep(h1),
 .content--md :deep(h2),
 .content--md :deep(h3),
-.content--md :deep(h4) { margin: 12px 0 6px; font-weight: 600; line-height: 1.4; }
+.content--md :deep(h4) { margin: 10px 0 4px; font-weight: 600; line-height: 1.4; }
 .content--md :deep(h1) { font-size: 1.25em; }
 .content--md :deep(h2) { font-size: 1.15em; }
 .content--md :deep(h3),
 .content--md :deep(h4) { font-size: 1.05em; }
 .content--md :deep(ul),
-.content--md :deep(ol) { margin: 4px 0 8px; padding-left: 22px; }
-.content--md :deep(li) { margin: 2px 0; }
+.content--md :deep(ol) { margin: 2px 0 6px; padding-left: 22px; }
+.content--md :deep(li) { margin: 1px 0; }
+.content--md :deep(li > p) { margin: 0 0 2px; }
+.content--md :deep(li > p:last-child) { margin-bottom: 0; }
 .content--md :deep(code) {
   background: rgba(0, 0, 0, 0.06);
   border-radius: 4px;
