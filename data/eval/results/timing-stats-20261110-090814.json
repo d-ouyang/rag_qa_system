@@ -1,0 +1,41 @@
+{
+  "generated_at": "2026-11-10T09:08:14+08:00",
+  "days": 1,
+  "rows": 3,
+  "prepare": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "generate": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "grounded": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "total": {
+    "p50": 2132.8,
+    "p95": 3413.59,
+    "max": 3555.9,
+    "n": 3
+  },
+  "decisions": {
+    "qa_hit": 1,
+    "rag_qa": 2
+  },
+  "grounded_counts": {
+    "none": 1,
+    "True": 1,
+    "False": 1
+  },
+  "dual_used": 0,
+  "fallback_used": 0,
+  "slow_generate_60s": 0
+}

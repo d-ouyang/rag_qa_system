@@ -1,0 +1,34 @@
+{
+  "generated_at": "2026-11-08T09:04:46+08:00",
+  "days": 1,
+  "rows": 0,
+  "prepare": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "generate": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "grounded": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "total": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "decisions": {},
+  "grounded_counts": {},
+  "dual_used": 0,
+  "fallback_used": 0,
+  "slow_generate_60s": 0
+}

@@ -1,0 +1,44 @@
+{
+  "generated_at": "2026-11-12T15:30:03+08:00",
+  "days": 1,
+  "rows": 3,
+  "prepare": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "generate": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "grounded": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "total": {
+    "p50": 1626.4,
+    "p95": 3808.54,
+    "max": 4051.0,
+    "n": 3
+  },
+  "decisions": {
+    "chitchat": 1,
+    "rag_qa": 2
+  },
+  "grounded_counts": {
+    "none": 1,
+    "True": 2
+  },
+  "source_breakdown": {
+    "诊断(diag)": 3
+  },
+  "last_write": "2026-11-11T11:55:58",
+  "dual_used": 0,
+  "fallback_used": 0,
+  "slow_generate_60s": 0
+}

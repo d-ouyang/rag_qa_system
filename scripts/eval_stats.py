@@ -26,6 +26,30 @@ from sqlalchemy import text  # noqa: E402
 from core.db import session_scope  # noqa: E402
 
 
+# 会话名前缀 → 数据来源标签。
+#
+# 为什么需要这个：本机库里绝大多数行是评测脚本写的（verifykbx / evalguard），
+# 少量是手工联调（diag-）。只看「统计轮次」会把「没有真人提问」和
+# 「评测脚本没跑」混成同一个 0，导致连续多天报 0 却查不出是哪一类断了。
+# 所以把来源拆开报：评测归零 = 没跑评测；真实归零 = 没人用。
+SOURCE_RULES: tuple[tuple[str, str], ...] = (
+    ("evalguard-", "评测(evalguard)"),
+    ("verifykbx-", "评测(verifykbx)"),
+    ("vfy-", "评测(vfy)"),
+    ("diag-", "诊断(diag)"),
+)
+
+
+def source_of(session_id: str | None) -> str:
+    """按会话名前缀判定数据来源，识别不出的都算真实/手工流量。"""
+    if not session_id:
+        return "无会话"
+    for prefix, label in SOURCE_RULES:
+        if session_id.startswith(prefix):
+            return label
+    return "真实/手工"
+
+
 def pct(values: list[float], q: float) -> float | None:
     if not values:
         return None
@@ -52,12 +76,17 @@ def main() -> int:
     with session_scope() as session:
         rows = session.execute(
             text(
-                "SELECT turn_meta, create_time FROM chat_message "
+                "SELECT session_id, turn_meta, create_time FROM chat_message "
                 "WHERE role = 'assistant' AND turn_meta IS NOT NULL "
                 "AND create_time >= :since"
             ),
             {"since": since},
         ).all()
+        # 全表最后写入时间：用于在「0 轮」时直接说明距离上次落库过了多久，
+        # 免得每次都要人工去 MySQL 里翻一遍才知道是真没人问还是采集坏了。
+        last_write = session.execute(
+            text("SELECT MAX(create_time) FROM chat_message WHERE role = 'assistant'")
+        ).scalar()
 
     prepare: list[float] = []
     generate: list[float] = []
@@ -65,9 +94,11 @@ def main() -> int:
     total: list[float] = []
     decisions: Counter[str] = Counter()
     grounded_counts: Counter[str] = Counter()
+    sources: Counter[str] = Counter()
     dual = fallback = slow = 0
 
     for row in rows:
+        sources[source_of(row.session_id)] += 1
         meta = row.turn_meta
         if isinstance(meta, str):
             try:
@@ -115,12 +146,45 @@ def main() -> int:
     out = out if out.is_absolute() else (ROOT / out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    # 距上次落库多久：0 轮时这是唯一能区分「没人问」和「采集坏了」的线索。
+    if last_write is None:
+        last_write_line = "- 库内最后写入：无任何记录"
+        gap_days = None
+    else:
+        gap = datetime.now() - last_write
+        gap_days = gap.total_seconds() / 86400
+        last_write_line = (
+            f"- 库内最后写入：{last_write:%Y-%m-%d %H:%M}"
+            f"（{gap_days:.1f} 天前）"
+        )
+
     lines = [
         f"# 问答耗时/质量统计（最近 {args.days} 天）",
         "",
         f"- 生成时间：{datetime.now().astimezone().isoformat(timespec='seconds')}",
         f"- 统计轮次：{len(rows)}",
+        last_write_line,
         "",
+    ]
+
+    # 窗口内没有样本时，把「为什么是 0」写清楚。
+    # 否则这行 0 会被误读成服务故障，实际上多数情况是根本没人提问
+    # ——管理端的看板/审计/登录都不会写 chat_message，不进这个统计。
+    if not rows:
+        lines += [
+            "> ⚠️ 近 "
+            f"{args.days} 天无新增问答记录"
+            + (f"，最后一条落库在 {gap_days:.1f} 天前" if gap_days is not None else "")
+            + "。",
+            ">",
+            "> 本报表只统计「问答落库」：登录、管理端巡检（看板/qa-trace/用户/审计）"
+            "都不会写入 chat_message。",
+            "> 因此 0 轮通常意味着**没人提问**，而不是服务或采集故障。"
+            "排查时先确认后端是否有 `POST /api/v1/qa/ask` 请求。",
+            "",
+        ]
+
+    lines += [
         "| 阶段 | p50 | p95 | 最大 | 样本 |",
         "| --- | --- | --- | --- | --- |",
     ]
@@ -150,6 +214,16 @@ def main() -> int:
     ]
     for k, v in decisions.most_common():
         lines.append(f"| {k} | {v} |")
+    lines += [
+        "",
+        "| 数据来源 | 轮次 |",
+        "| --- | --- |",
+    ]
+    if sources:
+        for k, v in sources.most_common():
+            lines.append(f"| {k} | {v} |")
+    else:
+        lines.append("| — | 0 |")
     lines.append("")
     out.write_text("\n".join(lines), encoding="utf-8")
 
@@ -163,6 +237,8 @@ def main() -> int:
         "total": {"p50": pct(total, 0.5), "p95": pct(total, 0.95), "max": max(total) if total else None, "n": len(total)},
         "decisions": dict(decisions),
         "grounded_counts": dict(grounded_counts),
+        "source_breakdown": dict(sources),
+        "last_write": last_write.isoformat(timespec="seconds") if last_write else None,
         "dual_used": dual,
         "fallback_used": fallback,
         "slow_generate_60s": slow,
