@@ -88,7 +88,7 @@ from core.identity import (
 )
 from core.parsing import resolve_storage_path
 from core.queue import enqueue_parse
-from core.vector_store import get_vector_store_manager
+from core.tool_registry import get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +348,7 @@ def list_documents(
     documents = repo.list_documents(status=status, project_id=project_id, limit=limit, offset=offset)
     return {
         "total_documents": len(documents),
-        "total_chunks": get_vector_store_manager().count(),
+        "total_chunks": get_registry().get("vector_store")().count(),
         "counts": repo.counts_by_status(project_id),
         "documents": [d.to_dict() for d in documents],
     }
@@ -360,7 +360,7 @@ def list_documents(
     description="向量库后端类型、持久化目录、嵌入模型、片段总量等统计信息。",
 )
 def document_stats() -> dict[str, Any]:
-    return get_vector_store_manager().get_stats()
+    return get_registry().get("vector_store")().get_stats()
 
 
 # --------------------------------------------------------------------------- #
@@ -483,7 +483,7 @@ def get_document_chunks(doc_id: int) -> dict[str, Any]:
     if record is None:
         raise HTTPException(status_code=404, detail=f"文档不存在：doc_id={doc_id}")
 
-    chunks = get_vector_store_manager().get_chunks_by_doc_id(doc_id)
+    chunks = get_registry().get("vector_store")().get_chunks_by_doc_id(doc_id)
     return {
         "doc_id": doc_id,
         "file_name": record.file_name,
@@ -591,7 +591,7 @@ def _purge_document(record: repo.DocumentRecord) -> dict[str, Any]:
     一个「向量库连不上」的文档）。但失败会记 ERROR 日志，并如实反映在返回值里，
     不假装成功。
     """
-    store = get_vector_store_manager()
+    store = get_registry().get("vector_store")()
     deleted_chunks = 0
     try:
         deleted_chunks = store.delete_by_doc_id(record.doc_id)

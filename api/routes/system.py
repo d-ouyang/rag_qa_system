@@ -37,7 +37,7 @@ from core.db import check_connection, get_engine
 from core.identity import MODE_DEV, MODE_GATEWAY
 from core.memory_manager import get_memory_manager
 from core.queue import queue_depth, worker_alive
-from core.vector_store import get_vector_store_manager
+from core.tool_registry import get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ def get_system_settings() -> dict[str, Any]:
 
     # 嵌入模型的真实运行信息（从单例取，与检索链路一致；包含模型名/设备/维度）
     try:
-        embedding_info: dict[str, Any] = get_vector_store_manager().get_stats()
+        embedding_info: dict[str, Any] = get_registry().get("vector_store")().get_stats()
         embedding = {
             "model": embedding_info.get("embedding_model"),
             "device": embedding_info.get("embedding_device"),

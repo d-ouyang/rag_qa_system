@@ -120,7 +120,7 @@ class QaDirectIndex:
 
     线程安全：精确层构建后不可变；语义向量惰性计算一次（双检锁）。
     embeddings 可注入（测试打桩用，LangChain Embeddings 接口：embed_documents /
-    embed_query），缺省用全局嵌入模型 get_embedding_model()。
+    embed_query），缺省用全局嵌入模型 get_registry().get("embedding")()。
     """
 
     def __init__(
@@ -146,9 +146,9 @@ class QaDirectIndex:
 
     def _get_embeddings(self):
         if self._embeddings is None:
-            from core.embedding import get_embedding_model
+            from core.tool_registry import get_registry
 
-            self._embeddings = get_embedding_model()
+            self._embeddings = get_registry().get("embedding")()
         return self._embeddings
 
     # ------------------------------------------------------------------ #

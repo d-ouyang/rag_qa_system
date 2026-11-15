@@ -78,7 +78,8 @@ from core.groundedness import (
 )
 from core import qa_flow
 from core import qa_trace_repo
-from core.retriever import RAGRetriever, get_rag_retriever
+from core.retriever import RAGRetriever
+from core.tool_registry import get_registry
 from core.vector_store import build_chunk_id, chunk_id_of_metadata
 
 logger = logging.getLogger(__name__)
@@ -1163,7 +1164,8 @@ class RAGChain:
         检索器（向量库连接）/ LLM 客户端（HTTP 连接池）/ 记忆管理器都是
         「进程级共享资源」，每个请求新建会反复建连，必须用单例。
         """
-        self.retriever: RAGRetriever = retriever or get_rag_retriever()
+        # v4.1.0-p1.1（①1b）：检索器经 registry 取用——链路无绕过直调（评测可 override 注入 Fake）
+        self.retriever: RAGRetriever = retriever or get_registry().get("retriever")()
         self.llm_client: LLMClient = llm_client or get_llm_client()
         self.memory: MemoryManager = memory or get_memory_manager()
 

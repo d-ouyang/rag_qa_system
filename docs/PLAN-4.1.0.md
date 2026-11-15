@@ -10,8 +10,8 @@
 | # | 步骤 | 状态 |
 |---|---|---|
 | ①1a | ToolSpec 契约 + RagToolRegistry + 集中批注（含 chunk_rebuild 高危标记） | ✅ **p1.0** |
-| ①1b | 调用点收编：retriever/rag_chain/bm25/embedding/mineru/parsing 的直调改为 registry 取用 | ⬜ p1.1 |
-| ①1c | 判据验收：检索链路无绕过 registry 的直调（测试断言/静态检查） | ⬜ p1.1 |
+| ①1b | 调用点收编：rag_chain/api 三路由/qa_direct 共 12 处直调改为 registry 取用 | ✅ **p1.1** |
+| ①1c | 判据验收：scripts/check_tool_contract.py 静态把关（exit=0） | ✅ **p1.1** |
 | ①2 | 检索结果回灌规范：截断+结构化统一；上下文注入长度上限可配 | ⬜ p1.2 |
 
 ## Phase ②：计量外移 + 降级链（p2.x）

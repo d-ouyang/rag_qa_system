@@ -49,7 +49,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core import document_repo as repo
-from core.vector_store import get_vector_store_manager, parse_chunk_id
+from core.tool_registry import get_registry
+from core.vector_store import parse_chunk_id
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ def get_chunk(chunk_id: str) -> ChunkDetail:
     # 必须先查 Chroma：切片不在，后面的 MySQL 查询只是为了**给错误分类**，
     # 而分类结果只影响文案。反过来先查 MySQL 也能跑，但那样「切片在不在」
     # 这个决定 200/404 的关键事实就排在了次要位置。
-    payload: dict[str, Any] | None = get_vector_store_manager().get_chunk_by_position(
+    payload: dict[str, Any] | None = get_registry().get("vector_store")().get_chunk_by_position(
         doc_id, chunk_index
     )
     record = repo.get(doc_id)
