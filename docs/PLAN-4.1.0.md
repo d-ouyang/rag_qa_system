@@ -19,7 +19,7 @@
 | # | 步骤 | 状态 |
 |---|---|---|
 | ②1 | quota 三件套判定逻辑外移 NestJS 网关（FastAPI 只留查余额/接 429） | ✅ **p2.1** |
-| ②2 | LLM/embedding 收口 + **硅基流动 502 → 重试 + 本地 bge-m3 降级**（Ollama 本地 → DeepSeek API 链路） | ⬜ |
+| ②2 | API 韧性：rerank 重试 2 次 + embedding 显式 max_retries=3。**本地降级链否决**（生产无本地模型/嵌入空间不兼容——bge-m3 全量迁移列为独立决策项） | ✅ **p2.2** |
 | ②3 | usage 归因 tenant/user/run（对齐 office B2） | ⬜ |
 
 ## Phase ③：事件流统一（p3.x）

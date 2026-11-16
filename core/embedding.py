@@ -124,6 +124,9 @@ class EmbeddingModel:
             openai_api_base=settings.SILICONFLOW_BASE_URL,
             tiktoken_enabled=False,
             check_embedding_ctx_length=False,
+            # v4.1.0-p2.2（API 韧性）：显式化 SDK 重试（openai SDK 对 5xx 默认重试
+            # 2 次，显式写 3 次并注明——502 间歇故障的兜底在 SDK 层完成）。
+            max_retries=3,
         )
         self.model = _L2NormalizedEmbeddings(inner)
         self.loaded_from = "siliconflow"

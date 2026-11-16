@@ -375,14 +375,39 @@ class SiliconFlowReranker(BaseDocumentCompressor):
             #    而本机 IPv6 路由黑洞（实测 connect 75s 超时）。urllib 串行回退，
             #    每次重排挂 120~150s（P4-5c 实测：同 payload curl 0.55s / urllib 150.38s，
             #    返回分数完全一致——纯连接层问题）。绑定 v4 源地址后 anyio 只搜 v4。
-            with httpx.Client(
-                trust_env=False,
-                timeout=settings.LLM_TIMEOUT,
-                transport=httpx.HTTPTransport(local_address="0.0.0.0"),
-            ) as client:
-                resp = client.post(url, content=req_body, headers=headers)
-                resp.raise_for_status()
-                body = resp.json()
+            # v4.1.0-p2.2（API 韧性）：硅基流动 502 间歇性故障 → 重试 2 次（退避 1s/2s）。
+            # 只对 5xx/连接层错误重试（4xx 是请求问题，重试无意义）；重试耗尽仍失败
+            # 则抛出——调用方（compress_documents/_rerank_docs）已有「降级为原顺序」兜底。
+            # 全走 API 不做本地降级（2026-11-16 用户拍板：同模型本地副本成本/资源不划算，
+            # 异模型嵌入空间不兼容）。
+            last_err: Exception | None = None
+            body: dict | None = None
+            for attempt in range(3):
+                try:
+                    with httpx.Client(
+                        trust_env=False,
+                        timeout=settings.LLM_TIMEOUT,
+                        transport=httpx.HTTPTransport(local_address="0.0.0.0"),
+                    ) as client:
+                        resp = client.post(url, content=req_body, headers=headers)
+                        resp.raise_for_status()
+                    body = resp.json()
+                    break
+                except (httpx.HTTPStatusError, httpx.TransportError) as e:
+                    status = getattr(getattr(e, "response", None), "status_code", 0)
+                    if isinstance(e, httpx.HTTPStatusError) and status < 500:
+                        raise  # 4xx：请求本身的问题，重试无意义
+                    last_err = e
+                    if attempt < 2:
+                        wait = 2 ** attempt  # 1s / 2s
+                        logger.warning(
+                            "远程重排第 %d 次失败（%s），%.0fs 后重试",
+                            attempt + 1, e, wait,
+                        )
+                        time.sleep(wait)
+            if body is None:
+                assert last_err is not None
+                raise last_err
 
             scored: list[tuple[Document, float]] = []
             for item in body.get("results") or []:
