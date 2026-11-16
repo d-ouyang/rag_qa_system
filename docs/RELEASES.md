@@ -66,6 +66,7 @@
 | **v4.1.0-p1.2** | 2026-11-16 | **检索结果回灌规范（Phase ①2，Phase ① 收官）**：core/context_budget.py 统一预算器（保序/整块丢弃/单块超预算截断/dropped 可观测）+ 热开关 `context_inject_max_chars`（缺省 24000 字符，0=不限，管理端可调）+ rag_chain 两个注入点（format_docs/judge 候选）全部接线。判据达成：上下文注入长度有上限可配。测试 6/6 | `iterations/v4.1.0-p1.2-context-budget.md` |
 | **v4.1.0-p2.1** | 2026-11-16 | **quota 判定外移 NestJS 网关（Phase ②1）**：gateway/src/quota（QuotaService：can_ask/billable/effective_quota/CTE 聚合/period_bounds 的 TS 逐字镜像）+ proxy 转发前判定（POST ask 两入口、429 形状逐字段一致）+ **FastAPI 删 _quota_precheck**（只留 /quota/me 查余额）。拍板：失败 fail-open（成本护栏≠安全门）、不可归属身份放行、SQL 直查网关。判据达成：超限 429 在网关短路、绕过判定不存在。测试 11/11 + 双端回归全过 | `iterations/v4.1.0-p2.1-quota-gateway.md` |
 | **v4.1.0-p2.2** | 2026-11-16 | **API 调用韧性（Phase ②2 收缩版）**：**本地降级链否决**（生产无本地模型 + 嵌入空间不兼容——降级铁律=同模型另一来源；bge-m3 全量迁移列为独立决策项）+ rerank httpx 加重试 2 次（5xx/连接错误，退避 1s/2s，4xx 不重试，耗尽走既有「降级为原顺序」兜底）+ embedding 显式 max_retries=3。测试 3/3 | `iterations/v4.1.0-p2.2-api-resilience.md` |
+| **v4.1.0-p2.3** | 2026-11-16 | **usage 归因（Phase ②3，Phase ② 收官）**：qa_trace 加 usage 三列镜像（迁移 0014）——qa_trace.id 自成 query_id，一行=谁/会话/流程/token 全量归因；_record_qa_trace 三个调用点接线（缓存命中轮 0 token 也落）；tenant 单租户不建模。判据达成：每次问答可归因。测试 4/4 | `iterations/v4.1.0-p2.3-usage-attribution.md` |
 | `v2.0.0-p2.11c` | 2026-10-08 | 员工账号真正上岗：管理端建的人，现在能用自己的账号登录问答系统了 |
 | `v2.0.0-p2.12c` | 2026-10-08 | **「登 A 看 A 的、登 B 看 B 的」真的成立了**：会话按人分开，拿别人的会话 ID 去读/改/删一律 403 |
 | `v2.0.0-p2.12b` | 2026-10-08 | 封上一个真实存在的漏洞：此前任何人绕过界面直接调接口，都能自称管理员 |

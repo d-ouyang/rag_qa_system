@@ -1124,7 +1124,10 @@ def _qa_hit_sources(hit: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _record_qa_trace(
-    session_id: str, owner_id: int | None, trace: dict[str, Any]
+    session_id: str,
+    owner_id: int | None,
+    trace: dict[str, Any],
+    usage: dict[str, int] | None = None,
 ) -> None:
     """
     轨迹镜像进 `qa_trace` 分析表（P4-5b），**fail-open**。
@@ -1136,6 +1139,12 @@ def _record_qa_trace(
     测试要断言镜像内容时，让 record 原样炸出来比吞掉更好查。
     """
     try:
+        # v4.1.0-p2.3（usage 归因）：当轮 token 用量镜像进轨迹——qa_trace.id 自成
+        # query_id，一行即得「谁/哪个会话/什么流程/多少 token」的全量归因。
+        if usage:
+            trace.setdefault("usage_input_tokens", int(usage.get("input_tokens") or 0))
+            trace.setdefault("usage_output_tokens", int(usage.get("output_tokens") or 0))
+            trace.setdefault("usage_cache_read_tokens", int(usage.get("cache_read_tokens") or 0))
         qa_trace_repo.record(session_id=session_id, owner_id=owner_id, trace=trace)
     except Exception:
         logger.warning("qa_trace 镜像落库失败（不影响本轮回答）", exc_info=True)
@@ -1678,7 +1687,7 @@ class RAGChain:
             self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
                                      owner_id=owner_id, summarize=False)
             # P4-5b：缓存命中轮同样镜像进分析表（decision=cache_hit，无检索细节）
-            _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
+            _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"], exchange_meta.get("usage"))
             _summarize_async(self.memory, session_id, owner_id)
         logger.info(
             "问答缓存复用 | session_id=%s 耗时=%.0fms | query=%.24s",
@@ -1947,7 +1956,7 @@ class RAGChain:
             self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
                                      owner_id=owner_id, summarize=False)
             # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
-            _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
+            _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"], exchange_meta.get("usage"))
             self._maybe_store_cache(question, result, bool(chat_history))
             # token 用量：本次问答（重写 + 主回答）累加进会话。
             # persist=False（办公侧调用）不记进 RAG 额度，由调用方按 usage 入自己的账。
@@ -2219,7 +2228,7 @@ class RAGChain:
         self.memory.add_exchange(session_id, question, answer, meta=exchange_meta,
                                  owner_id=owner_id, summarize=False)
         # P4-5b：镜像进 qa_trace 分析表（fail-open —— 分析挂了不能挡问答）
-        _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"])
+        _record_qa_trace(session_id, owner_id, exchange_meta["qa_trace"], exchange_meta.get("usage"))
         self._maybe_store_cache(
             question,
             {

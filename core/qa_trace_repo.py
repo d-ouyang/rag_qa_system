@@ -61,6 +61,9 @@ _TRACE_KEYS: tuple[str, ...] = (
     "rejected",
     "grounded",       # P4-6：依据校验结果（bool | None）
     "unsupported",    # P4-6：未支撑论断清单（list[str]）
+    "usage_input_tokens",       # v4.1.0-p2.3：usage 归因（query_id=user/session/usage 全量）
+    "usage_output_tokens",
+    "usage_cache_read_tokens",
 )
 
 
