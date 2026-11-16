@@ -141,7 +141,10 @@ for _mig in sorted(_glob.glob("alembic/versions/*.py")):
     _mig_cols |= c
     if r:
         _rev = r  # 线性链：排序后最后一个文件的 revision 即链头
-check("迁移链头是 0013（qa_trace 加列）", _rev == "0013", f"实际 {_rev}")
+# 4.1.0-p4.2b 加了迁移 0014（qa_trace usage 三列），链头随之推进——守卫意图是
+# 「链头不早于 0013（qa_trace 结构存在）」，具体列对齐由下一条断言钉住，
+# 所以这里只下限卡 0013，不再钉死具体版本号（否则每加一个无关迁移就红一次）。
+check("迁移链头不早于 0013（qa_trace 结构存在）", _rev >= "0013", f"实际 {_rev}")
 check("schema 与迁移列集合一致（数量含 id）",
       _schema_cols == _mig_cols,
       f"仅 schema 有: {sorted(_schema_cols - _mig_cols)}；仅迁移有: {sorted(_mig_cols - _schema_cols)}")

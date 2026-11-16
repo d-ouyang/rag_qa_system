@@ -527,6 +527,10 @@ async function loadChunk(id: string): Promise<void> {
                   :class="{ failed: !c.passed_threshold }"
                 >
                   <span class="cand-name" :title="c.chunk_id ?? ''">{{ c.file_name || c.chunk_id || '（无键切片）' }}</span>
+                  <!-- p4.2d：召回来源（vector=向量路；bm25=关键词路独有；both=双路） -->
+                  <span v-if="c.recall_source" class="cand-src" :data-src="c.recall_source">
+                    {{ { vector: '向量', bm25: 'BM25', both: '双路' }[c.recall_source] }}
+                  </span>
                   <span class="cand-score">{{ fmtScore(c.rerank_score) }}</span>
                   <span class="cand-pass">{{ c.passed_threshold ? '✓' : '✗' }}</span>
                 </div>
@@ -1131,6 +1135,23 @@ async function loadChunk(id: string): Promise<void> {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+/* p4.2d：召回来源徽标（vector/bm25/both 着色区分） */
+.cand-src {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--text-3);
+}
+.cand-src[data-src='both'] {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+.cand-src[data-src='bm25'] {
+  color: #b8860b;
+  border-color: #b8860b;
 }
 .cand-pass {
   flex-shrink: 0;

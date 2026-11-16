@@ -821,6 +821,11 @@ class RAGRetriever:
         merged = [(pool[cid], score) for cid, score in ordered if cid in pool]
 
         bm25_only = len([cid for cid, _ in bm25_hits if cid not in set(vector_ids)])
+        # p4.2d：每个候选的召回来源（vector/bm25/both）——检索详情面板逐条标注，
+        # 回答「哪几条是 BM25 捞的、哪几条是向量捞的」（此前只有聚合计数）。
+        origin: dict[str, str] = {cid: "vector" for cid in vector_ids}
+        for cid, _ in bm25_hits:
+            origin[cid] = "both" if cid in origin else "bm25"
         self.last_hybrid_trace = {
             "bm25_hits": len(bm25_hits),
             "vector_hits": len(vector_ids),
@@ -828,6 +833,7 @@ class RAGRetriever:
             "merged": len(merged),
             "rrf_top": ordered[0][0] if ordered else None,
             "rrf_k": rrf_k,
+            "sources": origin,                # chunk_id → vector/bm25/both
         }
         logger.info(
             "混合召回 | 向量=%d BM25=%d（独有=%d）融合=%d rrf_top=%s",

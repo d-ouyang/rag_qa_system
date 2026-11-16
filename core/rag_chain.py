@@ -839,6 +839,43 @@ def _polar_secondary_query(question: str) -> str | None:
     return None
 
 
+# p4.2d：问句形态关键词兜底。线上实测（2026-11-17）：同一份「05_考勤管理制度」，
+# 名词形态问「年假规定」「年假」top1 高达 0.39~0.66，而疑问句式「年假有几天？」
+# 只有 0.0728 —— bge-reranker 对"名词+疑问词"的问句系统性拉低分数，0.1 阈值
+# 把全部候选拦掉后固定拒答。这类问题出现过多次，根治方式是**提高 query 质量
+# 而不是放宽质量门槛**（后者已被用户否决）：确定性剥掉疑问/请求词得到名词短语，
+# 用**原阈值**再检索一次。纯规则零 LLM 成本，只在零召回的失败路径上多花一次检索。
+# ⚠️ 两组正则都只从**句尾**往回剥（尾部锚定 $）——绝不全局替换：
+# 句中的疑问词是有语义的（「怎么申请报销」剥掉"怎么"就变味了）。
+_QUESTION_TAIL_RE = re.compile(
+    r"(是什么|有哪些|有多少|有几天|几天|几号|多少|哪些|怎么样|如何|怎么|什么|吗|么|呢|嘛)+"
+    r"[?？!！。，,、；;：:\s]*$"
+)
+_QUESTION_TAIL_VERB_RE = re.compile(r"(需要|可以|能|会|想|要|有|是|问|咨询|了解|查)+$")
+_QUESTION_LEAD_RE = re.compile(r"^(请问|帮我|麻烦|我想知道|我想了解|告诉我|说明|介绍一下|介绍下)")
+
+
+def _keyword_fallback_query(question: str) -> str | None:
+    """问句形态零召回兜底：剥掉疑问/请求词取名词核心；不可用返回 None。
+
+    例：「年假有几天？」→「年假」；「公司管理制度是什么？」→「公司管理制度」。
+    剥完为空、与原问相同、或长度 < 2 时不兜底（避免把噪声查询喂进检索）。
+    """
+    text = (question or "").strip()
+    if not text:
+        return None
+    text = _QUESTION_LEAD_RE.sub("", text).strip()
+    prev = None
+    while prev != text and text:
+        prev = text
+        text = _QUESTION_TAIL_RE.sub("", text).strip()
+        text = _QUESTION_TAIL_VERB_RE.sub("", text).strip()
+    text = re.sub(r"\s+", " ", text)
+    if not text or len(text) < 2 or text == (question or "").strip():
+        return None
+    return text
+
+
 def _reconcile_dual(
     primary_docs: list[Document],
     primary_trace: dict[str, Any] | None,
@@ -946,7 +983,14 @@ def _retrieval_debug_event(
                    用同一份 0 表示会让排查的人往错误的方向上查。
     """
     if trace:
-        candidates = [dict(c) for c in trace.get("candidates") or []]
+        # p4.2d：混合轨迹里的逐条来源（chunk_id → vector/bm25/both）映射到候选上
+        sources = (hybrid or {}).get("sources") if isinstance(hybrid, dict) else None
+        candidates = []
+        for c in trace.get("candidates") or []:
+            item = dict(c)
+            if sources:
+                item["recall_source"] = sources.get(item.get("chunk_id"))
+            candidates.append(item)
         threshold = trace.get("threshold")
         top1 = trace.get("top1_before_filter")
         filtered_count = trace.get("filtered_count", 0)
@@ -1467,6 +1511,32 @@ class RAGChain:
 
         # 被阈值过滤的候选原文：给 Groundedness judge 补充依据。
         # pop 出来而不是留在 trace 里 —— 它含 Document 对象，不该随轨迹落库。
+        # p4.2d：问句形态关键词兜底（在零召回之后）。「年假有几天？」这类
+        # "名词+疑问词"问句会被重排系统性拉低分数（同库名词形态 top1 0.39~0.66，
+        # 疑问句只 0.073，线上复测），0.1 阈值拦掉全部候选后固定拒答。
+        # 兜底：确定性剥掉疑问词得到名词短语，用**原阈值**再检索一次——
+        # 提高的是 query 质量，不放宽质量门槛（区别于已否决的"降阈值抢救"）；
+        # 纯规则零 LLM 成本，只在失败路径多花一次检索。仍为空才拒答。
+        if not docs:
+            kw_query = _keyword_fallback_query(question)
+            if kw_query:
+                kw_trace: dict[str, Any] = {}
+                try:
+                    docs = retriever.retrieve(kw_query, trace_out=kw_trace)
+                except Exception as e:  # noqa: BLE001 - 兜底失败不影响主链路拒答
+                    logger.warning("问句形态关键词兜底检索失败，忽略 | q=%.32s | %s", kw_query, e)
+                    docs = []
+                if docs:
+                    trace = kw_trace
+                    trace["keyword_fallback"] = {"from": question, "to": kw_query}
+                    sub_queries = [kw_query]
+                    standalone = kw_query
+                    used_fallback = True
+                    logger.info(
+                        "问句形态关键词兜底命中 | %.24s -> %.32s | %d 条",
+                        question, kw_query, len(docs),
+                    )
+
         judge_docs = _dedupe_candidate_docs(
             trace.pop("candidate_docs", []) if isinstance(trace, dict) else []
         )

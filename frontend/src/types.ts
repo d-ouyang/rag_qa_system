@@ -42,6 +42,11 @@ export interface RetrievalCandidate {
   rerank_score?: number | null
   vector_similarity?: number | null
   passed_threshold: boolean
+  /**
+   * p4.2d：这条候选是被哪一路召回的（混合检索开启时才有值）。
+   * vector=纯向量路；bm25=关键词路独有（向量没捞到）；both=两路都命中。
+   */
+  recall_source?: 'vector' | 'bm25' | 'both' | null
 }
 
 /** 检索调试事件（/ask/stream debug=true 时下发，P2-23） */
