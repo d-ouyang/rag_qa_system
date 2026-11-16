@@ -220,6 +220,10 @@ eval-retrieval:
 
 # 答案级 golden 守卫（生成约束，不是检索评测）：跑真实链路，答案命中 forbidden_patterns 即失败。
 # 例：make eval-answer-guard；make eval-answer-guard ARGS="--id a001"
+# v4.1.0-p4.1：golden set 回归门禁——切分/Prompt/模型改动必跑，不达标禁止合并/部署
+golden-gate:
+	@$(PY) scripts/check_golden_gate.py $(if $(RESULT),--result $(RESULT),)
+
 eval-answer-guard:
 	@$(PY) scripts/eval_answer_guard.py $(ARGS)
 
