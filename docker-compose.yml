@@ -183,8 +183,11 @@ services:
       - "host.docker.internal:host-gateway"
     healthcheck:
       # slim 镜像里没有 curl，用 python 自带的标准库探活，零额外依赖
+      # 4.1.0-p4.2c：15s→30s。/system/health 是纯静态轻接口（无向量库/LLM 调用），
+      # 不会内存泄漏（p4.12 已治理的是前端轮询），但 15s×24h 的频率没有收益，
+      # 部署检测窗口用 start_period+retries 兜底，30s 足够。
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/system/health').read()"]
-      interval: 15s
+      interval: 30s
       timeout: 5s
       retries: 10
       # 首次启动要加载嵌入 + 重排模型，实测十几秒到一分钟，给足窗口

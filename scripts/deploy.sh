@@ -24,6 +24,17 @@ git reset --hard origin/main
 # 清掉未跟踪但非忽略的文件（构建残留等）；被 .gitignore 的 .env/models/upload/chroma_data 不受影响
 git clean -fd
 
+# 4.1.0-p4.2c：版本号自动化 —— reset 之后用 git describe 生成版本文件，
+# build 时烧进镜像（config/version.py 优先读它）。部署的 UI 版本号从此
+# 与「本次部署的代码」逐字对齐，不再依赖迭代纪律手动 bump config/version.py。
+# ⚠️ 必须在 git clean 之后写（clean 会删掉上一次部署的未跟踪文件），
+#    且在 build 之前写（Dockerfile COPY 要把它带进镜像）。
+# `|| true`：无 git / 无 tag 时留空，version.py 走兜底常量，部署不被打断。
+RUNTIME_VERSION="$(git describe --tags --always 2>/dev/null || true)"
+RUNTIME_VERSION="${RUNTIME_VERSION#v}"
+printf '%s' "$RUNTIME_VERSION" > config/_runtime_version.txt
+echo "  本次部署版本：${RUNTIME_VERSION:-（describe 失败，镜像内回退 version.py 常量）}"
+
 echo "==> [2/9] 确保中间件（mysql/redis/chroma）起来并健康"
 docker compose up -d mysql redis chroma
 docker compose up -d --wait mysql redis chroma

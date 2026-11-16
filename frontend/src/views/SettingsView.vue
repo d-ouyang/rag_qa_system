@@ -208,7 +208,7 @@ async function saveFlag(f: RuntimeFlag) {
         <h2>系统设置</h2>
         <p class="page-desc">
           「运行时开关」修改**即时生效**（无需重启）；其余卡片来源于系统配置文件，修改需重启。
-          运行时开关仅知识库超管（kb_role=superadmin）可改。
+          运行时开关仅知识库超管可改。
         </p>
       </div>
       <div class="header-actions">
