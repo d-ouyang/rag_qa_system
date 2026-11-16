@@ -84,9 +84,14 @@ def is_standalone_question(text: str) -> bool:
 
     「落户如何办理」这种完整问句可以，即使它出现在已有会话里。
     「它呢 / 上面那个 / 继续」依赖上文，写进公共池会把某一次的指代答案发给所有人。
+
+    p4.2e：长度门控 6→4。线上实测「年假的规定」5 字被旧门控挡掉，反复提问
+    永远不命中缓存（lookup 无门控、写入有门控 → 池子里永远没有这条）。
+    4 字起步既拦住「你好/在吗」寒暄，又放行「年假的规定」这类完整的短名词问句；
+    指代正则继续挡指代句。
     """
     normalized = normalize_question(text)
-    if len(normalized) < 6:
+    if len(normalized) < 4:
         return False
     return _ANAPHORA_RE.search(normalized) is None
 

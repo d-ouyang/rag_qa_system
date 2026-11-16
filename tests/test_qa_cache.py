@@ -43,6 +43,9 @@ check("问号和空白被折成同一句", normalize_question(q1) == normalize_q
 check("近义句不会折成同一句", normalize_question(q1) != normalize_question(q2))
 check("完整问句可以写入公共缓存", is_standalone_question(q1))
 check("指代句不写入公共缓存", not is_standalone_question("它呢"))
+# p4.2e：长度门控 6→4——「年假的规定」5 字是合法公共键（线上实测曾被挡，反复问不命中）
+check("5 字名词问句可入缓存（p4.2e）", is_standalone_question("年假的规定"))
+check("寒暄短句仍被门控挡住", not is_standalone_question("你好"))
 
 store_answer(q1, "带材料去窗口", [{"index": 1, "source": "/a"}], "policy_consult", "rag_qa", q1, client=client)
 hit = lookup_answer(q1_same, client=client)
