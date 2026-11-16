@@ -733,3 +733,57 @@ def usage_board(
         "unattributed": quota_repo.unattributed_total(when=when),
         "grand_total": quota_repo.grand_total(when=when),
     }
+
+
+# --------------------------------------------------------------------------- #
+# 事件流回放（v4.1.0-p3.1）：给定 query_id 回放「路由→改写→检索→重排→生成→校验」
+# --------------------------------------------------------------------------- #
+@router.get("/traces/{query_id}/replay", summary="单轮问答全链路回放（事件流统一）")
+def replay_trace(query_id: int, actor: Actor = Depends(require_admin)) -> dict[str, Any]:
+    """按 qa_trace.id 回放一轮问答的全链路时间线 + 合规投影。
+
+    时间线：trace 是单行摘要，投影成流程阶段（每步带证据字段；未发生的阶段
+    标 skipped 不编造）。合规投影：audit_refs = 该提问者最近的合规事件
+    （登录/权限/额度变更——排查「这个人当时是什么权限」的上下文）。
+    """
+    from core import audit_repo, qa_trace_repo
+
+    row = qa_trace_repo.get_trace(query_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"轨迹不存在：query_id={query_id}")
+    audit_refs: list[dict[str, Any]] = []
+    if row.get("owner_id"):
+        # audit 合规投影：owner 的最近合规事件（只取展示列）——
+        # list_logs 无 actor 过滤参数，此处直查（只读五行，不值得给 repo 加参数）
+        import sqlalchemy as sa
+
+        from core.db import session_scope
+        from core.schema import audit_log_table
+
+        stmt = (
+            sa.select(
+                audit_log_table.c.id,
+                audit_log_table.c.action,
+                audit_log_table.c.target_type,
+                audit_log_table.c.target_id,
+                audit_log_table.c.created_at,
+            )
+            .where(audit_log_table.c.actor_user_id == row["owner_id"])
+            .order_by(audit_log_table.c.id.desc())
+            .limit(5)
+        )
+        with session_scope() as session:
+            audit_refs = [dict(r._mapping) for r in session.execute(stmt).mappings().all()]
+    return {
+        "query_id": query_id,
+        "attribution": {
+            "owner_id": row.get("owner_id"),
+            "session_id": row.get("session_id"),
+            "decision": row.get("decision"),
+            "usage_input_tokens": row.get("usage_input_tokens"),
+            "usage_output_tokens": row.get("usage_output_tokens"),
+            "usage_cache_read_tokens": row.get("usage_cache_read_tokens"),
+        },
+        "timeline": qa_trace_repo.replay_timeline(row),
+        "audit_refs": audit_refs,
+    }

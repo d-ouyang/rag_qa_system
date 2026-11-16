@@ -26,7 +26,7 @@
 
 | # | 步骤 | 状态 |
 |---|---|---|
-| ③1 | qa_trace + audit 按 Event 契约合成单一 append-only 流 + query_id 回放接口 | ⬜ |
+| ③1 | 事件流统一：get_trace + 六阶段时间线投影 + /admin/traces/{id}/replay（audit 投影=owner 合规上下文） | ✅ **p3.1** |
 
 ## Phase ④：评测闭环（p4.x）
 

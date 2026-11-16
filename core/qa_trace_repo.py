@@ -208,3 +208,85 @@ def describe(row: dict[str, Any]) -> dict[str, Any]:
     # P4-6：低置信徽标从 top1 派生（不落库——top1 已在列上，避免冗余两处不一致）
     out["low_confidence"] = is_low_confidence(out.get("top1_before_filter"))
     return out
+
+
+def get_trace(query_id: int) -> dict[str, Any] | None:
+    """按 query_id（= qa_trace.id 自增主键）取单行。找不到返回 None。
+
+    v4.1.0-p3.1（回放接口的数据面）：一行即该轮问答的全链路事实
+    （路由/改写/检索/重排/生成/校验 + usage 归因三列）。
+    """
+    if query_id <= 0:
+        raise ValueError("query_id 必须为正整数")
+    stmt = sa.select(qa_trace_table).where(qa_trace_table.c.id == query_id)
+    with session_scope() as session:
+        row = session.execute(stmt).mappings().first()
+    return describe(dict(row)) if row else None
+
+
+def replay_timeline(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    把一条 qa_trace 行投影成「路由 → 改写 → 检索 → 重排 → 生成 → 校验」的时间线。
+
+    与 office D1 的回放端点同思路：trace 是**单行摘要**而非逐事件流，
+    回放 = 把摘要按流程阶段重新组织（每步给「发生了什么」的证据字段）。
+    只做投影不做推断：字段缺失/NULL 的步骤标注 skipped（如未启用改写），
+    不编造「应该发生过」的事件。
+    """
+    steps: list[dict[str, Any]] = []
+
+    def step(stage: str, **kv: Any) -> None:
+        kv["status"] = kv.pop("_status", "done")
+        steps.append({"stage": stage, **kv})
+
+    def skipped(stage: str, why: str) -> None:
+        steps.append({"stage": stage, "status": "skipped", "why": why})
+
+    # ① 路由
+    step("route", intent=row.get("intent"), intent_source=row.get("intent_source") or None,
+         route=row.get("route"), decision=row.get("decision"))
+    # ② 改写（多轮指代 / 单轮改写 / HyDE 都可能在）
+    if row.get("standalone_question") or row.get("rewritten_query"):
+        step("rewrite", standalone_question=row.get("standalone_question"),
+             rewritten_query=row.get("rewritten_query"),
+             vector_query=row.get("vector_query"),
+             hyde_used=bool(row.get("hyde_used")))
+    else:
+        skipped("rewrite", "未启用改写（单轮原句直达检索）")
+    # ③ 检索 + ④ 重排（candidates 是重排前全量候选，含来源/分数）
+    candidates = row.get("candidates") or []
+    if row.get("decision") in ("chitchat", "cache_hit"):
+        skipped("retrieve", f"decision={row.get('decision')}（不检索）")
+        skipped("rerank", f"decision={row.get('decision')}（不检索）")
+    elif not candidates:
+        skipped("retrieve", "零召回（zero_recall）")
+        skipped("rerank", "无候选可重排")
+    else:
+        step("retrieve", candidates_count=len(candidates),
+             bm25_hits=row.get("bm25_hits"), bm25_only=row.get("bm25_only"),
+             rrf_top=row.get("rrf_top"))
+        # 分数列统一 float（sqlite/Decimal 防御——describe 对 top1_gap 的处理同理）
+        def _f(v: Any) -> float | None:
+            return float(v) if v is not None else None
+
+        step("rerank", threshold=_f(row.get("threshold")),
+             top1_before_filter=_f(row.get("top1_before_filter")),
+             filtered_count=row.get("filtered_count"),
+             docs_returned=row.get("docs_returned"))
+    # ⑤ 生成（usage 归因三列，v4.1.0-p2.3）
+    usage_in = row.get("usage_input_tokens")
+    if usage_in is not None:
+        step("generate", usage_input_tokens=row.get("usage_input_tokens"),
+             usage_output_tokens=row.get("usage_output_tokens"),
+             usage_cache_read_tokens=row.get("usage_cache_read_tokens"),
+             elapsed_ms=row.get("elapsed_ms"))
+    else:
+        step("generate", elapsed_ms=row.get("elapsed_ms"), _status="done",
+             usage_note="老数据（p2.3 之前无 usage 镜像）")
+    # ⑥ 依据校验
+    if row.get("grounded") is not None:
+        step("verify", grounded=bool(row.get("grounded")),
+             unsupported=row.get("unsupported") or [])
+    else:
+        skipped("verify", "依据校验未启用或判定失败（fail-open）")
+    return steps
