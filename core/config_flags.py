@@ -52,6 +52,16 @@ FLAG_REGISTRY: dict[str, FlagSpec] = {
     spec.key: spec
     for spec in (
         FlagSpec(
+            key="context_summary_max_chars",
+            value_type="int",
+            card="会话记忆",
+            label="摘要注入字符预算",
+            description="较早对话摘要拼进 prompt 的字符上限，超长硬截断（0=不限制）。LLM 侧已提示 300 字，此为硬兜底",
+            default=lambda: settings.CONTEXT_SUMMARY_MAX_CHARS,
+            min_value=0,
+            max_value=20_000,
+        ),
+        FlagSpec(
             key="context_inject_max_chars",
             value_type="int",
             card="问答增强",

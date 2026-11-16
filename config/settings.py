@@ -230,6 +230,9 @@ class Settings(BaseSettings):
     # v4.1.0-p1.2（①2 回灌规范）：检索结果注入 prompt 的字符预算（0 = 不限）。
     # 预算器保序保留靠前的资料块、丢弃尾部超限块——长切片不再能把 prompt 撑爆。
     CONTEXT_INJECT_MAX_CHARS : int = 24000
+    # v4.1.0-p4.2（④2）：会话滚动摘要注入 prompt 的字符预算（0 = 不限）。
+    # 摘要 LLM 侧已提示"不超过 300 字"，这是**硬兜底**——模型不听话也不撑爆 prompt。
+    CONTEXT_SUMMARY_MAX_CHARS : int = 1200
     # 仍记录 last_active，供「多久没打开 / 没再问」使用。
     # 不再用来把会话从列表里藏掉，也不再用来清空记忆。
     MEMORY_SESSION_TTL_SECONDS : int = 6 * 3600

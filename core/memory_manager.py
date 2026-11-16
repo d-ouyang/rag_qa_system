@@ -319,6 +319,13 @@ class MemoryManager:
         summary = str(self.get_session_meta(session_id, owner_id=owner_id).get("summary") or "")
         if not summary or len(window) >= len(messages):
             return window
+        # v4.1.0-p4.2（④2）：摘要注入过统一预算（summary 段）——LLM 侧已提示
+        # "不超过 300 字"，这里是硬兜底：模型超字数也不撑爆 prompt。0 = 不限。
+        from core.context_budget import budget_blocks, get_segment_limit
+
+        limit = get_segment_limit("summary")
+        if limit > 0:
+            summary = budget_blocks([summary], limit).text
         return [SystemMessage(content=f"【较早对话摘要】{summary}"), *window]
 
     def add_exchange(

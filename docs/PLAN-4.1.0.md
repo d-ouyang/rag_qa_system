@@ -33,9 +33,17 @@
 | # | 步骤 | 状态 |
 |---|---|---|
 | ④1 | groundedness + RAGAS + QA 直击集 → golden set；**切分/Prompt/模型改动必须过回归门禁**（接入 CI） | ⬜ |
-| ④2 | session_summary / qa_cache / memory_manager 纳入统一 context budget（对齐 office A4 Policy） | ⬜ |
+| ④2 | context budget 统一：SEGMENTS 分段注册表（retrieval/summary/memory_turns）+ summary 硬兜底接入 | ✅ **p4.2（4.1.0 收官）** |
 
 ## 明确不做
 
 Temporal / K8s / Langfuse 全家桶（4C4G 单机）；durable execution；重写为 dsh 插件。
 协议压在 OpenAI-compatible 上，不绑厂商 SDK。
+
+---
+
+## ✅ 4.1.0 全部收官（2026-11-16）
+
+九个迭代（p1.0~p4.2）全部完成于 `feature/4.1.0-contract` 分支，未部署。
+部署时：含迁移 0014（qa_trace usage 三列）；tag 前必跑 `make golden-gate`；
+gate_baseline.json 为检索质量门禁基线（改切分/Prompt/模型必跑）。
