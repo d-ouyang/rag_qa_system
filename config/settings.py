@@ -227,6 +227,9 @@ class Settings(BaseSettings):
     # 送进模型和问题重写的最近轮数。1 轮 = 1 问 + 1 答。
     # 只限制模型看见的窗口，不删库里的历史。左侧列表始终能打开全部会话。
     MEMORY_MAX_TURNS : int = 5
+    # v4.1.0-p1.2（①2 回灌规范）：检索结果注入 prompt 的字符预算（0 = 不限）。
+    # 预算器保序保留靠前的资料块、丢弃尾部超限块——长切片不再能把 prompt 撑爆。
+    CONTEXT_INJECT_MAX_CHARS : int = 24000
     # 仍记录 last_active，供「多久没打开 / 没再问」使用。
     # 不再用来把会话从列表里藏掉，也不再用来清空记忆。
     MEMORY_SESSION_TTL_SECONDS : int = 6 * 3600

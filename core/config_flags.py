@@ -52,6 +52,16 @@ FLAG_REGISTRY: dict[str, FlagSpec] = {
     spec.key: spec
     for spec in (
         FlagSpec(
+            key="context_inject_max_chars",
+            value_type="int",
+            card="问答增强",
+            label="资料注入字符预算",
+            description="检索资料拼进 prompt 的总字符上限，超预算丢弃尾部资料块（0=不限制）。长切片/大候选池时防 prompt 失控",
+            default=lambda: settings.CONTEXT_INJECT_MAX_CHARS,
+            min_value=0,
+            max_value=200_000,
+        ),
+        FlagSpec(
             key="doc_download_enabled",
             value_type="bool",
             card="知识库与文档",

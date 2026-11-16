@@ -539,6 +539,13 @@ def _summarize_async(memory: MemoryManager, session_id: str, owner_id: int | Non
     ).start()
 
 
+def _inject_budget() -> int:
+    """资料注入字符预算（热开关 context_inject_max_chars；0 = 不限制）。"""
+    from core.config_flags import flag_value
+
+    return int(flag_value("context_inject_max_chars") or 0)
+
+
 def format_docs(docs: list[Document]) -> str:
     """
     把检索到的文档片段格式化成注入 prompt 的 context 文本。
@@ -560,7 +567,10 @@ def format_docs(docs: list[Document]) -> str:
         if m:
             label += f"编号：{m.group(1)}；"
         blocks.append(f"【资料{index}】（{label}来源：{source}）\n{doc.page_content}")
-    return "\n\n".join(blocks)
+    # v4.1.0-p1.2（①2 回灌规范）：统一字符预算——超限丢弃尾部整块（保序不截半块）
+    from core.context_budget import budget_blocks
+
+    return budget_blocks(blocks, _inject_budget()).text
 
 
 def _dedupe_candidate_docs(docs: list[Any], limit: int = 10) -> list[Document]:
@@ -592,7 +602,9 @@ def _format_candidate_docs(docs: list[Document]) -> str:
         md = doc.metadata or {}
         src = md.get("file_name") or md.get("source") or "未知来源"
         blocks.append(f"【候选{i}】（来源：{src}，未进入回答）\n{doc.page_content}")
-    return "\n\n".join(blocks)
+    from core.context_budget import budget_blocks
+
+    return budget_blocks(blocks, _inject_budget()).text
 
 
 # --------------------------------------------------------------------------- #

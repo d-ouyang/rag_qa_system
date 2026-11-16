@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-11-16T09:03:53+08:00",
+  "days": 1,
+  "rows": 2,
+  "prepare": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "generate": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "grounded": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "total": {
+    "p50": null,
+    "p95": null,
+    "max": null,
+    "n": 0
+  },
+  "decisions": {},
+  "grounded_counts": {
+    "none": 2
+  },
+  "source_breakdown": {
+    "真实/手工": 2
+  },
+  "last_write": "2026-11-15T23:23:34",
+  "dual_used": 0,
+  "fallback_used": 0,
+  "slow_generate_60s": 0
+}
