@@ -360,42 +360,6 @@ def _current_period() -> str:
     return f"{start.year:04d}-{start.month:02d}"
 
 
-def _quota_precheck(actor: Actor) -> None:
-    """
-    提问前的额度预检（P3-1）。**只在 block 档生效**，notify 档一行不拦。
-
-    调用位置必须是「越权预检之后、进 RAG 链之前」：
-    越权的人先被 403 拒掉，不必为他查一次用量；而额度超了的人
-    不该让他白跑一次检索与一次 LLM（那正是要省的钱）。
-
-    429 错误体的形状（前端按 `code` 特化，不解析文案）：
-        {"code": "quota_exceeded", "used": .., "quota": .., "period": "2026-10",
-         "message": "本月 token 额度已用完，请联系管理员调整。"}
-    """
-    if settings.TOKEN_QUOTA_OVER_ACTION != quota_policy.OVER_ACTION_BLOCK:
-        return
-    snap = _quota_snapshot(actor)
-    if not snap["attributable"]:
-        # break-glass / 不可归属身份：按人计量不成立，放行（见 _quota_snapshot 注释）
-        logger.warning("跳过额度预检：身份不可归属（id=None）| 用户=%s", actor.username)
-        return
-    allowed, message = quota_policy.can_ask(snap["used"], snap["effective_quota"])
-    if allowed:
-        return
-    logger.info("额度拦截提问 | 用户=%s 已用=%s 限量=%s 账期=%s",
-                actor.username, snap["used"], snap["effective_quota"], snap["period"])
-    raise HTTPException(
-        status_code=429,
-        detail={
-            "code": quota_policy.QUOTA_EXCEEDED_CODE,
-            "used": snap["used"],
-            "quota": snap["effective_quota"],
-            "period": snap["period"],
-            "message": message,
-        },
-    )
-
-
 # --------------------------------------------------------------------------- #
 # 接口实现
 # --------------------------------------------------------------------------- #
@@ -423,9 +387,8 @@ def ask(
     # token 与一次检索。
     if get_memory_manager().is_foreign(session_id, owner_id=actor.id):
         raise HTTPException(status_code=403, detail="无权访问该会话")
-    # P3-1 额度预检：block 档下超额 → 429（在越权之后、进 RAG 链之前）
-    if body.persist:
-        _quota_precheck(actor)
+    # P3-1 额度预检 → v4.1.0-p2.1 起判定外移 NestJS 网关（gateway/src/quota/），
+    # 超限 429 在网关短路（唯一收口点=鉴权同一个门）；此处不再复查。
     logger.info("收到问答请求 | session_id=%s 用户=%s query=%.24s",
                 session_id, actor.username, body.question)
     try:
@@ -487,7 +450,6 @@ def ask_stream(request: AskRequest, actor: Actor = Depends(current_actor)) -> St
     # 在这里判，429 就是干净的 HTTP 429。
     # 判定通过后本轮**不再复查**（宽限单语义，见 quota_policy.can_ask）：
     # 这一轮照常答完照常计费，超出的部分体现在下一问被拦。
-    _quota_precheck(actor)
 
     # P2-23：debug 解析。语义是「显式 > 默认」：
     #   · 显式传 true/false —— 照传（调用方明确知道自己要什么）；

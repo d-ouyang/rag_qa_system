@@ -64,6 +64,7 @@
 | `v4.1.0-p1.0` | 2026-11-15 | 检索栈契约化起步：ToolSpec 同源契约 + 七组件登记表 + chunk_rebuild 高危标记（复用 office harness，测试 6/6） |
 | **v4.1.0-p1.1** | 2026-11-15 | **调用点收编（Phase ①1 完成）**：core/tool_registry.py 惰性 bootstrap 七组件；rag_chain/api 三路由/qa_direct 共 **12 处直调收编**；`scripts/check_tool_contract.py` 静态判据（白名单=定义模块+registry+组件内部组合，首跑抓 12 处违规全修）。①1 判据达成：检索栈可枚举/可注入/无绕过直调。回归：tool_registry 3+tool_spec 6+qa_cache 14+p37b 17 全过 | `iterations/v4.1.0-p1.1-call-site-adoption.md` |
 | **v4.1.0-p1.2** | 2026-11-16 | **检索结果回灌规范（Phase ①2，Phase ① 收官）**：core/context_budget.py 统一预算器（保序/整块丢弃/单块超预算截断/dropped 可观测）+ 热开关 `context_inject_max_chars`（缺省 24000 字符，0=不限，管理端可调）+ rag_chain 两个注入点（format_docs/judge 候选）全部接线。判据达成：上下文注入长度有上限可配。测试 6/6 | `iterations/v4.1.0-p1.2-context-budget.md` |
+| **v4.1.0-p2.1** | 2026-11-16 | **quota 判定外移 NestJS 网关（Phase ②1）**：gateway/src/quota（QuotaService：can_ask/billable/effective_quota/CTE 聚合/period_bounds 的 TS 逐字镜像）+ proxy 转发前判定（POST ask 两入口、429 形状逐字段一致）+ **FastAPI 删 _quota_precheck**（只留 /quota/me 查余额）。拍板：失败 fail-open（成本护栏≠安全门）、不可归属身份放行、SQL 直查网关。判据达成：超限 429 在网关短路、绕过判定不存在。测试 11/11 + 双端回归全过 | `iterations/v4.1.0-p2.1-quota-gateway.md` |
 | `v2.0.0-p2.11c` | 2026-10-08 | 员工账号真正上岗：管理端建的人，现在能用自己的账号登录问答系统了 |
 | `v2.0.0-p2.12c` | 2026-10-08 | **「登 A 看 A 的、登 B 看 B 的」真的成立了**：会话按人分开，拿别人的会话 ID 去读/改/删一律 403 |
 | `v2.0.0-p2.12b` | 2026-10-08 | 封上一个真实存在的漏洞：此前任何人绕过界面直接调接口，都能自称管理员 |

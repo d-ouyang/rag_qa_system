@@ -18,7 +18,7 @@
 
 | # | 步骤 | 状态 |
 |---|---|---|
-| ②1 | quota 三件套判定逻辑外移 NestJS 网关（FastAPI 只留查余额/接 429） | ⬜ |
+| ②1 | quota 三件套判定逻辑外移 NestJS 网关（FastAPI 只留查余额/接 429） | ✅ **p2.1** |
 | ②2 | LLM/embedding 收口 + **硅基流动 502 → 重试 + 本地 bge-m3 降级**（Ollama 本地 → DeepSeek API 链路） | ⬜ |
 | ②3 | usage 归因 tenant/user/run（对齐 office B2） | ⬜ |
 

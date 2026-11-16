@@ -45,6 +45,7 @@ import {
 } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
 import { createProxyMiddleware, fixRequestBody, RequestHandler } from 'http-proxy-middleware';
+import { QuotaService } from '../quota/quota.service';
 import { gatewayConfig, GatewayConfig } from '../config/configuration';
 import { AuthenticatedUser } from '../auth/strategies/jwt.strategy';
 import { Public } from '../auth/decorators/public.decorator';
@@ -92,7 +93,10 @@ export class ProxyController {
   private readonly logger = new Logger('Proxy');
   private readonly proxy: RequestHandler;
 
-  constructor(@Inject(gatewayConfig.KEY) private readonly config: GatewayConfig) {
+  constructor(
+    @Inject(gatewayConfig.KEY) private readonly config: GatewayConfig,
+    private readonly quota: QuotaService,
+  ) {
     this.proxy = createProxyMiddleware({
       target: config.backendUrl,
       changeOrigin: true,
@@ -349,8 +353,37 @@ export class ProxyController {
    * （裸跑 8000、忘配路径规则）。详见 auth/path-authorization.ts 顶部。
    */
   @All('api/v1/*')
-  handle(@Req() req: ProxiedRequest, @Res() res: Response, @Next() next: NextFunction): void {
+  async handle(
+    @Req() req: ProxiedRequest,
+    @Res() res: Response,
+    @Next() next: NextFunction,
+  ): Promise<void> {
     const path = (req.originalUrl || req.url || '').split('?')[0];
+    // v4.1.0-p2.1（Phase ②1）：额度预检——block 档下 POST 提问入口在**转发前**判定，
+    // 超限 429 不进后端（FastAPI 侧 _quota_precheck 已随之移除，唯一收口点=网关）。
+    // 位置在 decidePath 之后：越权的人先 403，不必为他查一次用量。
+    if (this.quota.shouldCheck(path, req.method)) {
+      // uid：整数用户 id；break-glass / 旧 token 为 null —— 即"不可归属身份"，
+      // 与 FastAPI 原口径一致（按人计量不成立，放行）。
+      const userId = req.user?.uid ?? 0;
+      if (userId > 0) {
+        const verdict = await this.quota.precheck(userId);
+        if (!verdict.allowed) {
+          this.logger.warn(
+            `额度拦截提问（网关） | path=${path} userId=${userId} used=${verdict.used} quota=${verdict.effectiveQuota} period=${verdict.period}`,
+          );
+          res.status(429).json({
+            code: 'quota_exceeded',
+            used: verdict.used,
+            quota: verdict.effectiveQuota,
+            period: verdict.period,
+            message: verdict.message,
+          });
+          return;
+        }
+      }
+      // userId<=0（不可归属身份）：与 FastAPI 原口径一致——按人计量不成立，放行
+    }
     // ⚠️ **传整个 `req.user`，不传 `req.user?.role`**（P2-14b）：`decidePath`
     // 现在要看两个维度（`role` 管管理端、`kbRole` 管知识库写）。
     // 传两个字符串参数的话，加第三个维度时少传一个不会报错 ——
