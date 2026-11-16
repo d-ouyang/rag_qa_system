@@ -65,9 +65,9 @@ check('shouldCheck：notify 档整体短路', () => {
 });
 check('shouldCheck：block 档只拦 POST 的 ask 两入口', () => {
   const svc = makeService({ TOKEN_QUOTA_OVER_ACTION: 'block' });
-  assert.equal(svc.shouldCheck('/api/v1/ask', 'POST'), true);
-  assert.equal(svc.shouldCheck('/api/v1/ask/stream', 'POST'), true);
-  assert.equal(svc.shouldCheck('/api/v1/ask', 'GET'), false);
+  assert.equal(svc.shouldCheck('/api/v1/qa/ask', 'POST'), true);
+  assert.equal(svc.shouldCheck('/api/v1/qa/ask/stream', 'POST'), true);
+  assert.equal(svc.shouldCheck('/api/v1/qa/ask', 'GET'), false);
   assert.equal(svc.shouldCheck('/api/v1/documents', 'POST'), false);
 });
 

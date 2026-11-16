@@ -47,8 +47,12 @@ COPY requirements.lock.txt ./
 #   且按 PEP 440「2.14.0+cpu 满足 torch==2.14.0」，装 lock 时 pip 不会重装 torch、
 #   也不会再补拉 CUDA 包。extra-index-url 兜住 torch 自身的普通依赖（filelock 等）。
 #   镜像源用腾讯云内网（mirrors.cloud.tencent.com），国内服务器直连 pypi.org 会超时。
+# TORCH_INDEX 可按构建机架构换源：arm64（Apple Silicon）上 pypi 镜像的 torch
+# wheel 天然无 nvidia 依赖（与 +cpu 语义等价）且走国内镜像快；x86 生产保持默认
+# pytorch.org 的 +cpu 构建（pypi 的 x86_64 torch 会拖整套 CUDA，数 GB）。
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir --timeout 600 --retries 10 \
-      --index-url https://download.pytorch.org/whl/cpu \
+      --index-url ${TORCH_INDEX} \
       --extra-index-url https://mirrors.cloud.tencent.com/pypi/simple \
       "torch==2.14.0"
 

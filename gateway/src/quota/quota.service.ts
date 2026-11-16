@@ -69,8 +69,10 @@ export class QuotaService implements OnModuleInit, OnModuleDestroy {
   shouldCheck(path: string, method: string): boolean {
     if (this.overAction !== 'block') return false;
     const p = (path || '').split('?')[0].replace(/\/+$/, '');
+    // ⚠️ 路径是 /api/v1/qa/ask（qa router 前缀 /api/v1/qa）——p3.1 真链路验证
+    // 抓出此处曾误写成 office 的 /api/v1/ask 导致判定永不触发。
     return (
-      method === 'POST' && (p === '/api/v1/ask' || p === '/api/v1/ask/stream')
+      method === 'POST' && (p === '/api/v1/qa/ask' || p === '/api/v1/qa/ask/stream')
     );
   }
 

@@ -251,6 +251,9 @@ services:
     environment:
       # 容器网络里后端叫 backend；本机裸跑时 .env 里是 http://127.0.0.1:8000
       GATEWAY_BACKEND_URL: http://backend:8000
+      # v4.1.0-p2.1：额度预检（QuotaService）直查 mysql——容器网络下必须用服务名
+      #（.env 的 localhost 是裸跑用；漏配的症状是 quota 判定静默 fail-open 放行）
+      MYSQL_HOST: mysql
       # 网关跑在 nginx 后面，X-Forwarded-* 里的真实来源 IP 才可信。
       # 不开的话限流会把所有请求算成同一个来源（nginx 的容器 IP），
       # 一个人刷接口就会把所有人都限掉。

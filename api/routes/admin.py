@@ -773,7 +773,7 @@ def replay_trace(query_id: int, actor: Actor = Depends(require_admin)) -> dict[s
             .limit(5)
         )
         with session_scope() as session:
-            audit_refs = [dict(r._mapping) for r in session.execute(stmt).mappings().all()]
+            audit_refs = [dict(r) for r in session.execute(stmt).mappings().all()]
     return {
         "query_id": query_id,
         "attribution": {
