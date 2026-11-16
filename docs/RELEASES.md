@@ -70,6 +70,7 @@
 | **v4.1.0-p3.1** | 2026-11-16 | **事件流统一（Phase ③1）**：qa_trace_repo.get_trace（按 query_id 取行）+ replay_timeline（六阶段时间线投影：路由→改写→检索→重排→生成→校验，未发生标 skipped 不编造）+ `GET /admin/traces/{id}/replay`（admin 端，含 usage 归因 + audit 合规投影）。对齐 office D1 经验：不建新事件流表，投影重组。判据达成：给定 query_id 回放全链路。测试 6/6 | `iterations/v4.1.0-p3.1-event-replay.md` |
 | **v4.1.0-p4.1** | 2026-11-16 | **golden set 回归门禁（Phase ④1）**：gate_baseline.json 基线固化（p4.15b fixed-final 实测：recall@5 0.9389/hit@5 1.0/mrr@10 0.8889/abstain 1.0，阈值=基线−容差）+ check_golden_gate.py（跌破即退出码 1，缺失指标按失败）+ Makefile golden-gate 目标。红绿双向验证（基线自过/旧结果被拦）。复用既有 eval_retrieval/golden.jsonl 42 条，本步只做门禁层。测试 4/4 | `iterations/v4.1.0-p4.1-golden-gate.md` |
 | **v4.1.0-p4.2** | 2026-11-16 | **context budget 统一（Phase ④2 · 4.1.0 收官）**：context_budget.SEGMENTS 分段注册表（retrieval/summary/memory_turns 三段全部登记，describe_budgets 全景可观测）+ summary 段硬兜底（memory_manager 摘要注入过预算，缺省 1200 字符 0=不限，热开关 context_summary_max_chars）。顺带修 budget_blocks 截断标记超预算 6 字符的真缺陷。测试 5/5 | `iterations/v4.1.0-p4.2-context-budget-unify.md` |
+| **v4.1.0-p4.2b** | 2026-11-16 | **本地真链路验证 + 生产部署收官**：L1~L5 起栈真跑全过，抓出三个纯测试盲区真缺陷（audit 投影 500 / gateway 判定路径误写 office 的 /ask——quota 短路形同虚设 / compose 缺 MYSQL_HOST 静默 fail-open）。生产上线（tag v4.1.0-p4.2，迁移 0014 成功）+ 冒烟全绿（真问/usage 落库/replay 六阶段）。**经验：真链路验证是部署前必做** | `iterations/v4.1.0-p4.2b-live-verification.md` |
 | `v2.0.0-p2.11c` | 2026-10-08 | 员工账号真正上岗：管理端建的人，现在能用自己的账号登录问答系统了 |
 | `v2.0.0-p2.12c` | 2026-10-08 | **「登 A 看 A 的、登 B 看 B 的」真的成立了**：会话按人分开，拿别人的会话 ID 去读/改/删一律 403 |
 | `v2.0.0-p2.12b` | 2026-10-08 | 封上一个真实存在的漏洞：此前任何人绕过界面直接调接口，都能自称管理员 |
