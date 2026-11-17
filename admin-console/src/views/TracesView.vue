@@ -17,6 +17,7 @@ import { computed, onMounted, ref } from 'vue'
 import ToastStack from '@/components/ToastStack.vue'
 import { formatDateTime, newToast, type ToastItem } from '@/components/ui'
 import * as api from '@/api/admin'
+import { getFile } from '@/api/http'
 import type { QaTraceRow } from '@/api/admin'
 import { ApiError } from '@/api/http'
 
@@ -134,6 +135,97 @@ function num(v: number | null | undefined, digits = 4): string {
 }
 function shortSession(id: string): string {
   return id.length > 10 ? `${id.slice(0, 10)}…` : id
+}
+
+/** p4.2f：点击复制（会话 id 等长字段展示不全，点了抄完整的）。 */
+async function copyToClipboard(text: string, label: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      // 兜底：非安全上下文（http 部署）没有 clipboard API
+      const ta = document.createElement('textarea')
+      ta.value = text
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    toast('ok', `${label}已复制`)
+  } catch {
+    toast('error', '复制失败，请手动选择复制')
+  }
+}
+
+// --------------------------------------------------------------------------- //
+// p4.2f：流程图 SVG 下载 + 候选原文档预览
+// --------------------------------------------------------------------------- //
+const flowSvgRef = ref<SVGSVGElement | null>(null)
+
+/** 把当前状态机 SVG 序列化成独立 .svg 文件下载（补 xmlns，Vue 模板里没有）。 */
+function downloadFlowSvg() {
+  const el = flowSvgRef.value
+  if (!el || !detail.value) return
+  const serialized = new XMLSerializer().serializeToString(el)
+  const standalone = `<?xml version="1.0" encoding="UTF-8"?>\n${serialized.replace(
+    '<svg',
+    '<svg xmlns="http://www.w3.org/2000/svg"',
+  )}`
+  const url = URL.createObjectURL(new Blob([standalone], { type: 'image/svg+xml' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `trace-${detail.value.id}-flow.svg`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/** chunk_id 形如 "49:2"（doc_id:切片序号）→ 前缀就是文档 id；解析不出返回 null。 */
+function docIdOfChunk(chunkId: string): number | null {
+  const n = Number.parseInt(chunkId, 10)
+  return Number.isFinite(n) && chunkId.includes(':') && n > 0 ? n : null
+}
+
+const previewLoading = ref(false)
+const previewName = ref('')
+const previewText = ref('')
+const previewUrl = ref('')
+const previewVisible = ref(false)
+
+/** 判定按扩展名：文本类在抽屉里直接展示；二进制（pdf 等）新开标签页交给浏览器。 */
+const TEXT_EXT_RE = /\.(md|txt|csv|log|json|yaml|yml|html?)$/i
+
+async function openDocPreview(chunkId: string) {
+  const docId = docIdOfChunk(chunkId)
+  if (!docId) {
+    toast('error', '切片 id 里解析不出文档 id')
+    return
+  }
+  previewLoading.value = true
+  try {
+    const { blob, filename } = await getFile(`/api/v1/documents/download?doc_id=${docId}`)
+    if (TEXT_EXT_RE.test(filename)) {
+      previewName.value = filename
+      previewText.value = await blob.text()
+      previewUrl.value = ''
+      previewVisible.value = true
+    } else {
+      // pdf 浏览器原生渲染；docx 等新开标签页由浏览器决定下载
+      const url = URL.createObjectURL(blob)
+      window.open(url, '_blank')
+      // 给新标签页留出加载窗口再回收
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      return
+    }
+  } catch (e) {
+    toast('error', e instanceof ApiError ? e.message : '打开原文档失败')
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+function closeDocPreview() {
+  previewName.value = ''
+  previewText.value = ''
 }
 
 /** 候选行（P2-23 口径的字段；缺键显示 —）。 */
@@ -416,7 +508,11 @@ function nodeLabel(key: string): string {
               <span v-else class="muted">—</span>
             </td>
             <td class="mono nowrap">{{ Math.round(row.elapsed_ms) }}ms</td>
-            <td class="mono muted nowrap" :title="row.session_id">{{ shortSession(row.session_id) }}</td>
+            <td class="mono muted nowrap">
+              <button class="session-id" :title="`${row.session_id}（点击复制）`" @click="copyToClipboard(row.session_id, '会话 id')">
+                {{ shortSession(row.session_id) }}
+              </button>
+            </td>
             <td class="nowrap"><button class="btn btn-ghost" @click="openDetail(row)">详情</button></td>
           </tr>
           <tr v-if="!rows.length">
@@ -445,9 +541,12 @@ function nodeLabel(key: string): string {
         </div>
 
         <!-- 完整状态机：实走路径高亮 + 岔路口标注 + 执行顺序角标（flow_path 由后端派生） -->
-        <h3 class="sec">实走路径</h3>
+        <div class="sec-row">
+          <h3 class="sec">实走路径</h3>
+          <button class="btn btn-ghost" @click="downloadFlowSvg">下载流程图 SVG</button>
+        </div>
         <div class="flow-wrap">
-          <svg viewBox="0 0 680 962" class="flow-svg" role="img" aria-label="问答流程状态机（本次实走路径高亮）">
+          <svg ref="flowSvgRef" viewBox="0 0 680 962" class="flow-svg" role="img" aria-label="问答流程状态机（本次实走路径高亮）">
             <defs>
               <marker id="fa-on" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569" />
@@ -566,9 +665,19 @@ function nodeLabel(key: string): string {
                   <td class="mono">{{ num(c.vector_similarity as number | null) }}</td>
                   <td>{{ c.passed_threshold ? '✓' : '✗' }}</td>
                   <td>
-                    <button class="btn btn-ghost" @click="toggleChunk(detail, String(c.chunk_id))">
-                      {{ openChunks.has(String(c.chunk_id)) ? '收起' : '原文' }}
-                    </button>
+                    <div class="cand-actions">
+                      <button class="btn btn-ghost" @click="toggleChunk(detail, String(c.chunk_id))">
+                        {{ openChunks.has(String(c.chunk_id)) ? '收起' : '切片内容' }}
+                      </button>
+                      <button
+                        v-if="docIdOfChunk(String(c.chunk_id))"
+                        class="btn btn-ghost"
+                        :disabled="previewLoading"
+                        @click="openDocPreview(String(c.chunk_id))"
+                      >
+                        预览原文档
+                      </button>
+                    </div>
                   </td>
                 </tr>
                 <tr v-if="c.chunk_id && openChunks.has(String(c.chunk_id))">
@@ -590,6 +699,18 @@ function nodeLabel(key: string): string {
         <p v-else class="muted">这一轮没有跑检索（缓存命中或闲聊），无候选可看。</p>
       </template>
     </el-drawer>
+
+    <!-- 原文档预览（文本类在弹窗里直接看；二进制类新开标签页交给浏览器） -->
+    <el-dialog
+      v-model="previewVisible"
+      :title="previewName || '原文档预览'"
+      width="820px"
+      top="4vh"
+      destroy-on-close
+      @close="closeDocPreview"
+    >
+      <pre v-if="previewText" class="doc-pre">{{ previewText }}</pre>
+    </el-dialog>
 
     <ToastStack :items="toasts" @dismiss="dismiss" />
   </div>
@@ -666,6 +787,33 @@ function nodeLabel(key: string): string {
   margin: 18px 0 8px;
   font-size: 14px;
   color: var(--text-1, #111827);
+}
+/* p4.2f：段标题行右侧放动作按钮（下载流程图） */
+.sec-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sec-row .sec { margin: 18px 0 8px; }
+/* p4.2f：会话 id 点击复制 */
+.session-id {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-3, #94a3b8);
+  cursor: pointer;
+}
+.session-id:hover {
+  color: var(--text-1, #e6eaf2);
+  text-decoration: underline;
+}
+.cand-actions {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
 }
 .flow-wrap {
   border: 1px solid var(--border, #e5e7eb);
@@ -762,13 +910,25 @@ function nodeLabel(key: string): string {
 .cands {
   margin-top: 4px;
 }
-.chunk-cell { background: #f8fafc; }
-.chunk-file { font-size: 12px; color: var(--text-3, #94a3b8); margin-bottom: 4px; }
+/* p4.2f：切片展开区改为暗色主题原生配色——原来硬编码浅底 + 主题亮字，
+   亮字亮底根本看不清（线上截图实测）。展开区跟随面板底色。 */
+.chunk-cell { background: var(--bg-elevated, #1b2234); }
+.chunk-file { font-size: 12px; color: var(--text-2, #64748b); margin-bottom: 4px; }
 .chunk-pre {
   margin: 0; white-space: pre-wrap; word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px; line-height: 1.7; color: var(--text-1, #111827);
+  font-size: 12px; line-height: 1.7; color: var(--text-1, #e6eaf2);
   max-height: 320px; overflow: auto;
+}
+.doc-pre {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.7; color: var(--text-1, #e6eaf2);
+  max-height: 60vh; overflow: auto;
+  background: var(--bg-elevated, #1b2234);
+  border: 1px solid var(--border, #2a3348);
+  border-radius: 8px;
+  padding: 12px;
 }
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

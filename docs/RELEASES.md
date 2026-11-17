@@ -2282,3 +2282,4 @@ worker 死活看另一个、数据库通不通只能从错误信息间接猜。�
 | **v4.1.0-p4.2c** | 2026-11-16 | 版本号自动化（deploy 生成 runtime 文件）+ test/office-service 乱码数据修复 + healthcheck 30s + 设置页文案 | `iterations/v4.1.0-p4.2c-version-automation.md` |
 | **v4.1.0-p4.2d** | 2026-11-17 | 问句形态零召回关键词兜底（原阈值重查）+ 检索详情逐条召回来源 + module27 迁移守卫修正 | `iterations/v4.1.0-p4.2d-keyword-fallback.md` |
 | **v4.1.0-p4.2e** | 2026-11-17 | 问答缓存长度门控 6→4（修 5 字问句永不命中） | `iterations/v4.1.0-p4.2e-cache-gate.md` |
+| **v4.1.0-p4.2f** | 2026-11-17 | 管理端溯源页：会话id复制 / 流程图SVG下载 / 切片内容标签+原文档预览 / 暗色配色修复 | `iterations/v4.1.0-p4.2f-admin-traces-ux.md` |

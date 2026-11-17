@@ -146,3 +146,35 @@ export async function del<T>(path: string): Promise<T> {
   )
   return (await res.json()) as T
 }
+
+/** 默认兜底文件名：Content-Disposition 缺失或解析不出时用（与主前端同款）。 */
+const FALLBACK_FILENAME = 'download'
+
+function parseFilename(disposition: string | null): string {
+  if (!disposition) return FALLBACK_FILENAME
+  const extended = /filename\*=(?:UTF-8|utf-8)''([^;]+)/.exec(disposition)
+  if (extended) {
+    try {
+      return decodeURIComponent(extended[1])
+    } catch {
+      /* 百分号编码坏了就往下走普通 filename */
+    }
+  }
+  const plain = /filename="?([^";]+)"?/.exec(disposition)
+  return plain ? plain[1] : FALLBACK_FILENAME
+}
+
+/**
+ * 取文件 blob（p4.2f：溯源页「预览原文档」用）。
+ *
+ * 为什么不能 `<a href>` 直接下载：导航请求带不上 Authorization 头（401），
+ * token 进 URL 又会进浏览器历史 —— 与主前端 getFile 同一份理由。
+ * 文件名从 Content-Disposition 取（RFC 5987 兼容）。
+ */
+export async function getFile(path: string): Promise<{ blob: Blob; filename: string }> {
+  const res = await ensureOk(await fetch(`${API_BASE}${path}`, { headers: buildHeaders(false) }))
+  return {
+    blob: await res.blob(),
+    filename: parseFilename(res.headers.get('content-disposition')),
+  }
+}
