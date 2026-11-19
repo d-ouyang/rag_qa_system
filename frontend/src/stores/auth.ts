@@ -90,6 +90,15 @@ export const useAuthStore = defineStore('auth', () => {
     clearStorage()
   }
 
+  /**
+   * v2.4.4 演示 SSO：nianan.site 的一次性 ticket 换 token（免账密）。
+   * 走与 login 相同的 setSession 入口——token/用户名/过期时间的落盘口径完全一致。
+   */
+  async function loginWithSso(ticket: string): Promise<void> {
+    const res = await authApi.ssoLogin(ticket)
+    setSession(res.access_token, res.user.username, res.expires_in)
+  }
+
   // ---------- 与 http 层的对接 ----------
   // 把「怎么取 token」和「401 怎么办」注入 http 客户端，
   // 这样 http.ts 不需要 import 本 store（避免循环依赖）
@@ -167,6 +176,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAuthenticated,
     expiresSoon,
     login,
+    loginWithSso,
     verify,
     logout,
     dismissNotice,

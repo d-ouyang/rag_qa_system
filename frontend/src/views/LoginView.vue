@@ -10,7 +10,7 @@
  * 3. 表单提交走 <form> 的 submit 事件而不是按钮 click：
  *    这样回车能直接提交（浏览器的原生能力，不用手动监听 keydown）。
  */
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ApiError } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
 
@@ -22,6 +22,25 @@ const password = ref('')
 const showPassword = ref(false)
 const errorText = ref('')
 const loading = ref(false)
+
+const ssoBusy = ref(false)
+
+// v2.4.4 演示 SSO：nianan.site 带 ?sso=ticket 跳进来 → 免账密登录 → 清参数。
+// 登录页只会在未登录时出现，所以这里就是 SSO 的唯一入口。
+onMounted(async () => {
+  const ticket = new URLSearchParams(window.location.search).get('sso')
+  if (!ticket) return
+  ssoBusy.value = true
+  errorText.value = ''
+  try {
+    await auth.loginWithSso(ticket)
+    window.history.replaceState(null, '', window.location.pathname)
+  } catch (e) {
+    errorText.value = e instanceof ApiError ? `演示登录失败：${e.message}` : '演示登录失败，请稍后重试'
+  } finally {
+    ssoBusy.value = false
+  }
+})
 
 const canSubmit = computed(
   () => username.value.trim() !== '' && password.value !== '' && !loading.value,
