@@ -24,3 +24,11 @@ export class LoginDto {
   @MaxLength(128, { message: '密码不能超过 128 个字符' })
   password!: string;
 }
+
+/** v2.4.4 演示 SSO：nianan.site 签发的 HMAC ticket（base64url payload.hex 签名）。 */
+export class SsoDto {
+  @IsString({ message: '票据格式不正确' })
+  @IsNotEmpty({ message: '票据不能为空' })
+  @MaxLength(512, { message: '票据超长' })
+  ticket!: string;
+}

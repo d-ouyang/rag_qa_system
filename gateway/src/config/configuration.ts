@@ -44,6 +44,11 @@ export interface GatewayConfig {
   internalToken: string;
   /** 内部接口的判定结果拿不到时，网关是否回落到 `.env` 的 GATEWAY_USERS。 */
   internalAuthFallbackAllowed: boolean;
+  /**
+   * v2.4.4 演示 SSO：nianan.site 跳转过来的 HMAC ticket 验签密钥（与 office 后端、
+   * nianan-site 前端共享）。空 = SSO 关闭。白名单硬编码在 auth.service（demo 前缀）。
+   */
+  ssoSharedSecret: string;
 }
 
 function list(value: string | undefined, fallback: string[]): string[] {
@@ -124,6 +129,7 @@ export function loadGatewayConfig(): GatewayConfig {
     port: Number(process.env.GATEWAY_PORT ?? 3000),
     jwtSecret,
     jwtExpiresIn: process.env.GATEWAY_JWT_EXPIRES_IN ?? '12h',
+    ssoSharedSecret: process.env.SSO_SHARED_SECRET ?? '',
     users: parseUsers(process.env.GATEWAY_USERS, isProduction),
     // 后端 FastAPI 地址：容器里是 http://backend:8000，本机开发是 http://127.0.0.1:8000。
     // 用 127.0.0.1 而不是 localhost：Node 18+ 对 localhost 会优先解析成 IPv6 ::1，
