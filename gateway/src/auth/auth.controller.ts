@@ -8,7 +8,7 @@
 import { Body, Controller, Get, Headers, HttpCode, Post, Req } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService, LoginResult } from './auth.service';
-import { LoginDto } from './dto/login.dto';
+import { LoginDto, SsoDto } from './dto/login.dto';
 import { Public } from './decorators/public.decorator';
 import { AuthenticatedUser } from './strategies/jwt.strategy';
 
@@ -37,6 +37,18 @@ export class AuthController {
     @Req() req?: { ip?: string; socket?: { remoteAddress?: string } },
   ): Promise<LoginResult> {
     return this.authService.login(dto, clientIpOf(forwardedFor, req));
+  }
+
+  /**
+   * v2.4.4 演示 SSO：nianan.site 跳转过来的一次性 HMAC ticket 换 token。
+   * 白名单 demo 前缀（见 auth.service.sso）；限流同 login（防爆破 ticket）。
+   */
+  @Public()
+  @Throttle({ default: { limit: 8, ttl: 60_000 } })
+  @HttpCode(200)
+  @Post('sso')
+  sso(@Body() dto: SsoDto): Promise<LoginResult> {
+    return this.authService.sso(dto.ticket);
   }
 
   /** 当前用户：前端启动时用它验证本地 token 是否还有效（无效会拿到 401）。 */

@@ -38,6 +38,7 @@ import { Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/commo
 import { JwtService } from '@nestjs/jwt';
 // ⚠️ 刻意不再 import DUMMY_BCRYPT_HASH：它是为了「本地跑一次 bcrypt 把耗时对齐」
 //    存在的，而本文件现在**一行 bcrypt 都不该有**（判定在 Python 侧，11b 铁律）。
+import * as crypto from 'crypto';
 import { gatewayConfig, GatewayConfig } from '../config/configuration';
 import { LoginDto } from './dto/login.dto';
 import { AuthenticatedUser } from './strategies/jwt.strategy';
@@ -194,6 +195,82 @@ export class AuthService {
   /** 当前登录用户信息（前端刷新页面后用它校验 token 是否仍然有效）。 */
   me(user: AuthenticatedUser): { user: AuthenticatedUser } {
     return { user };
+  }
+
+  /**
+   * v2.4.4 演示 SSO：验 nianan.site 签发的 HMAC ticket，直接签发受限 JWT。
+   *
+   * 安全边界（三层）：
+   *   ① HMAC-SHA256 验签 + 60 秒有效期；
+   *   ② 用户名白名单硬编码 `demo\d{1,2}` —— 密钥放在 nianan-site 构建产物里
+   *      （公开可读），泄漏也只能拿到演示账号；
+   *   ③ 签发的身份固定 role='user' / kbRole='none' / ver=0——**绝不签 admin**。
+   *
+   * 与 login 的差别：**没有密码判定**（身份来源是 ticket 验签），uid 为 null，
+   * 后端 core/identity.py 会按登录名补查（demo 账号在 MySQL 有行，成立）。
+   */
+  async sso(ticket: string): Promise<LoginResult> {
+    const secret = this.config.ssoSharedSecret;
+    if (!secret) {
+      throw new UnauthorizedException({ code: 'SSO_DISABLED', message: 'SSO 未启用' });
+    }
+    let username = '';
+    try {
+      const parts = ticket.trim().split('.');
+      const payloadB64 = parts[0] ?? '';
+      const sig = parts[1] ?? '';
+      if (!payloadB64 || !sig) throw new Error('bad ticket format');
+      const expected = crypto
+        .createHmac('sha256', secret)
+        .update(payloadB64)
+        .digest('hex');
+      const given = Buffer.from(sig, 'hex');
+      if (given.length !== expected.length || !crypto.timingSafeEqual(given, Buffer.from(expected, 'hex'))) {
+        throw new Error('bad signature');
+      }
+      const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8')) as {
+        u?: string; exp?: number;
+      };
+      username = String(payload.u ?? '');
+      if (Date.now() / 1000 > Number(payload.exp)) {
+        throw new UnauthorizedException({
+          code: 'SSO_TICKET_EXPIRED',
+          message: '登录凭据已过期，请回 nianan.site 重新点击',
+        });
+      }
+    } catch (e) {
+      if (e instanceof UnauthorizedException) throw e;
+      throw new UnauthorizedException({ code: 'SSO_BAD_TICKET', message: '登录凭据无效' });
+    }
+    if (!/^demo\d{1,2}$/.test(username)) {
+      throw new UnauthorizedException({ code: 'SSO_FORBIDDEN_USER', message: '该账号不允许演示登录' });
+    }
+    this.logger.log(`SSO 登录 | username=${username} source=sso`);
+    const payload = {
+      sub: username,
+      uid: null,
+      username,
+      role: 'user',
+      kbRole: 'none' as const,
+      ver: 0,
+      src: 'sso',
+    };
+    const accessToken = await this.jwtService.signAsync(payload);
+    return {
+      access_token: accessToken,
+      token_type: 'Bearer',
+      expires_in: this.resolveExpiresInSeconds(),
+      user: {
+        username,
+        display_name: `演示用户${username.replace('demo', '')}`,
+        role: 'user',
+        kb_role: 'none',
+        employee_no: null,
+      },
+      must_change_password: false,
+      password_expire_in_days: null,
+      identity_source: 'sso' as 'mysql' | 'breakglass' | 'sso',
+    } as LoginResult;
   }
 
   // ------------------------------------------------------------------------- //
