@@ -39,3 +39,8 @@ export function fetchMe(): Promise<MeResult> {
 export function logout(): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>('/api/auth/logout', {})
 }
+
+/** v2.4.4 演示 SSO：nianan.site 的一次性 ticket 换 token（免账密）。 */
+export function ssoLogin(ticket: string): Promise<LoginResult> {
+  return postJsonNoAuthRedirect<LoginResult>('/api/auth/sso', { ticket })
+}
