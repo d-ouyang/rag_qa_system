@@ -13,12 +13,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "data" / "eval" / "gate_baseline.json"
 RESULTS = ROOT / "data" / "eval" / "results"
+
+#: `eval_retrieval.py` 的结果文件命名，如 `20261104-195312-fixed-final.json`。
+#: 用它把「检索评测」与同目录下的 timing-stats / answer_guard 等产物区分开。
+_RESULT_NAME = re.compile(r"^\d{8}-\d{6}-.+\.json$")
 
 #: 阈值键 → 结果 JSON 的 metrics 取值路径（abstain 嵌套）
 _READERS = {
@@ -31,11 +36,25 @@ _READERS = {
 
 
 def _latest_result() -> Path:
-    """自动取最新一份评测结果（时间戳前缀排序）。"""
-    files = sorted(RESULTS.glob("*-*.json"))
-    files = [f for f in files if not f.name.startswith("gate")]
+    """自动取最新一份**检索评测**结果（`YYYYMMDD-HHMMSS-tag.json` 命名，按时间戳排序）。
+
+    为什么不能只排除 `gate*`（p4.2g 修正）：`data/eval/results/` 里同时躺着
+    `timing-stats-*.json`（每日 04:10 的耗时快照，没有 metrics）和
+    `answer_guard-*.json`（答案守卫，也不是检索指标）。旧实现按「最新文件」
+    取，于是「每天跑过一次耗时统计之后，make golden-gate 必然假红」——
+    报的是「recall@5 缺失」，看起来像检索出了大问题，实际只是抓错了文件。
+    门禁的红必须指向真问题，否则它会被当成噪音绕过。
+
+    只认 `eval_retrieval.py` 产出的时间戳命名，是最小且确定的判据。
+    """
+    files = sorted(
+        f for f in RESULTS.glob("*.json") if _RESULT_NAME.match(f.name)
+    )
     if not files:
-        raise SystemExit("data/eval/results/ 下没有评测结果——先跑 make eval-retrieval")
+        raise SystemExit(
+            "data/eval/results/ 下没有检索评测结果（YYYYMMDD-HHMMSS-tag.json）"
+            "——先跑 make eval-retrieval"
+        )
     return files[-1]
 
 
