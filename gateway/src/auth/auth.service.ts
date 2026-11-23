@@ -215,24 +215,47 @@ export class AuthService {
       throw new UnauthorizedException({ code: 'SSO_DISABLED', message: 'SSO 未启用' });
     }
     let username = '';
+    // 声明提到 try 外：catch 的调试信息要引用（作用域——真跑踩过，生产 build 直接红）
+    let payloadB64 = '';
+    let sig = '';
+    let expected = '';
     try {
       const parts = ticket.trim().split('.');
-      const payloadB64 = parts[0] ?? '';
-      const sig = parts[1] ?? '';
+      payloadB64 = parts[0] ?? '';
+      sig = parts[1] ?? '';
       if (!payloadB64 || !sig) throw new Error('bad ticket format');
-      const expected = crypto
+      expected = crypto
         .createHmac('sha256', secret)
         .update(payloadB64)
         .digest('hex');
-      const given = Buffer.from(sig, 'hex');
-      if (given.length !== expected.length || !crypto.timingSafeEqual(given, Buffer.from(expected, 'hex'))) {
+      // ⚠️ expected 是 64 字符 hex 字符串、given 是 32 字节 Buffer——长度恒不相等，
+      // 上一版直接比 `.length` 导致验签永远失败（真跑抓到）。两边都转 Buffer 再比。
+      const givenBuf = Buffer.from(sig, 'hex');
+      const expectedBuf = Buffer.from(expected, 'hex');
+      if (givenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(givenBuf, expectedBuf)) {
         throw new Error('bad signature');
       }
       const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8')) as {
         u?: string; exp?: number;
       };
       username = String(payload.u ?? '');
-      if (Date.now() / 1000 > Number(payload.exp)) {
+      // ⚠️ 必须先判 exp 是不是数字：缺字段时 Number(undefined)=NaN，而 `now > NaN`
+      //    恒为 false —— 一张不带 exp 的票会被签成**永不过期**（真跑用例抓到：删掉
+      //    exp 字段仍返回 200）。这不是纸上风险：SSO 密钥本来就随 nianan-site 的
+      //    构建产物公开，任何人拿到它都能自签一张无限期 demo 票；exp 校验是这条
+      //    链路上唯一会自己失效的东西，缺了它等于发永久通行证。
+      //    宁可 401，也不要一张不会过期的票。
+      const exp = Number(payload.exp);
+      const nowSec = Date.now() / 1000;
+      if (!Number.isFinite(exp)) {
+        throw new Error('bad exp');
+      }
+      // 有效期上限：签票方只给 60 秒，签出远期票说明密钥泄漏或调用方被改过。
+      // 留 5 分钟余量吸收两端时钟偏差（服务器与浏览器时间不完全同步）。
+      if (exp > nowSec + 300) {
+        throw new Error('exp too far');
+      }
+      if (nowSec > exp) {
         throw new UnauthorizedException({
           code: 'SSO_TICKET_EXPIRED',
           message: '登录凭据已过期，请回 nianan.site 重新点击',
