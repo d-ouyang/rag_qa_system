@@ -60,3 +60,10 @@ gateway/.env
 # git clean -fd 删不掉 → 整个 CI/CD 部署 exit 1（2026-10-11 实测翻车一次）。
 # 脚本已改用 --log-path 指到 /var/log/qa-backup/，这里再兜底忽略。
 coscli_output/
+
+# unplugin-vue-components 的自动产物：每次 admin-console 跑 dev/build 都会按
+# 「当前用到的 Element 组件」重写整个文件。它进版本控制后表现为「谁跑一次构建
+# 谁就多一个改动」，而实际没改任何业务代码（例：TracesView 用了 el-dialog 很久，
+# d.ts 里那行却一直缺着，直到某次跑 dev 才被带出来）。
+# 移出版本控制：构建时自动生成，vue-tsc 与 CI 都不依赖仓库里这份副本。
+admin-console/components.d.ts

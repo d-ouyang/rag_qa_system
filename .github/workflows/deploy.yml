@@ -18,7 +18,12 @@ jobs:
   deploy:
     # 指向在 42.192.111.82 上安装的自托管 runner
     runs-on: self-hosted
-    timeout-minutes: 40
+    # 60 分钟而不是 40：镜像依赖层（torch 等）的 buildkit 缓存一旦被 GC 回收，
+    # 那次部署要全量重下依赖，实测一次就吃满 40 分钟被 cancelled（2026-11-23
+    # run 45104423785，卡在 pip 下载 transformers/pandas 处，前端/网关镜像已好、
+    # 后端没出、后续迁移与起容器都没跑）。超时给足，让"慢"能自己走完；
+    # 真正的卡死仍由下面的健康检查与步骤失败暴露。
+    timeout-minutes: 60
 
     steps:
       - name: Pull latest code and redeploy on server
