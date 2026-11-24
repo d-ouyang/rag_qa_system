@@ -67,3 +67,6 @@ coscli_output/
 # d.ts 里那行却一直缺着，直到某次跑 dev 才被带出来）。
 # 移出版本控制：构建时自动生成，vue-tsc 与 CI 都不依赖仓库里这份副本。
 admin-console/components.d.ts
+
+# 评测脚本临时目录（tests/test_module30_eval_judge.py）
+.eval_tmp/

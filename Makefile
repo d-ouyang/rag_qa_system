@@ -227,6 +227,14 @@ golden-gate:
 eval-answer-guard:
 	@$(PY) scripts/eval_answer_guard.py $(ARGS)
 
+# 答案级语义评测（LLM 裁判）：忠实度 + 要点覆盖。跑真实链路，每题 3 次取中位数。
+# 检索指标答不了「检索对了但模型编了」，这一层才答得了。
+# 例：make eval-judge；make eval-judge ARGS="--id q041 --repeat 1"；
+#     make eval-judge ARGS="--init-baseline --tag v4.1.0-p4.4"（首版建基线）
+#     make eval-judge ARGS="--use-baseline"（按基线阈值判定，不过即退出码 1）
+eval-judge:
+	@$(PY) scripts/eval_judge.py $(ARGS)
+
 # 耗时/质量统计：从 chat_message.turn_meta 聚合 timings / decision / grounded / dual/fallback。
 # 例：make eval-stats；make eval-stats ARGS="--days 1"
 eval-stats:

@@ -18,5 +18,22 @@
     "q042「怎么请事假？事假扣不扣钱？」hit@5 未中：复合问句作为单查询检索时重排分被稀释（P4-9 回归锚）。"
   ],
   "_tolerance_note": "阈值 = 42 题实测留一档余地：hit@5 0.96 表示「31 题里再掉 1 题就红」（0.9677→0.9355）；abstain 0.90 表示「11 题里再错 1 题就红」（0.9091→0.818）。recall / mrr 仍按 ~4% 容差。",
-  "_discipline": "_known_failures 两道是刻意留的锚，不允许为了让门禁变绿去改 golden.jsonl 的 should_answer 或稀释阈值含义。新增失分题必须判断是真退化还是题集问题。"
+  "_discipline": "_known_failures 两道是刻意留的锚，不允许为了让门禁变绿去改 golden.jsonl 的 should_answer 或稀释阈值含义。新增失分题必须判断是真退化还是题集问题。",
+  "judge": {
+    "baseline_tag": "v4.1.0-p4.4",
+    "baseline_date": "2026-11-24",
+    "golden_file": "data/eval/golden.jsonl",
+    "judge_model": "deepseek-ai/DeepSeek-V3",
+    "context_mode": "chunk_full",
+    "thresholds": {
+      "judge_score_avg": 4.47,
+      "faithful_rate": 0.92
+    },
+    "_baseline_metrics": "judge_score_avg 4.7742 / faithful_rate 0.9677（31 题有效裁决）",
+    "_why": "首版建立：阈值 = 实测留一档余地，不是为通过而放宽。",
+    "_known_failures": [
+      "q022「离职后企业微信/OA 账号何时注销」：片段的《劳动合同解除协议书》第三条明确写了「IT 系统账号（OA、企业微信…）由 IT 部于离职当日统一注销」，但答案却答「未具体说明企业微信和 OA 的注销时间」——幻觉式否定（比编造更隐蔽，因为话说得很谨慎）。2026-11-24 首版评测抓到。"
+    ],
+    "_discipline": "judge 段只拦「变差」：阈值 = 实测留一档余地。换裁判模型或换 context_mode 必须重建基线——尺子变了，分数不可跨模型比较。"
+  }
 }
