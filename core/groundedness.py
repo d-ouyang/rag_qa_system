@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from config.settings import settings
@@ -73,7 +74,42 @@ def is_low_confidence(top1_before_filter: Any) -> bool:
     return lo <= float(top1_before_filter) <= hi
 
 
-import re  # noqa: E402
+#: 判断「两句话是不是同一句」时只留实义字符：标点、空白、引号全去掉。
+#: 保留中英文混排里的字母数字，因为论断里常带数字（「30 个工作日」）。
+_MATCH_STRIP_RE = re.compile(r"[\s，。？！、；：\"'“”‘’（）()《》〈〉\[\]【】,.?!;:]+")
+
+
+def _norm_for_match(text: str) -> str:
+    return _MATCH_STRIP_RE.sub("", text or "")
+
+
+def drop_question_echo(unsupported: list[str], question: str) -> list[str]:
+    """剔除「把用户问题当成无依据论断」的误报。
+
+    为什么必须在代码里做，而不是只靠 prompt：系统提示第 61-62 行早就写明
+    「用户问题本身、或答案里复述问题的疑问句不是论断，不得列入」，但判官
+    （qwen2.5-7b）仍会把问题原句塞进 unsupported——2026-11-24 实测，
+    「员工使用公司账号，有哪些明令禁止的行为？」被整句列为无依据论断。
+
+    这类误报每问一次挂一条，用户很快学会无视整个校验标记，**比漏报更有害**。
+    规则取保守侧：normalize 后任一方包含另一方即视为回声；长度 < 6 的串不判
+    （「年假」「报销」这种短词包含关系太多，误杀风险大于收益）。
+
+    :param unsupported: 判官给出的未支撑论断（原句）
+    :param question: 本轮用户问题原文
+    :return: 过滤后的列表（保持原顺序与原措辞）
+    """
+    q = _norm_for_match(question)
+    kept: list[str] = []
+    for item in unsupported:
+        s = _norm_for_match(item)
+        if not s:
+            continue
+        if len(s) >= 6 and (s in q or q in s):
+            logger.info("依据校验：剔除问题回声 | %r", item[:40])
+            continue
+        kept.append(item)
+    return kept
 
 #: 模型在「依据：…」行里自认未查到 —— 强信号：它自己都承认没找到依据，
 #: 却可能已经在上面编完了（q041 实测复现：正文编造扣薪规则 + 依据行写「未查到」）。
@@ -159,10 +195,19 @@ def check_groundedness(
         data = json.loads(text)
         grounded = bool(data.get("grounded"))
         unsupported = [str(x) for x in (data.get("unsupported") or [])]
-        if grounded and unsupported:
-            # 口径自相矛盾（说有依据又列了未支撑论断）→ 按保守处理
-            logger.warning("judge 输出口径矛盾（grounded=true 但有 unsupported），按未通过处理")
+        # 先剔掉「问题回声」，再判矛盾：这一步把「判官没找到真正问题」和
+        # 「答案确实有编造」区分开，否则每次否定类提问都会挂一条误报。
+        unsupported = drop_question_echo(unsupported, question)
+        if unsupported:
+            if grounded:
+                # 口径自相矛盾（说有依据又列了未支撑论断）→ 按保守处理
+                logger.warning("judge 输出口径矛盾（grounded=true 但有 unsupported），按未通过处理")
             grounded = False
+        else:
+            if not grounded:
+                # 唯一的「反证」是问题回声，已被剔除 → 判官没找到真正的无依据论断
+                logger.info("依据校验：unsupported 全为问题回声，按通过处理")
+            grounded = True
         result["grounded"] = grounded
         result["unsupported"] = unsupported
     except Exception:

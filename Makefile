@@ -235,6 +235,13 @@ eval-answer-guard:
 eval-judge:
 	@$(PY) scripts/eval_judge.py $(ARGS)
 
+# 知识库口径冲突粗筛：找出「不同文档、同一单位、数值不同、实词重合」的条款对。
+# 产物是候选清单，交人工确认后登记到 data/kb_conflicts.json（登记后回答会自动提示）。
+# 例：make scan-conflicts；make scan-conflicts ARGS="--unit 工作日"；
+#     make scan-conflicts ARGS="--out docs/冲突候选.md"
+scan-conflicts:
+	@$(PY) scripts/scan_conflicts.py $(ARGS)
+
 # 耗时/质量统计：从 chat_message.turn_meta 聚合 timings / decision / grounded / dual/fallback。
 # 例：make eval-stats；make eval-stats ARGS="--days 1"
 eval-stats:

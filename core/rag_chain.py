@@ -76,6 +76,11 @@ from core.groundedness import (
     check_groundedness,
     is_low_confidence,
 )
+from core.kb_conflicts import (
+    append_conflict_notice,
+    format_conflict_notice,
+    match_conflicts,
+)
 from core import qa_flow
 from core import qa_trace_repo
 from core.retriever import RAGRetriever
@@ -487,7 +492,57 @@ def _extract_usage(message: Any) -> dict[str, int]:
 # 为什么不用 prompt 约束而要短路：意图指令（如「以数字为核心回答」）
 # 会与「不知道就说不知道」的护栏竞争，实测空上下文时模型可能编造数字。
 # 检索结果为空 → 压根不进 LLM，直接返回固定话术，幻觉概率归零。
-_NO_CONTEXT_ANSWER = "根据现有资料无法回答该问题。请先向知识库录入相关资料，或换个问法重试。"
+#: 零召回时的通用兜底答复。措辞刻意保持中性：它同时覆盖「库内没收录」和
+#: 「能力边界」两种来源，不预设是哪一种（区分见 `_no_context_answer`）。
+#: 旧文案「请先向知识库录入相关资料」已废弃——对「帮我订机票」这类请求，
+#: 那句话把能力问题说成资料缺失，用户会去找管理员补文档，补了也没用。
+_NO_CONTEXT_ANSWER = (
+    "公司知识库里没有找到和这个问题相关的内容。"
+    "如果问的是制度或业务规定，可能是资料尚未收录；"
+    "如果需要查询个人数据或代办操作，请使用对应的业务系统。"
+)
+
+#: 「问的是我自己的业务记录」——答案在财务 / HR / OA 系统里，不在文档库。
+#: 为什么单独识别：这类问题补文档永远补不出来（数据不在文档里），
+#: 必须直接告诉用户去查系统，否则他会以为知识库缺资料。
+_PERSONAL_DATA_RE = re.compile(
+    r"(我|本人|自己).{0,12}(报销了|报销了多少|工资|年假|调休|余额|积分|还剩|剩余|考勤记录|加班时长)"
+    r"|(还剩|剩余|累计).{0,8}(几天|多少天|多少小时|多少钱)"
+)
+
+#: 「让我替你办一件事」——代办不是问答。给流程可以，替代下单不行。
+_ACTION_REQUEST_RE = re.compile(
+    r"(帮我|替我|给我|帮忙).{0,8}(订|买|写|发|约|提交|申请|取消|退|改|查一下我的)"
+)
+
+
+def _no_context_answer(question: str) -> str:
+    """零召回时按「问的是什么」分三种答复，而不是一刀切「资料没录入」。
+
+    三种来源不同、用户下一步动作也不同：
+
+    | 来源 | 用户该做什么 | 说「资料没录入」的后果 |
+    |---|---|---|
+    | 个人业务数据 | 去 OA / 财务 / HR 查 | 去找管理员补文档，补了也没用 |
+    | 代办操作 | 自己走流程 | 同上，且显得系统在推诿 |
+    | 库内确实没收录 | 找归口部门补文档 | 正确 |
+
+    判断只用确定性正则、不调模型：兜底话术必须稳定可测，
+    每次抖出一个不同说法的话，用户没法形成预期，测试也没法断言。
+    """
+    text = (question or "").strip()
+    if _PERSONAL_DATA_RE.search(text):
+        return (
+            "你问的是个人业务数据（报销流水、工资、年假余额这类），"
+            "它不在公司知识库里，我查不到。请到 OA 或联系财务 / HR 查询；"
+            "相关规定本身我可以回答。"
+        )
+    if _ACTION_REQUEST_RE.search(text):
+        return (
+            "这个我做不到——我只能回答公司制度与业务知识，不能代为办理操作。"
+            "需要的话，我可以告诉你对应的流程该怎么走。"
+        )
+    return _NO_CONTEXT_ANSWER
 
 
 def _resolve_chunk_id(metadata: dict[str, Any]) -> str | None:
@@ -933,7 +988,9 @@ def _empty_context_result(inputs: dict[str, Any]) -> dict[str, Any]:
     用 .get + 默认值是因为这两个键由上游 assign 写入，理论上必有、仍按缺失兜底。
     """
     return {
-        "answer": _NO_CONTEXT_ANSWER,
+        # 零召回也要分情况说话：链路的 inputs 里 question 的键名是 "input"，
+        # 取不到就退回通用话术（这种链路本身已经异常，话术不是重点）。
+        "answer": _no_context_answer(str(inputs.get("input") or "")),
         "docs": inputs.get("docs", []),
         "standalone_question": inputs.get("standalone_question", ""),
     }
@@ -1919,7 +1976,7 @@ class RAGChain:
                     prepared["standalone_question"],
                     (prepared.get("retrieval_trace") or {}).get("rerank"),
                 )
-                answer = _NO_CONTEXT_ANSWER
+                answer = _no_context_answer(question)
             else:
                 # 知识型意图（六类）统一走 RAG 生成；意图标签换回答组织指令
                 message = llm.invoke(
@@ -1991,6 +2048,11 @@ class RAGChain:
         if grounded is not None and grounded.get("grounded") is False:
             answer = append_groundedness_correction(answer, grounded)
             result["answer"] = answer  # 缓存与调用方拿到的必须是更正后的版本
+        # P4.5：知识库口径冲突提示。放在依据校验之后——两者都是「关于这段答案的
+        # 警告」，更正块说「这句没依据」，冲突块说「这段依据本身有两份互相打架」。
+        # 命中台账才追加，没命中时 answer 字节级不变（缓存与既有测试不受影响）。
+        answer = append_conflict_notice(answer, result.get("sources") or [])
+        result["answer"] = answer
         exchange_meta = {
             "sources": result["sources"],
             "intent": result["intent"],
@@ -2164,8 +2226,9 @@ class RAGChain:
                     prepared["standalone_question"],
                     (prepared.get("retrieval_trace") or {}).get("rerank"),
                 )
-                yield {"type": "chunk", "content": _NO_CONTEXT_ANSWER}
-                answer = _NO_CONTEXT_ANSWER
+                refusal = _no_context_answer(question)
+                yield {"type": "chunk", "content": refusal}
+                answer = refusal
             else:
                 answer_parts = []
                 prefix_filter = _RefusalSentenceFilter()
@@ -2247,6 +2310,12 @@ class RAGChain:
             correction = append_groundedness_correction("", grounded).strip()
             answer = (answer.rstrip() + "\n\n" + correction) if answer else correction
             yield {"type": "chunk", "content": "\n\n" + correction}
+        # P4.5：口径冲突提示，与同步链路同口径——作为额外 chunk 下发，
+        # 同时计入 answer，保证「看到的」和「落库/缓存的」是同一份。
+        conflict_notice = format_conflict_notice(match_conflicts(sources))
+        if conflict_notice:
+            answer = (answer.rstrip() + conflict_notice) if answer else conflict_notice.strip()
+            yield {"type": "chunk", "content": conflict_notice}
         t_grounded = time.perf_counter()
         total_ms = round((time.perf_counter() - start) * 1000, 1)
         # 耗时明细（前端可展示「检索/改写 / 生成 / 依据校验 / 其他」）：

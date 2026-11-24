@@ -221,7 +221,10 @@ import core.rag_chain as rc
 # 「镜像行的内容与筛选」由 module27 对 qa_trace_repo 的专项测试守。
 _TRACE_MIRROR: list[dict] = []
 _orig_record_qa_trace = rc._record_qa_trace
-rc._record_qa_trace = lambda session_id, owner_id, trace: (  # type: ignore[assignment]
+# usage 是 v4.1.0-p2.3 给真实现加的第 4 个参数（用量归因），桩没跟着改，
+# 于是 module26 从那时起就红着、没人跑。桩只需要 trace，用 *args 吸收后续新增参数：
+# 以后再给 _record_qa_trace 加参数，这里不必再动。
+rc._record_qa_trace = lambda session_id, owner_id, trace, *args: (  # type: ignore[assignment]
     _TRACE_MIRROR.append({
         "session_id": session_id, "owner_id": owner_id,
         "decision": (trace or {}).get("decision"),
